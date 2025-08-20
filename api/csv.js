@@ -1,3 +1,6 @@
+// Force Node runtime (NOT Edge)
+export const config = { runtime: 'nodejs' };
+
 // /api/csv.js — Minimal CSV download endpoint for Vercel (Node runtime)
 export default async function handler(req, res) {
   try {
@@ -7,14 +10,12 @@ export default async function handler(req, res) {
       res.status(400).send('Missing data');
       return;
     }
-    // Decode CSV (Base64 → UTF-8 text)
     const csv = Buffer.from(b64, 'base64').toString('utf8');
-
-    // Send as downloadable file
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.status(200).send(csv);
   } catch (e) {
+    console.error('CSV error:', e);
     res.status(500).send('Error generating file');
   }
 }
