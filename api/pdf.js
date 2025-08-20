@@ -1,3 +1,6 @@
+// Force Node runtime (NOT Edge)
+export const config = { runtime: 'nodejs' };
+
 // /api/pdf.js — Minimal PDF download endpoint for Vercel using pdf-lib
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
@@ -6,7 +9,7 @@ function wrapText(text, maxChars) {
   const lines = [];
   let line = '';
   for (const w of words) {
-    if ((line ? line + ' ' : '') .length + w.length > maxChars) {
+    if ((line ? line + ' ' : '').length + w.length > maxChars) {
       if (line) lines.push(line);
       line = w;
     } else {
@@ -22,14 +25,17 @@ export default async function handler(req, res) {
     const name = String(req.query.name || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
     let payload = null;
 
+    // Optional base64 JSON in ?data=
     if (req.query.data) {
       try {
         const json = Buffer.from(String(req.query.data), 'base64').toString('utf8');
         payload = JSON.parse(json);
-      } catch { /* keep null → use defaults */ }
+      } catch (e) {
+        console.error('Bad payload:', e);
+      }
     }
 
-    // Defaults so /api/pdf works even with no query params
+    // Safe defaults
     const p = Object.assign({
       title: "CTRL Snapshot — V3",
       band: null,
@@ -54,7 +60,7 @@ export default async function handler(req, res) {
     page.drawText(p.title || "CTRL Snapshot — V3", { x: margin, y, size: 18, font: fontB, color: rgb(0,0,0) });
     y -= 26;
 
-    // Optional band headline
+    // Optional band line
     if (p.band && (p.band.title || p.band.state)) {
       const bandLine = `${p.band.title || ''}${p.band.state ? ` — ${p.band.state}` : ''}`.trim();
       if (bandLine) { page.drawText(bandLine, { x: margin, y, size: 12, font, color: rgb(0.2,0.2,0.2) }); y -= 18; }
@@ -96,7 +102,9 @@ export default async function handler(req, res) {
         const h = w * (img.height / img.width);
         page.drawImage(img, { x: margin, y: y - h, width: w, height: h });
         y -= (h + 10);
-      } catch { /* skip image if it fails */ }
+      } catch (e) {
+        console.error('Chart fetch failed:', e);
+      }
     }
 
     // Footer
@@ -106,7 +114,12 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.status(200).send(Buffer.from(bytes));
-  } catch {
-    res.status(500).send('Error generating PDF');
+  } catch (e) {
+    console.error('PDF error:', e);
+    if (String(req.query.debug||'')==='1') {
+      res.status(500).send(`Error generating PDF: ${String(e && e.message || e)}`);
+    } else {
+      res.status(500).send('Error generating PDF');
+    }
   }
 }
