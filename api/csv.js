@@ -1,33 +1,21 @@
-// /api/csv.js — Minimal CSV download endpoint for Vercel (Node runtime, ESM)
-
-function getQueryValue(req, key) {
-  const q1 = req?.query?.[key];
-  if (q1) return String(q1);
+module.exports = async (req, res) => {
   try {
-    const url = new URL(req.url, 'http://localhost');
-    return url.searchParams.get(key) || '';
-  } catch {
-    return '';
-  }
-}
-
-export default async function handler(req, res) {
-  try {
-    const rawName = getQueryValue(req, 'name') || 'ctrl.csv';
-    const b64 = getQueryValue(req, 'data') || '';
+    const name = String((req.query && req.query.name) || 'ctrl.csv')
+      .replace(/[^\w.\-]+/g, '_');
+    const b64 = String((req.query && req.query.data) || '');
     if (!b64) {
-      res.status(400).send('Missing data');
-      return;
+      res.statusCode = 400;
+      return res.end('Missing data');
     }
-    const fixed = b64.replace(/ /g, '+'); // protect '+' lost as spaces
-    const csv = Buffer.from(fixed, 'base64').toString('utf8');
-    const name = rawName.replace(/[^A-Za-z0-9._-]/g, '_');
+    const csv = Buffer.from(b64, 'base64').toString('utf8');
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-    res.status(200).send(csv);
+    res.statusCode = 200;
+    res.end(csv);
   } catch (e) {
     console.error('CSV error', e);
-    res.status(500).send('Error generating file');
+    res.statusCode = 500;
+    res.end('Error generating file');
   }
-}
+};
