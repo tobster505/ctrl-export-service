@@ -1,8 +1,8 @@
 {
   "name": "ctrl-export-service",
-  "private": true,
   "version": "1.0.0",
-  "type": "commonjs",
+  "private": true,
+  "type": "module",
   "dependencies": {
     "pdfkit": "^0.13.0"
   }
