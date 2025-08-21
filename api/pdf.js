@@ -1,161 +1,120 @@
-// /api/pdf/index.js  (or /api/pdf.js)
-// Node.js Serverless Function for Vercel
-// Robustly accepts PDF data via GET ?data=BASE64 or POST JSON.
-// Renders a simple A4 PDF with title, intro, headline, chart image, body copy, and raw data.
-
-const PDFDocument = require("pdfkit");
-
-// Remove characters that PDFKit's WinAnsi can't encode (emojis, arrows, etc.)
-function sanitize(txt) {
-  if (!txt) return "";
-  return String(txt)
-    // strip emojis and symbols outside BMP and Latin-1
-    .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
-    .replace(/[^\u0000-\u00FF]/g, "");
-}
-
-async function fetchImageBuffer(url) {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Chart fetch failed: ${res.status}`);
-    return Buffer.from(await res.arrayBuffer());
-  } catch {
-    return null;
-  }
-}
-
-function decodePayload(req) {
-  // Accept:
-  //  - GET ?data=<base64 of JSON>
-  //  - GET ?payload=<base64 of JSON>
-  //  - POST { data: "<base64 of JSON>" }
-  //  - POST full JSON payload directly (already parsed)
-  const q = req.query || {};
-  const b = req.body || {};
-
-  let rawObj = null;
-
-  if (typeof q.data === "string") {
-    try {
-      rawObj = JSON.parse(Buffer.from(q.data, "base64").toString("utf8"));
-    } catch { /* fall through */ }
-  }
-  if (!rawObj && typeof q.payload === "string") {
-    try {
-      rawObj = JSON.parse(Buffer.from(q.payload, "base64").toString("utf8"));
-    } catch { /* fall through */ }
-  }
-  if (!rawObj && typeof b?.data === "string") {
-    try {
-      rawObj = JSON.parse(Buffer.from(b.data, "base64").toString("utf8"));
-    } catch { /* fall through */ }
-  }
-  if (!rawObj && typeof b === "object" && Object.keys(b).length) {
-    rawObj = b;
-  }
-  return rawObj;
-}
-
 module.exports = async (req, res) => {
   try {
-    const name = (req.query.name || "ctrl_report.pdf").toString();
-    const payload = decodePayload(req);
-
-    if (!payload) {
-      res.status(400).send("Missing data");
-      return;
+    const name = String((req.query && req.query.name) || 'ctrl_report.pdf')
+      .replace(/[^\w.\-]+/g, '_');
+    const b64 = String((req.query && req.query.data) || '');
+    if (!b64) {
+      res.statusCode = 400;
+      return res.end('Missing data');
     }
 
-    // Support both verbose keys and compact keys
-    const title   = sanitize(payload.title   ?? payload.t ?? "CTRL — Your Snapshot");
-    const intro   = sanitize(payload.intro   ?? payload.i ?? "");
-    const headline= sanitize(payload.headline?? payload.h ?? "");
-    const how     = sanitize(payload.how     ?? payload.w ?? "");
-    const journey = sanitize(payload.journey ?? payload.j ?? "");
-    const themes  = sanitize(payload.themesExplainer ?? payload.e ?? "");
-    const chartUrl= String(payload.chartUrl  ?? payload.c ?? "");
-    const raw     = payload.raw ?? payload.r ?? null;
+    let payload;
+    try {
+      payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+    } catch {
+      res.statusCode = 400;
+      return res.end('Invalid data');
+    }
 
-    // Start PDF
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${name}"`);
+    const {
+      title = 'CTRL — Snapshot',
+      intro = '',
+      headline = '',
+      chartUrl = '',
+      how = '',
+      journey = '',            // "• ..." lines separated by \n
+      themesExplainer = '',    // "• ..." lines separated by \n
+      raw = {}
+    } = payload || {};
 
-    const doc = new PDFDocument({ size: "A4", margin: 48 });
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ size: 'A4', margins: { top: 40, bottom: 40, left: 50, right: 50 } });
+
+    // Basic unicode-safe sanitiser (avoid fancy arrows/quotes that WinAnsi can’t encode)
+    const clean = (s) =>
+      String(s || '')
+        .replace(/[–—]/g, '-')
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/[→←↔↑↓]/g, '->');
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     doc.pipe(res);
 
-    // Title
-    doc.font("Helvetica-Bold").fontSize(18).text(title);
-    doc.moveDown(0.5);
-
-    // Intro
+    doc.font('Helvetica-Bold').fontSize(18).text(clean(title));
     if (intro) {
-      doc.font("Helvetica").fontSize(11).text(intro);
       doc.moveDown(0.5);
+      doc.font('Helvetica').fontSize(11).text(clean(intro));
     }
-
-    // Headline
     if (headline) {
-      doc.font("Helvetica-Bold").fontSize(14).text(headline);
-      doc.moveDown(0.4);
+      doc.moveDown();
+      doc.font('Helvetica-Bold').fontSize(13).text(clean(headline));
     }
 
-    // Chart (if available)
+    // Chart image (optional)
     if (chartUrl) {
-      const imgBuf = await fetchImageBuffer(chartUrl);
-      if (imgBuf) {
-        doc.image(imgBuf, { fit: [440, 280], align: "center" });
-        doc.moveDown(0.4);
+      try {
+        const r = await fetch(chartUrl);
+        const ab = await r.arrayBuffer();
+        const buf = Buffer.from(ab);
+        doc.moveDown(0.5);
+        doc.image(buf, { fit: [460, 300], align: 'center' });
+      } catch (e) {
+        console.error('Chart fetch failed', e);
+        doc.moveDown(0.5).font('Helvetica').fontSize(10)
+          .fillColor('#aa0000').text('Chart image unavailable.');
+        doc.fillColor('black');
       }
     }
 
-    // How this tends to show up
     if (how) {
-      doc.font("Helvetica-Bold").fontSize(12).text("How this tends to show up");
-      doc.moveDown(0.15);
-      doc.font("Helvetica").fontSize(11).text(how);
-      doc.moveDown(0.4);
+      doc.moveDown();
+      doc.font('Helvetica-Bold').fontSize(12).text('How this tends to show up');
+      doc.font('Helvetica').fontSize(11).text(clean(how));
     }
 
-    // Where the journey points (render bullets if user supplied them with "• ")
     if (journey) {
-      doc.font("Helvetica-Bold").fontSize(12).text("Where the journey points");
-      doc.moveDown(0.15);
-      doc.font("Helvetica").fontSize(11);
-      const lines = journey.split("\n").filter(Boolean);
-      for (const ln of lines) doc.text(sanitize(ln));
-      doc.moveDown(0.4);
+      doc.moveDown();
+      doc.font('Helvetica-Bold').fontSize(12).text('Where the journey points');
+      const items = clean(journey).split('\n').map(x => x.replace(/^\s*•\s*/, '')).filter(Boolean);
+      doc.font('Helvetica').fontSize(11).list(items);
     }
 
-    // Themes
-    if (themes) {
-      doc.font("Helvetica-Bold").fontSize(12).text("Themes that kept popping up");
-      doc.moveDown(0.15);
-      doc.font("Helvetica").fontSize(11);
-      const tlines = themes.split("\n").filter(Boolean);
-      for (const ln of tlines) doc.text(sanitize(ln));
-      doc.moveDown(0.4);
+    if (themesExplainer) {
+      doc.moveDown();
+      doc.font('Helvetica-Bold').fontSize(12).text('Themes that kept popping up');
+      const items = clean(themesExplainer).split('\n').map(x => x.replace(/^\s*•\s*/, '')).filter(Boolean);
+      doc.font('Helvetica').fontSize(11).list(items);
     }
 
-    // Raw data
-    if (raw) {
-      doc.font("Helvetica-Bold").fontSize(12).text("Raw data");
-      doc.moveDown(0.15);
-      doc.font("Helvetica").fontSize(10);
-      if (raw.sequence) doc.text(`sequence: ${sanitize(raw.sequence)}`);
-      if (raw.counts)   doc.text(`counts:   ${sanitize(typeof raw.counts === "string" ? raw.counts : JSON.stringify(raw.counts))}`);
-      if (raw.perQuestion) {
-        if (Array.isArray(raw.perQuestion)) {
-          for (const row of raw.perQuestion) {
-            doc.text(sanitize(JSON.stringify(row)));
-          }
-        } else {
-          doc.text(sanitize(raw.perQuestion));
+    // Raw page
+    if (raw && (raw.sequence || raw.counts || raw.perQuestion)) {
+      doc.addPage();
+      doc.font('Helvetica-Bold').fontSize(12).text('Raw data');
+      doc.moveDown(0.25);
+      if (raw.sequence) doc.font('Helvetica').fontSize(10).text(`Sequence: ${clean(raw.sequence)}`);
+      if (raw.counts) {
+        const countsLine = typeof raw.counts === 'string'
+          ? raw.counts
+          : `C:${raw.counts.C}  T:${raw.counts.T}  R:${raw.counts.R}  L:${raw.counts.L}`;
+        doc.text(`Counts: ${countsLine}`);
+      }
+      if (Array.isArray(raw.perQuestion)) {
+        for (const pq of raw.perQuestion) {
+          doc.moveDown(0.1);
+          doc.text(`Q${pq.q}: ${pq.state} (${pq.stateName || ''})`);
+          if (pq.themes && pq.themes.length) doc.text(`Themes: ${pq.themes.join(', ')}`, { indent: 12 });
         }
       }
     }
 
+    doc.moveDown();
+    doc.fontSize(8).fillColor('#777').text('CTRL — Generated by /api/pdf');
     doc.end();
   } catch (err) {
-    res.status(500).send("PDF generation error");
+    console.error('PDF error', err);
+    res.statusCode = 500;
+    res.end('Error generating PDF');
   }
 };
