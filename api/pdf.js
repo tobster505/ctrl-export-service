@@ -1,109 +1,161 @@
-// /api/pdf.js — PDF export for CTRL (Vercel / Node 22, ESM)
-import PDFDocument from 'pdfkit';
+// /api/pdf/index.js  (or /api/pdf.js)
+// Node.js Serverless Function for Vercel
+// Robustly accepts PDF data via GET ?data=BASE64 or POST JSON.
+// Renders a simple A4 PDF with title, intro, headline, chart image, body copy, and raw data.
 
-export default async function handler(req, res) {
+const PDFDocument = require("pdfkit");
+
+// Remove characters that PDFKit's WinAnsi can't encode (emojis, arrows, etc.)
+function sanitize(txt) {
+  if (!txt) return "";
+  return String(txt)
+    // strip emojis and symbols outside BMP and Latin-1
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
+    .replace(/[^\u0000-\u00FF]/g, "");
+}
+
+async function fetchImageBuffer(url) {
   try {
-    const name = String(req.query.name || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
-    const b64  = String(req.query.data || '');
-    if (!b64) { res.status(400).send('Missing data'); return; }
-
-    let payload;
-    try {
-      payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
-    } catch {
-      res.status(400).send('Invalid data'); return;
-    }
-
-    // --- sanitise to ASCII so PDFKit's built-in fonts are safe ---
-    const S = (s) => {
-      s = String(s || '');
-      // strip emoji / symbols
-      s = s.replace(/[\u{1F000}-\u{1FFFF}]/gu, '');
-      // normalise punctuation & symbols
-      const map = {
-        '–':'-','—':'-','-':'-',
-        '“':'"','”':'"','„':'"','‟':'"','’':"'",'‘':"'",'…':'...',
-        '•':'- ','·':'- ','●':'- ','▪':'- ',
-        '→':'->','←':'<-',
-        '×':'x','✕':'x','✖':'x',
-        '≈':'~','≃':'~','≅':'~','≡':'=',
-        'Δ':'delta','∼':'~','≥':'>=','≤':'<='
-      };
-      return s.replace(/[–—-“”„‟’‘…•·●▪→←×✕✖≈≃≅≡Δ∼≥≤]/g, (c) => map[c] || '');
-    };
-
-    const title    = S(payload.title   || 'CTRL — Your Snapshot');
-    const intro    = S(payload.intro   || '');
-    const headline = S(payload.headline|| '');
-    const how      = S(payload.how     || '');
-    const journey  = S(payload.journey || '');
-    const themes   = S(payload.themesExplainer || '');
-
-    // Try to pull the chart image (optional)
-    let chartBuf = null;
-    const chartUrl = String(payload.chartUrl || '');
-    if (chartUrl.startsWith('http')) {
-      try {
-        const r = await fetch(chartUrl);
-        if (r.ok) chartBuf = Buffer.from(await r.arrayBuffer());
-      } catch { /* ignore */ }
-    }
-
-    // --- headers ---
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-
-    // --- build PDF ---
-    const doc = new PDFDocument({ size: 'A4', margin: 40 });
-    doc.pipe(res);
-
-    doc.font('Helvetica-Bold').fontSize(18).text(title);
-    doc.moveDown(0.5);
-
-    if (intro)    { doc.font('Helvetica').fontSize(10).text(intro); doc.moveDown(0.6); }
-    if (headline) { doc.font('Helvetica-Bold').fontSize(12).text(headline); doc.moveDown(0.6); }
-
-    if (chartBuf) { doc.image(chartBuf, { fit: [460, 300], align: 'center' }); doc.moveDown(0.8); }
-
-    if (how) {
-      doc.font('Helvetica-Bold').text('How this tends to show up');
-      doc.moveDown(0.2);
-      doc.font('Helvetica').text(how);
-      doc.moveDown(0.6);
-    }
-
-    if (journey) {
-      doc.font('Helvetica-Bold').text('Where the journey points');
-      doc.moveDown(0.2);
-      doc.font('Helvetica').text(journey);
-      doc.moveDown(0.6);
-    }
-
-    if (themes) {
-      doc.font('Helvetica-Bold').text('Themes that kept popping up');
-      doc.moveDown(0.2);
-      doc.font('Helvetica').text(themes);
-      doc.moveDown(0.6);
-    }
-
-    // Raw block (all optional)
-    const raw = payload.raw || {};
-    const seq    = Array.isArray(raw.seq) ? raw.seq.join(' ') : S(raw.sequence || '');
-    const counts = raw.counts
-      ? `C:${raw.counts.C||0}  T:${raw.counts.T||0}  R:${raw.counts.R||0}  L:${raw.counts.L||0}`
-      : S(raw.countsText || '');
-    const path   = Array.isArray(raw.seq) ? raw.seq.join(' -> ') : S(raw.pathText || '');
-    const extra  = S(raw.extra || '');
-
-    doc.font('Helvetica-Bold').text('Raw data');
-    doc.moveDown(0.2);
-    if (seq)    doc.font('Helvetica').text(`Sequence: ${seq}`);
-    if (counts) doc.text(`Counts: ${counts}`);
-    if (path)   doc.text(`Path: ${path}`);
-    if (extra)  doc.text(extra);
-
-    doc.end();
-  } catch (e) {
-    res.status(500).send('Error generating PDF');
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Chart fetch failed: ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
   }
 }
+
+function decodePayload(req) {
+  // Accept:
+  //  - GET ?data=<base64 of JSON>
+  //  - GET ?payload=<base64 of JSON>
+  //  - POST { data: "<base64 of JSON>" }
+  //  - POST full JSON payload directly (already parsed)
+  const q = req.query || {};
+  const b = req.body || {};
+
+  let rawObj = null;
+
+  if (typeof q.data === "string") {
+    try {
+      rawObj = JSON.parse(Buffer.from(q.data, "base64").toString("utf8"));
+    } catch { /* fall through */ }
+  }
+  if (!rawObj && typeof q.payload === "string") {
+    try {
+      rawObj = JSON.parse(Buffer.from(q.payload, "base64").toString("utf8"));
+    } catch { /* fall through */ }
+  }
+  if (!rawObj && typeof b?.data === "string") {
+    try {
+      rawObj = JSON.parse(Buffer.from(b.data, "base64").toString("utf8"));
+    } catch { /* fall through */ }
+  }
+  if (!rawObj && typeof b === "object" && Object.keys(b).length) {
+    rawObj = b;
+  }
+  return rawObj;
+}
+
+module.exports = async (req, res) => {
+  try {
+    const name = (req.query.name || "ctrl_report.pdf").toString();
+    const payload = decodePayload(req);
+
+    if (!payload) {
+      res.status(400).send("Missing data");
+      return;
+    }
+
+    // Support both verbose keys and compact keys
+    const title   = sanitize(payload.title   ?? payload.t ?? "CTRL — Your Snapshot");
+    const intro   = sanitize(payload.intro   ?? payload.i ?? "");
+    const headline= sanitize(payload.headline?? payload.h ?? "");
+    const how     = sanitize(payload.how     ?? payload.w ?? "");
+    const journey = sanitize(payload.journey ?? payload.j ?? "");
+    const themes  = sanitize(payload.themesExplainer ?? payload.e ?? "");
+    const chartUrl= String(payload.chartUrl  ?? payload.c ?? "");
+    const raw     = payload.raw ?? payload.r ?? null;
+
+    // Start PDF
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${name}"`);
+
+    const doc = new PDFDocument({ size: "A4", margin: 48 });
+    doc.pipe(res);
+
+    // Title
+    doc.font("Helvetica-Bold").fontSize(18).text(title);
+    doc.moveDown(0.5);
+
+    // Intro
+    if (intro) {
+      doc.font("Helvetica").fontSize(11).text(intro);
+      doc.moveDown(0.5);
+    }
+
+    // Headline
+    if (headline) {
+      doc.font("Helvetica-Bold").fontSize(14).text(headline);
+      doc.moveDown(0.4);
+    }
+
+    // Chart (if available)
+    if (chartUrl) {
+      const imgBuf = await fetchImageBuffer(chartUrl);
+      if (imgBuf) {
+        doc.image(imgBuf, { fit: [440, 280], align: "center" });
+        doc.moveDown(0.4);
+      }
+    }
+
+    // How this tends to show up
+    if (how) {
+      doc.font("Helvetica-Bold").fontSize(12).text("How this tends to show up");
+      doc.moveDown(0.15);
+      doc.font("Helvetica").fontSize(11).text(how);
+      doc.moveDown(0.4);
+    }
+
+    // Where the journey points (render bullets if user supplied them with "• ")
+    if (journey) {
+      doc.font("Helvetica-Bold").fontSize(12).text("Where the journey points");
+      doc.moveDown(0.15);
+      doc.font("Helvetica").fontSize(11);
+      const lines = journey.split("\n").filter(Boolean);
+      for (const ln of lines) doc.text(sanitize(ln));
+      doc.moveDown(0.4);
+    }
+
+    // Themes
+    if (themes) {
+      doc.font("Helvetica-Bold").fontSize(12).text("Themes that kept popping up");
+      doc.moveDown(0.15);
+      doc.font("Helvetica").fontSize(11);
+      const tlines = themes.split("\n").filter(Boolean);
+      for (const ln of tlines) doc.text(sanitize(ln));
+      doc.moveDown(0.4);
+    }
+
+    // Raw data
+    if (raw) {
+      doc.font("Helvetica-Bold").fontSize(12).text("Raw data");
+      doc.moveDown(0.15);
+      doc.font("Helvetica").fontSize(10);
+      if (raw.sequence) doc.text(`sequence: ${sanitize(raw.sequence)}`);
+      if (raw.counts)   doc.text(`counts:   ${sanitize(typeof raw.counts === "string" ? raw.counts : JSON.stringify(raw.counts))}`);
+      if (raw.perQuestion) {
+        if (Array.isArray(raw.perQuestion)) {
+          for (const row of raw.perQuestion) {
+            doc.text(sanitize(JSON.stringify(row)));
+          }
+        } else {
+          doc.text(sanitize(raw.perQuestion));
+        }
+      }
+    }
+
+    doc.end();
+  } catch (err) {
+    res.status(500).send("PDF generation error");
+  }
+};
