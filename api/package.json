@@ -1,0 +1,11 @@
+{
+  "name": "ctrl-export-service",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pdfkit": "^0.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
