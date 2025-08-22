@@ -1,14 +1,25 @@
-// /api/pdf.js — CTRL Snapshot PDF (keeps same interface as your working file)
-// ESM module (package.json has "type": "module")
+// /api/pdf.js — CTRL Snapshot (enhanced) — Node/Serverless on Vercel (ESM)
 import PDFDocument from 'pdfkit';
 
-// ---------- Helpers (unchanged style) ----------
+// ---------- Brand tokens (adjust once and reuse) ----------
+const BRAND = {
+  // CTRL Plum family (neutral, not "good/bad")
+  plum500: '#7348C7',
+  plum300: '#9D7BE0',
+  plum100: '#E9E1FB',
+  ink900:  '#2B2737',
+  ink600:  '#4A4458',
+  ink400:  '#6E6780',
+  line:    '#E8E6EF',
+};
+
+// ---------- Text helpers ----------
 function squash(s) {
   return String(s ?? '')
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip non-ASCII (emoji, arrows, etc.)
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 function toLines(v) {
   if (Array.isArray(v)) return v.map(squash).filter(Boolean);
@@ -20,195 +31,124 @@ function countsToLine(counts) {
   return `C:${c}  T:${t}  R:${r}  L:${l}`;
 }
 
-// ---------- Brand tokens (single-hue CTRL palette) ----------
-const BRAND = {
-  primary: '#B3478F',     // plum-magenta
-  dark:    '#4B1B3F',     // deep plum (titles)
-  tint1:   '#F7DDF0',     // very light background
-  tint2:   '#F2C5E6',     // chip/panel tint
-  tint3:   '#E7A6D6',     // borders
-  grey:    '#6B6B6B',     // secondary text
-  line:    '#E8E8E8',     // dividers / chart rings
-};
-
-// ---------- Small drawing helpers ----------
-function h1(doc, text) {
-  doc.fillColor(BRAND.dark).font('Helvetica-Bold').fontSize(18).text(squash(text));
+// ---------- Tiny drawing helpers ----------
+function hRule(doc, x, y, w, color = BRAND.line) {
+  doc.save().lineWidth(1).strokeColor(color).moveTo(x, y).lineTo(x + w, y).stroke().restore();
 }
-function h2(doc, text) {
-  doc.fillColor(BRAND.dark).font('Helvetica-Bold').fontSize(13).text(squash(text));
-}
-function body(doc, text, size = 11, color = BRAND.dark) {
-  doc.fillColor(color).font('Helvetica').fontSize(size).text(squash(text));
-}
-function bulletList(doc, lines, size = 11) {
-  if (!Array.isArray(lines) || !lines.length) return;
-  doc.font('Helvetica').fontSize(size).fillColor(BRAND.dark);
-  for (const line of lines) doc.text('• ' + squash(line));
-}
-function divider(doc, vspace = 0.8) {
-  doc.moveDown(vspace);
-  const x1 = doc.page.margins.left;
-  const x2 = doc.page.width - doc.page.margins.right;
-  const y = doc.y;
-  doc.save().moveTo(x1, y).lineTo(x2, y).lineWidth(0.75).strokeColor(BRAND.line).stroke().restore();
-  doc.moveDown(0.6);
-}
-function chip(doc, text) {
-  const padX = 8, padY = 4;
-  const x = doc.x, y = doc.y;
-  const w = doc.widthOfString(squash(text)) + padX * 2;
-  const h = doc.currentLineHeight() + padY * 2;
+function label(doc, x, y, text) {
   doc.save()
-    .roundedRect(x - 1, y - 2, w + 2, h + 4, 6)
-    .fillColor(BRAND.tint1)
-    .strokeColor(BRAND.tint3)
-    .lineWidth(1)
-    .fillAndStroke();
-  doc.fillColor(BRAND.dark).font('Helvetica-Bold').fontSize(10).text(squash(text), x + padX, y + padY);
-  doc.restore();
-  doc.moveDown(1.0);
+    .fillColor(BRAND.plum500)
+    .font('Helvetica-Bold').fontSize(9)
+    .text(squash(text).toUpperCase(), x, y)
+    .restore();
 }
-function sequenceRibbon(doc, seq, x, y, width) {
-  const N = Math.min(5, seq.length || 5);
-  const gap = width / (N - 1 || 1);
-  const r = 5;
-  doc.save();
-  doc.strokeColor(BRAND.line).lineWidth(1);
-  for (let i = 0; i < N - 1; i++) {
-    doc.moveTo(x + i * gap, y).lineTo(x + (i + 1) * gap, y);
-  }
-  doc.stroke();
-  for (let i = 0; i < N; i++) {
-    const cx = x + i * gap;
-    doc.circle(cx, y, r).fillColor(BRAND.primary).fill();
-    doc.font('Helvetica').fontSize(8).fillColor(BRAND.grey)
-      .text(String(seq[i] ?? '').toUpperCase(), cx - 3, y + 7, { width: 6, align: 'center' });
-  }
-  doc.restore();
+function sectionTitle(doc, x, y, text) {
+  doc.save()
+    .fillColor(BRAND.ink900)
+    .font('Helvetica-Bold').fontSize(13)
+    .text(squash(text), x, y)
+    .restore();
 }
-function directionCard(doc, label, meaning, x, y, w, h) {
-  // Card
-  doc.save();
-  doc.roundedRect(x, y, w, h, 8).fillColor('#FFF').strokeColor(BRAND.tint3).lineWidth(1).fillAndStroke();
-  doc.fillColor(BRAND.dark).font('Helvetica-Bold').fontSize(12).text('Direction of travel', x + 12, y + 12, { width: w - 24 });
-
-  // Arrow
-  const arrowBaseX = x + 18, arrowY = y + 50;
-  doc.save().lineWidth(3).strokeColor(BRAND.primary);
-  if (/Up|↗|upward/i.test(label || '')) {
-    doc.moveTo(arrowBaseX, arrowY + 12).lineTo(arrowBaseX + 24, arrowY - 10).stroke();
-    doc.moveTo(arrowBaseX + 24, arrowY - 10).lineTo(arrowBaseX + 24, arrowY - 1).stroke();
-    doc.moveTo(arrowBaseX + 24, arrowY - 10).lineTo(arrowBaseX + 15, arrowY - 10).stroke();
-  } else if (/Down|↘|down/i.test(label || '')) {
-    doc.moveTo(arrowBaseX, arrowY - 8).lineTo(arrowBaseX + 24, arrowY + 14).stroke();
-    doc.moveTo(arrowBaseX + 24, arrowY + 14).lineTo(arrowBaseX + 24, arrowY + 5).stroke();
-    doc.moveTo(arrowBaseX + 24, arrowY + 14).lineTo(arrowBaseX + 15, arrowY + 14).stroke();
-  } else {
-    doc.moveTo(arrowBaseX, arrowY + 2).lineTo(arrowBaseX + 28, arrowY + 2).stroke();
-    doc.moveTo(arrowBaseX + 28, arrowY + 2).lineTo(arrowBaseX + 22, arrowY - 4).stroke();
-    doc.moveTo(arrowBaseX + 28, arrowY + 2).lineTo(arrowBaseX + 22, arrowY + 8).stroke();
+function body(doc, x, y, text, size = 10.5, color = BRAND.ink600, w = 0) {
+  doc.save()
+    .fillColor(color)
+    .font('Helvetica').fontSize(size)
+    .text(squash(text), x, y, { width: w || undefined })
+    .restore();
+}
+function bulletList(doc, x, y, lines, opts = {}) {
+  const { size = 10.5, gap = 4, color = BRAND.ink600, width = 0 } = opts;
+  let cy = y;
+  doc.save().fillColor(color).font('Helvetica').fontSize(size);
+  for (const line of lines) {
+    doc.circle(x + 2, cy + 5, 1.6).fill(color).fillColor(color);
+    doc.text(squash(line), x + 10, cy - 2, { width: width || undefined });
+    cy += doc.currentLineHeight() + gap;
   }
   doc.restore();
-
-  // Label + meaning
-  doc.font('Helvetica-Bold').fontSize(11).fillColor(BRAND.dark)
-    .text(squash(label || 'Steady'), x + 52, y + 38, { width: w - 62 });
-  doc.font('Helvetica').fontSize(10).fillColor(BRAND.dark)
-    .text(squash(meaning || ''), x + 12, y + 72, { width: w - 24 });
+  return cy;
+}
+function chip(doc, x, y, text, fg = '#fff', bg = BRAND.plum500, padX = 8, padY = 4) {
+  const t = squash(text);
+  doc.save().font('Helvetica-Bold').fontSize(9);
+  const w = doc.widthOfString(t) + padX * 2;
+  const h = doc.currentLineHeight() + padY * 2;
+  doc.roundedRect(x, y, w, h, 6).fill(bg);
+  doc.fillColor(fg).text(t, x + padX, y + padY);
   doc.restore();
+  return { w, h };
 }
 
-// ---------- Sample payload for ?test=1 ----------
-function samplePayload() {
-  const sampleChartSpec = {
-    type: 'radar',
-    data: {
-      labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-      datasets: [{
-        label: 'Frequency',
-        data: [1, 3, 1, 0],
-        fill: true,
-        borderColor: BRAND.primary,
-        borderWidth: 2,
-        backgroundColor: 'rgba(179,71,143,0.18)',
-        pointBackgroundColor: BRAND.primary,
-        pointRadius: 3
-      }]
-    },
-    options: {
-      plugins: {
-        legend: { display: false },
-        datalabels: {
-          display: ctx => (ctx.dataset.data[ctx.dataIndex] > 0),
-          formatter: v => v,
-          align: 'end', anchor: 'end', offset: 6, clip: false,
-          color: BRAND.dark, font: { size: 12, weight: 'bold' }
-        }
-      },
-      scales: {
-        r: {
-          min: 0, max: 5,
-          ticks: { display: true, stepSize: 1, color: BRAND.grey, backdropColor: 'transparent' },
-          grid: { circular: true, color: BRAND.line },
-          angleLines: { display: true, color: BRAND.line },
-          pointLabels: { color: BRAND.dark, font: { size: 12, weight: '600' } }
-        }
-      }
-    }
-  };
-  const chartUrl = 'https://quickchart.io/chart?v=4&plugins=datalabels&c=' +
-                   encodeURIComponent(JSON.stringify(sampleChartSpec));
-
-  return {
-    title: 'CTRL — Your Snapshot',
-    intro: 'A big thank you for answering honestly. Treat this as a starting point — a quick indication of your current awareness across four states. For a fuller view, try the other CTRL paths when you’re ready.',
-    headline: 'You sit mostly in Triggered.',
-    headlineMeaning: 'Feelings and energy arrive fast and show up visibly. Upside: drive. Watch-out: narrow focus or over-defending.',
-    chartUrl,
-    how: "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
-    directionLabel: 'Steady',
-    directionMeaning: 'You started and ended in similar zones — steady overall.',
-    themeLabel: 'Emotion regulation',
-    themeMeaning: 'Settling yourself when feelings spike.',
-    tip1: 'Take one breath and name it: “I’m on edge.”',
-    tip2: 'Choose your gear on purpose: protect, steady, or lead — say it in one line.',
-    journey: [
-      'Most seen: Triggered. Least seen: Lead.',
-      'You started in Triggered and ended in Triggered — a steady line.',
-      'A mix of moves without a single rhythm.',
-      'Switching: Two switches — moderate flexibility.',
-      'Early vs late: early and late looked similar overall.'
-    ],
-    themesExplainer: [
-      'emotion regulation — Settling yourself when feelings spike.',
-      'social navigation — Reading the room and adjusting to people and context.'
-    ],
-    raw: {
-      sequence: 'T T C R T',
-      counts: { C: 1, T: 3, R: 1, L: 0 },
-      perQuestion: [
-        { q: 'Q1', state: 'T', themes: ['social_navigation'] },
-        { q: 'Q2', state: 'T', themes: ['stress_awareness'] },
-        { q: 'Q3', state: 'C', themes: ['feedback_handling'] },
-        { q: 'Q4', state: 'R', themes: ['confidence_resilience'] },
-        { q: 'Q5', state: 'T', themes: ['intent_awareness'] },
-      ],
-    },
-  };
-}
-
-// ---------- Handler (keeps same parsing as your working code) ----------
+// ---------- Main handler ----------
 export default async function handler(req, res) {
   try {
-    // 1) Parse query exactly like the working version
+    // Parse URL and payload
     const url = new URL(req.url, 'http://localhost');
     const hasTest = url.searchParams.has('test');
     const b64 = url.searchParams.get('data');
 
     let payload;
     if (hasTest && !b64) {
-      payload = samplePayload();
+      // Smoke-test payload (no Botpress needed)
+      const sampleChartSpec = {
+        type: 'radar',
+        data: {
+          labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
+          datasets: [{ label: 'Frequency', data: [1, 3, 1, 0], fill: true }],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            r: {
+              min: 0, max: 5,
+              ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
+              grid: { circular: true },
+              angleLines: { display: true },
+              pointLabels: { color: '#4A4458', font: { size: 12 } },
+            },
+          },
+        },
+      };
+      const chartUrl = 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(sampleChartSpec));
+      payload = {
+        title: 'CTRL — Your Snapshot',
+        intro: 'A big thank you for answering honestly. Treat this as a starting point — a quick indication of your current awareness across four states. For a fuller view, try the other CTRL paths when you’re ready.',
+        headline: 'You sit mostly in Triggered.',
+        how: "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
+        chartUrl,
+        directionLabel: 'Steady',
+        directionMeaning: 'You started and ended in similar zones — steady overall.',
+        themeLabel: 'Emotion regulation',
+        themeMeaning: 'Settling yourself when feelings spike.',
+        tip1: 'Take one breath and name it: “I’m on edge.”',
+        tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
+        journey: [
+          'Direction: Steady',
+          'You touched three states: you can shift when needed; a brief pause helps you choose on purpose.',
+          'Least seen: Lead. Guiding wasn’t in focus; offer a simple next step or summary when it helps the group.',
+          'Pattern: Varied responses without one rhythm.',
+          'Switching: Three switches — high reactivity or agility; use a pause to make switches intentional. Longest run: Triggered × 2.',
+          'Resilience: One upward recovery — evidence you can reset.',
+          'Retreat: One slip — name it and reset.',
+          'Early vs late: clearly steadier later on.',
+        ],
+        themesExplainer: [
+          'Emotion regulation — Settling yourself when feelings spike.',
+          'Social navigation — Reading the room and adjusting to people and context.',
+          'Awareness of impact — Noticing how your words and actions land.',
+        ],
+        raw: {
+          sequence: 'T T C R T',
+          counts: { C: 1, T: 3, R: 1, L: 0 },
+          perQuestion: [
+            { q: 'Q1', state: 'T', themes: ['social_navigation', 'awareness_impact', 'emotion_regulation'] },
+            { q: 'Q2', state: 'T', themes: ['stress_awareness', 'emotion_regulation', 'confidence_resilience'] },
+            { q: 'Q3', state: 'C', themes: ['feedback_handling', 'awareness_impact', 'emotion_regulation'] },
+            { q: 'Q4', state: 'R', themes: ['feedback_handling', 'confidence_resilience', 'intent_awareness'] },
+            { q: 'Q5', state: 'T', themes: ['social_navigation', 'boundary_awareness', 'awareness_intent'] },
+          ],
+        },
+      };
     } else {
       if (!b64) { res.status(400).send('Missing data'); return; }
       try {
@@ -217,43 +157,44 @@ export default async function handler(req, res) {
         res.status(400).send('Invalid data'); return;
       }
     }
-    if (!payload || typeof payload !== 'object') {
-      res.status(400).send('Invalid data'); return;
-    }
 
-    // 2) Pull fields (with safe defaults)
+    // Pull fields with safe defaults
     const name = String(url.searchParams.get('name') || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
-    const title            = squash(payload.title ?? 'CTRL — Snapshot');
-    const intro            = squash(payload.intro ?? '');
-    const headline         = squash(payload.headline ?? '');
-    const headlineMeaning  = squash(payload.headlineMeaning ?? '');
-    const how              = squash(payload.how ?? '');
-    const chartUrl         = String(payload.chartUrl || '');
-    const directionLabel   = squash(payload.directionLabel ?? 'Steady');
+    const title    = squash(payload.title   ?? 'CTRL — Snapshot');
+    const intro    = squash(payload.intro   ?? '');
+    const headline = squash(payload.headline ?? '');
+    const how      = squash(payload.how     ?? '');
+    const chartUrl = String(payload.chartUrl || '');
+
+    // Optional richer fields
+    const directionLabel   = squash(payload.directionLabel   ?? '');
     const directionMeaning = squash(payload.directionMeaning ?? '');
-    const themeLabel       = squash(payload.themeLabel ?? '');
-    const themeMeaning     = squash(payload.themeMeaning ?? '');
+    const themeLabel       = squash(payload.themeLabel       ?? '');
+    const themeMeaning     = squash(payload.themeMeaning     ?? '');
     const tip1             = squash(payload.tip1 ?? '');
     const tip2             = squash(payload.tip2 ?? '');
+    const tipsArr          = Array.isArray(payload.tips) ? payload.tips.map(squash) : [tip1, tip2].filter(Boolean);
 
+    // Lists
     const journeyLines = toLines(payload.journey);
     const themeLines   = toLines(payload.themesExplainer);
 
+    // Raw
     const raw = payload.raw || {};
     const rawSequence = squash(raw.sequence ?? '');
-    const rawCounts   = typeof raw.counts === 'string' ? squash(raw.counts) : countsToLine(raw.counts);
+    const rawCounts   = countsToLine(raw.counts);
     const rawPerQ     = Array.isArray(raw.perQuestion) ? raw.perQuestion : [];
 
-    // 3) Fetch chart image (works for QuickChart)
+    // Chart image
     let chartBuf = null;
     if (chartUrl) {
       try {
         const r = await fetch(chartUrl);
         if (r.ok) chartBuf = Buffer.from(await r.arrayBuffer());
-      } catch { /* ignore chart fetch errors */ }
+      } catch { /* ignore chart errors */ }
     }
 
-    // 4) Build PDF (2 pages)
+    // ---------- Build PDF ----------
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.setHeader('Cache-Control', 'no-store');
@@ -261,96 +202,122 @@ export default async function handler(req, res) {
     const doc = new PDFDocument({ size: 'A4', margin: 40 });
     doc.pipe(res);
 
-    const headerH = 28;
-    const pageW = doc.page.width;
-    const ML = doc.page.margins.left, MR = doc.page.margins.right;
+    // PAGE 1 — Snapshot
+    const W = doc.page.width, H = doc.page.height, M = doc.page.margins.left;
+    const colGutter = 22;
+    const colW = (W - M - doc.page.margins.right - colGutter) / 2;
 
-    // Page 1 header stripe
-    doc.save().rect(0, 0, pageW, headerH).fill(BRAND.primary).restore();
-    doc.fillColor('#FFF').font('Helvetica-Bold').fontSize(11).text('CTRL Snapshot', ML, 8);
+    // Header label
+    label(doc, M, 36, 'CTRL Snapshot');
 
-    // Title & intro
-    doc.y = headerH + 18;
-    h1(doc, title);
-    if (intro) { doc.moveDown(0.4); body(doc, intro); }
-    divider(doc);
+    // Headline
+    doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(18).text(title, M, 54);
 
-    // Headline & meaning
-    if (headline) { h2(doc, headline); }
-    if (headlineMeaning) body(doc, headlineMeaning);
-    doc.moveDown(0.6);
-
-    // Two columns (radar left / direction right)
-    const colGap = 20;
-    const colW = (pageW - ML - MR - colGap);
-    const leftW = Math.floor(colW * 0.55);
-    const rightW = colW - leftW;
-    const leftX = ML, rightX = ML + leftW + colGap;
-    const colTop = doc.y;
-
-    // Left: radar + sequence ribbon
-    if (chartBuf) {
-      const imgW = Math.min(260, leftW);
-      doc.image(chartBuf, leftX, colTop, { fit: [imgW, imgW] });
-      const seq = (rawSequence || '').split(/\s+/).filter(Boolean);
-      const ribY = colTop + imgW + 24;
-      sequenceRibbon(doc, seq, leftX + 6, ribY, imgW - 12);
-      doc.y = ribY + 28;
-    } else {
-      doc.rect(leftX, colTop, leftW, 160).strokeColor(BRAND.line).stroke();
-      doc.y = colTop + 170;
+    // Sub intro
+    if (intro) {
+      body(doc, M, 80, intro, 10.5, BRAND.ink600, colW);
     }
 
-    // Right: direction card, theme chip, and "how"
-    directionCard(doc, directionLabel, directionMeaning, rightX, colTop, rightW, 120);
-    doc.y = colTop + 130;
-    if (themeLabel) chip(doc, `${themeLabel}${themeMeaning ? ' — ' + themeMeaning : ''}`);
-    if (how) { h2(doc, 'How this tends to show up'); body(doc, how); }
+    // Two columns
+    let leftTop = 130;
+    let rightTop = 110;
 
-    // Clear below the tallest column
-    doc.y = Math.max(doc.y, colTop + 240) + 8;
-    divider(doc);
-
-    // Two tiny tips
-    h2(doc, 'Two tiny tips');
-    const tips = [tip1, tip2].filter(Boolean);
-    if (tips.length) bulletList(doc, tips);
-    else body(doc, 'Pick one breath, one line, or one boundary. Keep it tiny.');
-
-    // ---- Page 2: Signals
-    doc.addPage();
-    doc.save().rect(0, 0, pageW, headerH).fill(BRAND.primary).restore();
-    doc.fillColor('#FFF').font('Helvetica-Bold').fontSize(11).text('CTRL Snapshot — signals', ML, 8);
-    doc.y = headerH + 18;
-
-    h1(doc, 'More signals from your five moments');
-    body(doc, 'These are descriptive, not a score. Use them as pointers for awareness.');
-    divider(doc);
-
-    h2(doc, 'What the pattern suggests');
-    bulletList(doc, journeyLines);
-    divider(doc);
-
-    if (themeLines.length) {
-      h2(doc, 'Themes that kept showing up');
-      bulletList(doc, themeLines);
-      divider(doc);
+    // Left: headline state & "how"
+    if (headline) {
+      doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(15).text(headline, M, leftTop, { width: colW });
+      leftTop = doc.y + 8;
     }
 
-    h2(doc, 'Raw data (for reference)');
-    if (rawSequence) body(doc, 'Sequence: ' + rawSequence, 10, BRAND.grey);
-    if (rawCounts)   body(doc, 'Counts: ' + rawCounts, 10, BRAND.grey);
-    if (Array.isArray(rawPerQ) && rawPerQ.length) {
-      doc.moveDown(0.2);
-      for (const item of rawPerQ.slice(0, 5)) {
-        const t = Array.isArray(item?.themes) && item.themes.length ? ` — themes: ${item.themes.join(', ')}` : '';
-        body(doc, `${squash(item?.q || '')}: ${squash(item?.state || '')}${t}`, 10, BRAND.grey);
+    if (directionLabel) {
+      const chipDims = chip(doc, M, leftTop, `Direction: ${directionLabel}`);
+      leftTop += chipDims.h + 8;
+      if (directionMeaning) {
+        body(doc, M, leftTop, directionMeaning, 10.5, BRAND.ink600, colW);
+        leftTop = doc.y + 10;
       }
     }
 
-    divider(doc);
-    h2(doc, 'A next action');
-    body(doc, 'Choose one tiny thing you will try this week. Keep it under 60 seconds and repeat it once a day.', 11);
+    if (how) {
+      sectionTitle(doc, M, leftTop, 'How this tends to show up');
+      leftTop += 18;
+      body(doc, M, leftTop, how, 10.5, BRAND.ink600, colW);
+      leftTop = doc.y + 14;
+    }
+
+    if (themeLabel || themeMeaning) {
+      sectionTitle(doc, M, leftTop, 'Theme in focus');
+      leftTop += 18;
+      if (themeLabel) doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(11).text(themeLabel, M, leftTop, { width: colW });
+      if (themeMeaning) body(doc, M, doc.y + 2, themeMeaning, 10.5, BRAND.ink600, colW);
+      leftTop = doc.y + 10;
+    }
+
+    if (tipsArr.length) {
+      sectionTitle(doc, M, leftTop, 'Two tiny tips');
+      leftTop += 18;
+      leftTop = bulletList(doc, M, leftTop, tipsArr.slice(0, 2), { width: colW });
+      leftTop += 2;
+    }
+
+    // Right column: radar + (optional) sequence chips
+    if (chartBuf) {
+      const box = 360; // image box
+      doc.save()
+        .rect(M + colW + colGutter, rightTop, colW, box).strokeColor(BRAND.line).lineWidth(0.5).stroke()
+        .restore();
+
+      const imgW = Math.min(colW - 20, box - 20);
+      doc.image(chartBuf, M + colW + colGutter + (colW - imgW) / 2, rightTop + 10, { width: imgW });
+      rightTop += box + 12;
+    }
+
+    // A light divider
+    hRule(doc, M, Math.max(leftTop, rightTop) + 10, W - M * 2);
+
+    // PAGE 2 — Signals
+    doc.addPage();
+
+    label(doc, M, 36, 'CTRL Snapshot — signals');
+    sectionTitle(doc, M, 54, 'More signals from your five moments');
+    body(doc, M, 74, 'These are descriptive, not a score. Use them as pointers for awareness.', 10.5, BRAND.ink600);
+
+    // What the pattern suggests
+    sectionTitle(doc, M, 110, 'What the pattern suggests');
+    let cy = bulletList(doc, M, 130, journeyLines, { width: W - M * 2 });
+
+    // Themes
+    if (themeLines.length) {
+      cy += 8;
+      sectionTitle(doc, M, cy, 'Themes that kept showing up');
+      cy += 20;
+      cy = bulletList(doc, M, cy, themeLines, { width: W - M * 2 });
+    }
+
+    // Raw data
+    cy += 8;
+    sectionTitle(doc, M, cy, 'Raw data (for reference)');
+    cy += 18;
+    if (rawSequence) body(doc, M, cy, 'Sequence: ' + rawSequence, 10, BRAND.ink600); 
+    if (rawCounts)   body(doc, M, doc.y + 2, 'Counts: ' + rawCounts, 10, BRAND.ink600);
+    if (Array.isArray(rawPerQ) && rawPerQ.length) {
+      cy = doc.y + 6;
+      const lines = rawPerQ.slice(0, 5).map(it => {
+        const th = Array.isArray(it.themes) && it.themes.length ? ` — themes: ${it.themes.join(', ')}` : '';
+        return `${it.q || ''}: ${it.state || ''}${th}`;
+      });
+      cy = bulletList(doc, M, cy, lines, { width: W - M * 2, size: 10 });
+    }
+
+    // Next action (small callout)
+    cy += 10;
+    sectionTitle(doc, M, cy, 'A next action');
+    cy += 16;
+    const call = 'Choose one tiny thing you will try this week. Keep it under 60 seconds and repeat it once a day.';
+    doc.save()
+      .roundedRect(M, cy - 6, W - M * 2, 40, 8).fill(BRAND.plum100)
+      .fillColor(BRAND.ink900).font('Helvetica').fontSize(10.5)
+      .text(call, M + 12, cy, { width: W - M * 2 - 24 })
+      .restore();
 
     doc.end();
   } catch (e) {
