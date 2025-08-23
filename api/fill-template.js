@@ -1,438 +1,320 @@
-// /api/fill-template.js
-// Fills the CTRL Perspective Profile (single page) using pdf-lib.
-// Works with or without a background template at /public/CTRL_Perspective_template.pdf
-// GET params:
-//   - data=<base64 JSON payload>   (from Botpress)
-//   - name=<filename.pdf>          (optional)
-//   - test=1                       (renders a self-contained sample to smoke-test)
-
+// /api/fill-template.js — Fill your visual PDF using the template in /public
+// ESM module (package.json has "type": "module")
+import fs from 'node:fs';
+import path from 'node:path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-// ---------- tiny utils ----------
-const squash = (s) =>
-  String(s ?? '')
+// -------- utilities ----------
+const MAUVE_500 = rgb(0x73/255, 0x48/255, 0xC7/255); // #7348C7
+const MAUVE_050 = rgb(0xF6/255, 0xF2/255, 0xFC/255); // very light background
+const MAUVE_100 = rgb(0xED/255, 0xE7/255, 0xFA/255); // light section box
+const GREY_700  = rgb(0x4A/255, 0x44/255, 0x58/255); // #4A4458
+const GREY_900  = rgb(0x25/255, 0x23/255, 0x2B/255);
+
+function squash(s) {
+  return String(s ?? '')
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
-
-const mm = (n) => (n * 72) / 25.4; // millimetres → PDF points
-
-const HEX = (hex) => {
-  const s = hex.replace('#', '');
-  const r = parseInt(s.substring(0, 2), 16) / 255;
-  const g = parseInt(s.substring(2, 4), 16) / 255;
-  const b = parseInt(s.substring(4, 6), 16) / 255;
-  return rgb(r, g, b);
-};
-
-// Mauve single-hue palette (no good/bad signalling)
-const COLORS = {
-  ink: HEX('#2B2635'),
-  sub: HEX('#4A4458'),
-  accent: HEX('#7348C7'),
-  accentLight: HEX('#9D7BE0'),
-  wash: HEX('#F2EFFA'),
-  box: HEX('#F5F5F7'),
-  line: HEX('#E6E4EC'),
-};
-
-// default sample payload for ?test=1
-function samplePayload(origin) {
-  const chartSpec = {
-    type: 'radar',
-    data: {
-      labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-      datasets: [
-        {
-          label: 'Frequency',
-          data: [1, 3, 1, 0],
-          fill: true,
-          backgroundColor: 'rgba(115,72,199,0.18)',
-          borderColor: '#7348C7',
-          borderWidth: 2,
-          pointRadius: [3, 6, 3, 0],
-          pointBackgroundColor: ['#9D7BE0', '#7348C7', '#9D7BE0', '#9D7BE0'],
-          pointBorderColor: ['#9D7BE0', '#7348C7', '#9D7BE0', '#9D7BE0']
-        },
-        {
-          label: '',
-          data: [0, 3, 0, 0],
-          fill: false,
-          borderWidth: 0,
-          pointRadius: [0, 9, 0, 0],
-          pointStyle: 'rectRot',
-          pointBackgroundColor: '#7348C7',
-          pointBorderColor: '#7348C7'
-        }
-      ]
-    },
-    options: {
-      plugins: { legend: { display: false } },
-      scales: {
-        r: {
-          min: 0, max: 5,
-          ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-          grid: { circular: true },
-          angleLines: { display: true },
-          pointLabels: { color: '#4A4458', font: { size: 12 } }
-        }
-      }
-    }
-  };
-
-  return {
-    title: 'CTRL — Perspective Profile',
-    intro:
-      'A quick snapshot of how your responses clustered across four states. Treat it as orientation, not a verdict.',
-    headline: 'You sit mostly in Triggered.',
-    how:
-      "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
-    directionLabel: 'Steady',
-    directionMeaning: 'You started and ended in similar zones — steady overall.',
-    themeLabel: 'Emotion regulation',
-    themeMeaning: 'Settling yourself when feelings spike.',
-    tip1: 'Take one breath and name it: “I’m on edge.”',
-    tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
-    journey: [
-      'Most seen: Triggered. Least seen: Lead.',
-      'Lead didn’t show up in this snapshot.',
-      'You started in Triggered and ended in Triggered — a steady line.',
-      'You changed state 3 time(s) out of 4; longest run: Triggered × 2.'
-    ],
-    themesExplainer: [
-      'emotion regulation — Settling yourself when feelings spike.',
-      'social navigation — Reading the room and adjusting to people and context.',
-      'awareness of impact — Noticing how your words and actions land.'
-    ],
-    chartUrl:
-      'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(chartSpec)),
-    raw: {
-      sequence: 'T T C R T',
-      counts: { C: 1, T: 3, R: 1, L: 0 }
-    }
-  };
 }
 
-// word-wrap into a box
-function drawWrappedText(page, text, opts) {
-  const {
-    x, y, w, h,
-    font, size = 11,
-    color = COLORS.ink,
-    lineGap = 3,
-    align = 'left'
-  } = opts;
+function toLines(v) {
+  if (Array.isArray(v)) return v.map(squash).filter(Boolean);
+  return String(v ?? '')
+    .split('\n')
+    .map(s => squash(s).trim())
+    .filter(Boolean);
+}
 
-  const words = squash(text).split(/\s+/);
-  const lh = size + lineGap;
-  let cx = x, cy = y;
-  let line = '';
+function countsToLine(counts) {
+  const c = counts?.C ?? 0, t = counts?.T ?? 0, r = counts?.R ?? 0, l = counts?.L ?? 0;
+  return `C:${c}  T:${t}  R:${r}  L:${l}`;
+}
+
+// Simple word-wrapper using font metrics
+function wrapText(text, font, fontSize, maxWidth) {
+  const words = String(text || '').split(/\s+/);
   const lines = [];
+  let line = '';
 
-  for (const word of words) {
-    const test = line ? line + ' ' + word : word;
-    const width = font.widthOfTextAtSize(test, size);
-    if (width <= w) {
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    const width = font.widthOfTextAtSize(test, fontSize);
+    if (width <= maxWidth) {
       line = test;
     } else {
-      lines.push(line);
-      line = word;
+      if (line) lines.push(line);
+      // too-long single word: hard break
+      if (font.widthOfTextAtSize(w, fontSize) > maxWidth) {
+        let cur = '';
+        for (const ch of w) {
+          const t2 = cur + ch;
+          if (font.widthOfTextAtSize(t2, fontSize) <= maxWidth) cur = t2;
+          else { if (cur) lines.push(cur); cur = ch; }
+        }
+        line = cur;
+      } else {
+        line = w;
+      }
     }
   }
   if (line) lines.push(line);
+  return lines;
+}
 
-  let used = 0;
+// Draw a text block, returns new Y top position after the block
+function drawParagraph(page, text, { x, y, width, font, size, color = GREY_900, lineGap = 4 }) {
+  const lines = wrapText(text, font, size, width);
+  let cursorY = y;
   for (const ln of lines) {
-    if (used + lh > h) break;
-    let tx = cx;
-    const lw = font.widthOfTextAtSize(ln, size);
-    if (align === 'center') tx = x + (w - lw) / 2;
-    if (align === 'right') tx = x + (w - lw);
-    page.drawText(ln, { x: tx, y: cy, size, font, color });
-    cy -= lh;
-    used += lh;
+    page.drawText(ln, { x, y: cursorY, size, font, color });
+    cursorY -= (size + lineGap);
   }
+  return cursorY;
 }
 
-// draw a titled box section (light grey background), then body text
-function drawSection(page, fonts, title, body, rect, options = {}) {
-  const { bold, regular } = fonts;
-  const { titleSize = 12, bodySize = 11, pad = 10 } = options;
-  // background box
-  page.drawRectangle({
-    x: rect.x, y: rect.y, width: rect.w, height: rect.h,
-    color: COLORS.box, borderWidth: 0
-  });
-  // title
-  page.drawText(squash(title), {
-    x: rect.x + pad,
-    y: rect.y + rect.h - pad - titleSize,
-    size: titleSize,
-    font: bold,
-    color: COLORS.sub
-  });
-  // body
-  drawWrappedText(page, body, {
-    x: rect.x + pad,
-    y: rect.y + rect.h - pad - titleSize - 6,
-    w: rect.w - pad * 2,
-    h: rect.h - (titleSize + pad * 2 + 6),
-    font: regular,
-    size: bodySize,
-    color: COLORS.ink,
-    lineGap: 3
-  });
+// Rounded box helper
+function drawRoundedRect(page, { x, y, w, h, r = 8, fill, stroke, opacity = 1 }) {
+  // pdf-lib lacks path arcs, but we can fake with rectangles; for simplicity use straight corners here
+  page.drawRectangle({ x, y, width: w, height: h, color: fill, borderColor: stroke, opacity, borderOpacity: opacity, borderWidth: stroke ? 1 : 0 });
 }
 
-// --- convert "top-left" box to pdf-lib coords (origin = bottom-left)
-function fromTop(pageHeight, left, top, width, height) {
-  return { x: left, y: pageHeight - top - height, w: width, h: height };
-}
-
+// ------------- handler -------------
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, 'http://localhost');
-    const wantTest = url.searchParams.get('test') === '1';
-    const name = String(url.searchParams.get('name') || 'ctrl_profile.pdf').replace(/[^\w.\-]+/g, '_');
+    const hasTest = url.searchParams.has('test');
+    const b64 = url.searchParams.get('data');
 
-    // ----- 1) Build payload -----
+    // 1) Load template
+    const templatePath = path.join(process.cwd(), 'public', 'CTRL_Perspective_template.pdf');
+    const templateBytes = fs.readFileSync(templatePath);
+    const pdfDoc = await PDFDocument.load(templateBytes);
+
+    // Fonts
+    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    // 2) Build / parse payload
     let payload;
-    if (wantTest) {
-      const proto = req.headers['x-forwarded-proto'] || 'https';
-      const origin = `${proto}://${req.headers.host}`;
-      payload = samplePayload(origin);
+    if (hasTest && !b64) {
+      const sampleChartSpec = {
+        type: 'radar',
+        data: { labels: ['Concealed','Triggered','Regulated','Lead'], datasets: [{ label: 'Frequency', data: [1,3,1,0], fill: true }] },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: { r: { min:0, max:5, ticks: { display:true, stepSize:1, backdropColor:'rgba(0,0,0,0)' }, grid: { circular:true }, angleLines:{ display:true }, pointLabels:{ color:'#4A4458', font:{ size:12 } } } }
+        }
+      };
+      const chartUrl = 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(sampleChartSpec));
+
+      payload = {
+        title: 'CTRL — Your Snapshot',
+        headline: 'You sit mostly in Triggered.',
+        headlineMeaning: "Feelings and energy arrive fast and show up visibly. Upside: drive. Watch-out: narrow focus or over-defending.",
+        chartUrl,
+        how: "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
+        directionLabel: 'Steady',
+        directionMeaning: 'You started and ended in similar zones — steady overall.',
+        themeLabel: 'Emotion regulation',
+        themeMeaning: 'Settling yourself when feelings spike.',
+        tip1: 'Take one breath and name it: “I’m on edge.”',
+        tip2: 'Choose your gear on purpose: protect, steady, or lead — say it in one line.',
+        journey: [
+          'Most seen: Triggered. Least seen: Lead.',
+          'Lead didn’t show up in this snapshot (not "bad", just not present here).',
+          'You started in Triggered and ended in Triggered — a steady line.',
+          'You changed state 3 time(s) out of 4; longest run: Triggered × 2.'
+        ],
+        raw: {
+          sequence: 'T T C R T',
+          counts: { C:1, T:3, R:1, L:0 }
+        }
+      };
     } else {
-      const b64 = url.searchParams.get('data');
-      if (!b64) {
-        res.statusCode = 400; res.end('Missing data'); return;
-      }
-      try {
-        payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
-      } catch {
-        res.statusCode = 400; res.end('Invalid data'); return;
-      }
+      if (!b64) { res.status(400).send('Missing data'); return; }
+      try { payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); }
+      catch { res.status(400).send('Invalid data'); return; }
     }
 
-    // unpack fields
-    const title = squash(payload.title ?? 'CTRL — Perspective Profile');
-    const intro = squash(payload.intro ?? '');
-    const headline = squash(payload.headline ?? '');
-    const how = squash(payload.how ?? '');
+    // 3) Pull + sanitize fields
+    const title            = squash(payload.title || 'CTRL — Snapshot');
+    const headline         = squash(payload.headline || '');
+    const headlineMeaning  = squash(payload.headlineMeaning || payload.how || '');
+    const directionLabel   = squash(payload.directionLabel || '');
+    const directionMeaning = squash(payload.directionMeaning || '');
+    const themeLabel       = squash(payload.themeLabel || '');
+    const themeMeaning     = squash(payload.themeMeaning || '');
+    const tip1             = squash(payload.tip1 || '');
+    const tip2             = squash(payload.tip2 || '');
+    const journeyLines     = toLines(payload.journey);
+    const chartUrl         = String(payload.chartUrl || '');
+    const rawSeq           = squash(payload?.raw?.sequence || '');
+    const rawCounts        = (typeof payload?.raw?.counts === 'object')
+      ? countsToLine(payload.raw.counts)
+      : squash(payload?.raw?.counts || '');
 
-    const directionLabel = squash(payload.directionLabel ?? '');
-    const directionMeaning = squash(payload.directionMeaning ?? '');
-
-    const themeLabel = squash(payload.themeLabel ?? '');
-    const themeMeaning = squash(payload.themeMeaning ?? '');
-
-    const tip1 = squash(payload.tip1 ?? '');
-    const tip2 = squash(payload.tip2 ?? '');
-
-    const journeyLines = Array.isArray(payload.journey) ? payload.journey.map(squash) : [];
-    const chartUrl = String(payload.chartUrl || '');
-    const rawSeq = squash(payload?.raw?.sequence ?? '');
-    const rawCounts = payload?.raw?.counts ? `C:${payload.raw.counts.C ?? 0}  T:${payload.raw.counts.T ?? 0}  R:${payload.raw.counts.R ?? 0}  L:${payload.raw.counts.L ?? 0}` : '';
-
-    // ----- 2) Load background template (if present) -----
-    const proto = req.headers['x-forwarded-proto'] || 'https';
-    const origin = `${proto}://${req.headers.host}`;
-    const templateUrl = `${origin}/CTRL_Perspective_template.pdf`;
-
-    let tplBytes = null;
-    try {
-      const r = await fetch(templateUrl);
-      if (r.ok) tplBytes = await r.arrayBuffer();
-    } catch (_) { /* ignore */ }
-
-    let pdf;
-    if (tplBytes) {
-      pdf = await PDFDocument.load(tplBytes);
-    } else {
-      pdf = await PDFDocument.create(); // blank fallback
-      pdf.addPage([mm(210), mm(297)]);  // A4
-    }
-
-    const page = pdf.getPage(0);
-    const { width: pw, height: ph } = page.getSize();
-
-    // ----- 3) Fonts -----
-    const fontRegular = await pdf.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-    const FONTS = { regular: fontRegular, bold: fontBold };
-
-    // ----- 4) Chart fetch (big) -----
-    let chartImg = null;
+    // 4) Fetch chart image (bigger)
+    let chartImage;
     if (chartUrl) {
       try {
         const r = await fetch(chartUrl);
         if (r.ok) {
-          const buf = await r.arrayBuffer();
+          const arr = await r.arrayBuffer();
           // QuickChart returns PNG by default
-          try { chartImg = await pdf.embedPng(buf); }
-          catch { /* some charts might be jpeg */ chartImg = await pdf.embedJpg(buf); }
+          chartImage = await pdfDoc.embedPng(arr);
         }
-      } catch (_) { /* ignore */ }
+      } catch { /* ignore chart failure */ }
     }
 
-    // ----- 5) Layout (adjust these numbers to line up with your template) -----
-    // All coordinates are "from top-left" for easier thinking,
-    // then converted to pdf-lib's bottom-left origin via fromTop().
+    // 5) Layout on first page (ignoring template’s built-in labels; we draw our own)
+    const page = pdfDoc.getPage(0);
+    const { width: PW, height: PH } = page.getSize();
 
-    // Header & intro (left column)
-    const R_TITLE   = fromTop(ph, mm(18),  mm(16), mm(120), mm(9));
-    const R_INTRO   = fromTop(ph, mm(18),  mm(28), mm(120), mm(23));
+    const margin = 44;
+    let y = PH - margin;
 
-    // Headline & how (left column)
-    const R_HEAD    = fromTop(ph, mm(18),  mm(55), mm(120), mm(12));
-    const R_HOW     = fromTop(ph, mm(18),  mm(69), mm(120), mm(26));
+    // Title row
+    page.drawText('CTRL — Perspective Profile', {
+      x: margin, y, size: 14, font: fontBold, color: MAUVE_500
+    });
+    y -= 24;
 
-    // Big chart (right column)
-    const R_CHART   = fromTop(ph, mm(145), mm(24), mm(60),  mm(60)); // ~60mm square
+    // Section 1: Current state (boxed)
+    const secPad = 12;
+    let boxH = 90;
+    drawRoundedRect(page, { x: margin, y: y - boxH, w: PW - margin*2, h: boxH, fill: MAUVE_100, stroke: null, opacity: 1 });
 
-    // Journey bullets (full width)
-    const R_JOURNEY = fromTop(ph, mm(18),  mm(100), mm(187), mm(28));
+    let cursor = y - secPad;
+    page.drawText('Your current state is', { x: margin + secPad, y: cursor, size: 10, font: fontBold, color: GREY_700 });
+    cursor -= 18;
 
-    // Middle boxes: Direction (left), Theme (right)
-    const R_DIR     = fromTop(ph, mm(18),  mm(132), mm(90),  mm(32));
-    const R_THEME   = fromTop(ph, mm(115), mm(132), mm(90),  mm(32));
-
-    // Bottom tip boxes (prominent)
-    const R_TIP1    = fromTop(ph, mm(18),  mm(168), mm(90),  mm(36));
-    const R_TIP2    = fromTop(ph, mm(115), mm(168), mm(90),  mm(36));
-
-    // Footer raw
-    const R_FOOT    = fromTop(ph, mm(18),  mm(207), mm(187), mm(8));
-
-    // ----- 6) Draw content -----
-
-    // Title
-    page.drawText(title, {
-      x: R_TITLE.x,
-      y: R_TITLE.y + R_TITLE.h - 12,
-      size: 14,
-      font: fontBold,
-      color: COLORS.accent
+    cursor = drawParagraph(page, headline, {
+      x: margin + secPad, y: cursor, width: PW - (margin + secPad)*2,
+      font: fontBold, size: 16, color: GREY_900, lineGap: 4
     });
 
-    // Intro
-    drawWrappedText(page, intro, {
-      x: R_INTRO.x, y: R_INTRO.y + R_INTRO.h - 11,
-      w: R_INTRO.w, h: R_INTRO.h,
-      font: fontRegular, size: 10.5, color: COLORS.sub, lineGap: 3
+    cursor -= 6;
+    cursor = drawParagraph(page, headlineMeaning, {
+      x: margin + secPad, y: cursor, width: PW - (margin + secPad)*2,
+      font: fontRegular, size: 11, color: GREY_900, lineGap: 4
     });
 
-    // Headline (larger)
-    drawWrappedText(page, headline, {
-      x: R_HEAD.x, y: R_HEAD.y + R_HEAD.h - 14,
-      w: R_HEAD.w, h: R_HEAD.h,
-      font: fontBold, size: 13, color: COLORS.ink, lineGap: 2
-    });
+    y = y - boxH - 18;
 
-    // How it tends to show up
-    drawWrappedText(page, how, {
-      x: R_HOW.x, y: R_HOW.y + R_HOW.h - 11,
-      w: R_HOW.w, h: R_HOW.h,
-      font: fontRegular, size: 11, color: COLORS.ink, lineGap: 3
-    });
+    // Section 2: Chart (bigger)
+    if (chartImage) {
+      const chartW = Math.min(380, PW - margin*2);
+      const chartH = chartW; // square
+      page.drawText('Your chart looks like this', { x: margin, y, size: 10, font: fontBold, color: GREY_700 });
+      y -= 12 + chartH;
 
-    // Chart
-    if (chartImg) {
-      const iw = R_CHART.w, ih = R_CHART.h;
-      page.drawImage(chartImg, { x: R_CHART.x, y: R_CHART.y, width: iw, height: ih });
-    } else {
-      // placeholder
-      page.drawRectangle({
-        x: R_CHART.x, y: R_CHART.y, width: R_CHART.w, height: R_CHART.h,
-        borderColor: COLORS.line, borderWidth: 1
+      page.drawImage(chartImage, {
+        x: margin, y,
+        width: chartW, height: chartH
       });
-      page.drawText('chart unavailable', {
-        x: R_CHART.x + 8, y: R_CHART.y + R_CHART.h / 2 - 5, size: 9,
-        font: fontRegular, color: COLORS.sub
+      y -= 24;
+    }
+
+    // Section 3: Pattern + theme (boxed)
+    boxH = 140;
+    drawRoundedRect(page, { x: margin, y: y - boxH, w: PW - margin*2, h: boxH, fill: MAUVE_100 });
+
+    cursor = y - secPad;
+    page.drawText('What the pattern suggests', { x: margin + secPad, y: cursor, size: 10, font: fontBold, color: GREY_700 });
+    cursor -= 16;
+
+    // Direction
+    if (directionLabel) {
+      cursor = drawParagraph(page, `Direction — ${directionLabel}`, {
+        x: margin + secPad, y: cursor, width: PW - (margin + secPad)*2,
+        font: fontBold, size: 12, color: GREY_900, lineGap: 3
+      });
+      cursor = drawParagraph(page, directionMeaning, {
+        x: margin + secPad, y: cursor - 2, width: PW - (margin + secPad)*2,
+        font: fontRegular, size: 11, color: GREY_900, lineGap: 4
+      });
+      cursor -= 8;
+    }
+
+    // Theme
+    if (themeLabel) {
+      cursor = drawParagraph(page, `Theme — ${themeLabel}`, {
+        x: margin + secPad, y: cursor, width: PW - (margin + secPad)*2,
+        font: fontBold, size: 12, color: GREY_900, lineGap: 3
+      });
+      cursor = drawParagraph(page, themeMeaning, {
+        x: margin + secPad, y: cursor - 2, width: PW - (margin + secPad)*2,
+        font: fontRegular, size: 11, color: GREY_900, lineGap: 4
       });
     }
 
-    // Journey (bullets)
+    y = y - boxH - 18;
+
+    // Section 4: More signals (bullets)
     if (journeyLines.length) {
-      page.drawText('Where the journey points', {
-        x: R_JOURNEY.x, y: R_JOURNEY.y + R_JOURNEY.h - 12,
-        size: 12, font: fontBold, color: COLORS.sub
+      page.drawText('More signals from your five moments', {
+        x: margin, y, size: 10, font: fontBold, color: GREY_700
       });
-
-      const bodyRect = { x: R_JOURNEY.x, y: R_JOURNEY.y, w: R_JOURNEY.w, h: R_JOURNEY.h - 16 };
-      let cursorY = bodyRect.y + bodyRect.h - 11;
-      const lh = 13.5;
-
+      y -= 16;
+      const bulletWidth = PW - margin*2 - 14;
       for (const line of journeyLines) {
-        if (cursorY < bodyRect.y + 4) break;
-        page.drawText('• ' + squash(line), {
-          x: bodyRect.x, y: cursorY, size: 11, font: fontRegular, color: COLORS.ink
-        });
-        cursorY -= lh;
+        // bullet
+        page.drawText('•', { x: margin, y, size: 11, font: fontBold, color: GREY_900 });
+        y = drawParagraph(page, line, {
+          x: margin + 14, y, width: bulletWidth,
+          font: fontRegular, size: 11, color: GREY_900, lineGap: 3
+        }) - 4;
       }
+      y -= 4;
     }
 
-    // Direction box
-    drawSection(
-      page,
-      FONTS,
-      `Direction — ${directionLabel || '—'}`,
-      directionMeaning || '',
-      R_DIR,
-      { titleSize: 12, bodySize: 10.8, pad: 10 }
-    );
-
-    // Theme box
-    drawSection(
-      page,
-      FONTS,
-      `Theme — ${themeLabel || '—'}`,
-      themeMeaning || '',
-      R_THEME,
-      { titleSize: 12, bodySize: 10.8, pad: 10 }
-    );
-
-    // Tip boxes (prominent)
-    drawSection(
-      page,
-      FONTS,
-      'Try this',
-      tip1 || '',
-      R_TIP1,
-      { titleSize: 12, bodySize: 11.2, pad: 12 }
-    );
-    drawSection(
-      page,
-      FONTS,
-      'Try this next time',
-      tip2 || '',
-      R_TIP2,
-      { titleSize: 12, bodySize: 11.2, pad: 12 }
-    );
-
-    // Footer raw
-    const foot = [rawSeq ? `Sequence: ${rawSeq}` : '', rawCounts ? `Counts: ${rawCounts}` : '']
-      .filter(Boolean)
-      .join('   •   ');
-
-    if (foot) {
-      page.drawText(foot, {
-        x: R_FOOT.x, y: R_FOOT.y + 2,
-        size: 9, font: fontRegular, color: COLORS.sub
-      });
+    // Section 5: Raw (small)
+    if (rawSeq || rawCounts) {
+      const rawText = [
+        rawSeq ? `Sequence: ${rawSeq}` : '',
+        rawCounts ? `Counts: ${rawCounts}` : ''
+      ].filter(Boolean).join('   •   ');
+      y = drawParagraph(page, rawText, {
+        x: margin, y, width: PW - margin*2,
+        font: fontRegular, size: 9, color: GREY_700, lineGap: 2
+      }) - 10;
     }
 
-    // ----- 7) send PDF -----
-    const out = await pdf.save();
+    // Section 6: Tips — two prominent boxes at the bottom
+    const tipBoxH = 58;
+    const tipGap  = 14;
+    const tipW = (PW - margin*2 - tipGap) / 2;
+    const tipY = Math.max(60, y - tipBoxH - 10); // don’t collide with footer
+
+    // Left tip: Try this
+    drawRoundedRect(page, { x: margin, y: tipY, w: tipW, h: tipBoxH, fill: MAUVE_100 });
+    page.drawText('Try this', { x: margin + 12, y: tipY + tipBoxH - 18, size: 10, font: fontBold, color: MAUVE_500 });
+    drawParagraph(page, tip1 || 'Take one slow breath before you speak.', {
+      x: margin + 12, y: tipY + tipBoxH - 34, width: tipW - 24,
+      font: fontRegular, size: 11, color: GREY_900, lineGap: 3
+    });
+
+    // Right tip: Try this next time
+    const tipX2 = margin + tipW + tipGap;
+    drawRoundedRect(page, { x: tipX2, y: tipY, w: tipW, h: tipBoxH, fill: MAUVE_100 });
+    page.drawText('Try this next time', { x: tipX2 + 12, y: tipY + tipBoxH - 18, size: 10, font: fontBold, color: MAUVE_500 });
+    drawParagraph(page, tip2 || 'Add a brief check-in between moments.', {
+      x: tipX2 + 12, y: tipY + tipBoxH - 34, width: tipW - 24,
+      font: fontRegular, size: 11, color: GREY_900, lineGap: 3
+    });
+
+    // 6) Output
+    const name = String(url.searchParams.get('name') || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
+    const pdfBytes = await pdfDoc.save();
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.setHeader('Cache-Control', 'no-store');
-    res.statusCode = 200;
-    res.end(Buffer.from(out));
+    res.end(Buffer.from(pdfBytes));
   } catch (e) {
     console.error('[fill-template] error:', e);
-    res.statusCode = 500;
-    res.end('Failed to generate PDF: ' + (e?.message || String(e)));
+    res.status(500).send('Error generating PDF: ' + (e?.message || String(e)));
   }
 }
-
