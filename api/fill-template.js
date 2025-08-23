@@ -102,13 +102,15 @@ export default async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const isTest = url.searchParams.get('test') === '1';
 
-    let data;
-    if (isTest) {
-      data = {
-        // EITHER supply a single state...
-        stateWord: 'Triggered',
-        // ...OR supply two states to trigger the stacked layout:
-        // stateWords: ['Triggered', 'Regulated'],
+let data;
+if (isTest) {
+  data = {
+    // EITHER: single dominant state (one-line headline)
+    // stateWord: 'Triggered',
+
+    // OR: two dominant states (stacked headline)
+    stateWords: ['Triggered', 'Regulated'],
+
 
         directionLabel: 'Steady',
         directionMeaning: 'You started and ended in similar zones - steady overall.',
