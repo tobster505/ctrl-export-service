@@ -284,18 +284,18 @@ export default async function handler(req, res) {
       size: fSize, font: helv, color: rgb(0.36, 0.34, 0.50),
     });
 
-    /* -------------------------------------------------------
-       SECTION 5 — SEND PDF
-       ------------------------------------------------------- */
-    const pdfBytes = await pdfDoc.save();
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="ctrl_profile.pdf"');
-    res.end(Buffer.from(pdfBytes));
+/* -------------------------------------------------------
+   SECTION 5 — SEND PDF
+   ------------------------------------------------------- */
+const pdfBytes = await pdfDoc.save();
+const preview = new URL(req.url, 'http://localhost').searchParams.get('preview') === '1';
 
-  } catch (e) {
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'text/plain');
-    res.end('fill-template error: ' + (e?.message || String(e)));
-  }
+res.statusCode = 200;
+res.setHeader('Content-Type', 'application/pdf');
+// Inline when previewing (opens in browser tab), attachment otherwise (downloads)
+res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="ctrl_profile.pdf"`);
+// Avoid caching while you’re tuning positions
+res.setHeader('Cache-Control', 'no-store');
+
+res.end(Buffer.from(pdfBytes));
 }
