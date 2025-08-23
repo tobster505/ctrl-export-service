@@ -1,18 +1,8 @@
-// Quick environment check for headless Chrome
-export const config = { runtime: 'nodejs20.x' };
+// either delete this line completely...
+export const config = { runtime: 'nodejs' };   // ← if you keep it, it must be exactly 'nodejs'
 
-import chromium from '@sparticuz/chromium';
-
+// ...rest of your diag code
 export default async function handler(req, res) {
-  try {
-    const execPath = await chromium.executablePath();
-    res.status(200).json({
-      node: process.version,
-      headless: chromium.headless,
-      hasExecPath: Boolean(execPath),
-      execPath
-    });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || String(e) });
-  }
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ ok: true, runtime: 'nodejs' }));
 }
