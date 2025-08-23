@@ -182,7 +182,7 @@ export default async function handler(req, res) {
       tip1Body:        { x: 80,  y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
       tip2Header:      { x: 540, y: 515, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
       tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
-      chart:           { x: 90,  y: 245, w: 200, h: 200 },
+      chart:           { x: 110, y: 300, w: 260, h: 260 },
     };
 
     // ----------------- HEADLINE -----------------
