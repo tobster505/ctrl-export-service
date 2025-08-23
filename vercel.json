@@ -1,7 +1,6 @@
 {
   "functions": {
-    "api/pdf-html.js": { "memory": 1024, "maxDuration": 30 },
-    "api/diag.js":     { "memory": 256,  "maxDuration": 10 }
+    "api/fill-template.js": { "memory": 512, "maxDuration": 20 },
+    "api/diag.js": { "memory": 128, "maxDuration": 10 }
   }
 }
-
