@@ -161,7 +161,7 @@ export default async function handler(req, res) {
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
     // radar chart (you can override with URL tuner)
-    chart: { x: 500, y: 700, w: 260, h: 260 },
+    chart: { x: 1050, y: 620, w: 700, h: 400 },
 
     footerY: 20,
   };
