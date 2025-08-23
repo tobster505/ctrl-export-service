@@ -116,7 +116,7 @@ function radarUrl(counts = { C: 0, T: 0, R: 0, L: 0 }) {
 // Adjust here to fine-tune placement.
 const POS = {
   // Big headline word inside “Your current state is …” box (page 1)
-  headlineState: { x: 130, y: 280, w: 520, size: 42, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
+  headlineState: { x: 90, y: 370, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
   // “Direction of travel” (page 1, right of radar)
   directionLabel:   { x: 330, y: 410, w: 230, size: 14, color: rgb(0.2, 0.16, 0.35) },
@@ -209,7 +209,7 @@ export default async function handler(req, res) {
 
     // 5) HEADLINE (just the state word)
     const stateWord = extractState(payload.headline);
-    drawTextBox(page1, helvBold, stateWord, POS.headlineState, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, helvBold, stateWord, POS.headlineState, align: 'center', { maxLines: 1, ellipsis: true });
 
     // 6) DIRECTION (label + meaning)
     if (payload.directionLabel) {
