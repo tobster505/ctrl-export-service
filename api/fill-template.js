@@ -198,7 +198,7 @@ export default async function handler(req, res) {
       tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
       // Radar chart image — defaults; override via URL when tuning
-      chart: { x: 110, y: 300, w: 260, h: 260 },
+      chart: { x: 500, y: 700, w: 260, h: 260 },
 
       // Footer
       footerY: 20,
