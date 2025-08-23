@@ -1,13 +1,14 @@
 // /api/fill-template.js
-// Fills your static template PDF with text + radar image using pdf-lib.
-// Test URLs:
-//  • Smoke PDF:  https://ctrl-export-service.vercel.app/api/fill-template?test=1
-//  • Peek JSON:  https://ctrl-export-service.vercel.app/api/fill-template?test=1&peek=1
+// Fill the static template (public/CTRL_Perspective_template.pdf) using pdf-lib.
+// Test:
+//   • Peek JSON (no PDF):  /api/fill-template?test=1&peek=1
+//   • Debug boxes overlay: /api/fill-template?test=1&debug=1
+//   • Normal smoke PDF:    /api/fill-template?test=1
 
 import { readFile } from 'node:fs/promises';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-// ---------- helpers ----------
+// ---------- utilities ----------
 function squash(s) {
   return String(s ?? '')
     .replace(/[\u2018\u2019]/g, "'")
@@ -29,19 +30,17 @@ function wrapText(text, font, fontSize, maxWidth) {
   return lines;
 }
 
-// Try FS first; if missing, fetch from the deployed public URL.
+// Try reading from FS; if not, fetch via public URL.
 async function getTemplateBytes(req) {
   const debug = { triedFS: false, triedHTTP: false, fsOk: false, httpOk: false, bytes: 0, url: '' };
-  const FS_PATH = 'public/CTRL_Perspective_template.pdf';
-
   try {
     debug.triedFS = true;
-    const buf = await readFile(FS_PATH);
+    const buf = await readFile('public/CTRL_Perspective_template.pdf');
     debug.fsOk = true;
     debug.bytes = buf.byteLength;
     return { buf, debug };
-  } catch {
-    // fall through to HTTP
+  } catch (_) {
+    // fall back to HTTP
   }
   const host =
     (req.headers['x-forwarded-host'] && `https://${req.headers['x-forwarded-host']}`) ||
@@ -60,8 +59,9 @@ async function getTemplateBytes(req) {
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const isTest = url.searchParams.has('test');
-  const peek = url.searchParams.get('peek') === '1';
-  const name = (url.searchParams.get('name') || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
+  const peek   = url.searchParams.get('peek') === '1';
+  const debug  = url.searchParams.get('debug') === '1';
+  const name   = (url.searchParams.get('name') || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
 
   const diag = { stage: 'start' };
 
@@ -87,39 +87,35 @@ export default async function handler(req, res) {
         tip2: 'Choose your gear on purpose — protect, steady, or lead — say it in one line.',
         chartUrl:
           'https://quickchart.io/chart?v=4&c=' +
-          encodeURIComponent(
-            JSON.stringify({
-              type: 'radar',
-              data: {
-                labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-                datasets: [
-                  {
-                    label: 'Frequency',
-                    data: [2, 3, 0, 0],
-                    fill: true,
-                    backgroundColor: 'rgba(115,72,199,0.18)',
-                    borderColor: '#7348C7',
-                    borderWidth: 2,
-                    pointRadius: [3, 6, 0, 0],
-                    pointBackgroundColor: ['#9D7BE0', '#7348C7', '#9D7BE0', '#9D7BE0'],
-                    pointBorderColor:   ['#9D7BE0', '#7348C7', '#9D7BE0', '#9D7BE0'],
-                  },
-                ],
-              },
-              options: {
-                plugins: { legend: { display: false } },
-                scales: {
-                  r: {
-                    min: 0, max: 5,
-                    ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-                    grid: { circular: true },
-                    angleLines: { display: true },
-                    pointLabels: { color: '#4A4458', font: { size: 12 } }
-                  }
+          encodeURIComponent(JSON.stringify({
+            type: 'radar',
+            data: {
+              labels: ['Concealed','Triggered','Regulated','Lead'],
+              datasets: [{
+                label: 'Frequency',
+                data: [2,3,0,0],
+                fill: true,
+                backgroundColor: 'rgba(115,72,199,0.18)',
+                borderColor: '#7348C7',
+                borderWidth: 2,
+                pointRadius: [3,6,0,0],
+                pointBackgroundColor: ['#9D7BE0','#7348C7','#9D7BE0','#9D7BE0'],
+                pointBorderColor:   ['#9D7BE0','#7348C7','#9D7BE0','#9D7BE0'],
+              }]
+            },
+            options: {
+              plugins: { legend: { display:false } },
+              scales: {
+                r: {
+                  min:0, max:5,
+                  ticks: { display:true, stepSize:1, backdropColor:'rgba(0,0,0,0)' },
+                  grid: { circular:true },
+                  angleLines: { display:true },
+                  pointLabels: { color:'#4A4458', font:{ size:12 } }
                 }
               }
-            })
-          ),
+            }
+          }))
       };
     } else {
       const b64 = url.searchParams.get('data');
@@ -131,61 +127,100 @@ export default async function handler(req, res) {
       }
     }
 
-    // ---------- template ----------
-    const { buf: tmplBuf, debug: tmplDebug } = await getTemplateBytes(req);
-    diag.template = tmplDebug;
+    // ---------- load template ----------
+    const { buf: tmplBuf, debug: tmplDbg } = await getTemplateBytes(req);
+    diag.template = tmplDbg;
     diag.stage = 'template-loaded';
 
-    // In peek mode, stop here and show diagnostics
     if (peek) {
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ok: true, diag }));
+      res.setHeader('content-type','application/json');
+      res.end(JSON.stringify({ ok:true, diag }));
       return;
     }
 
     const pdfDoc = await PDFDocument.load(tmplBuf);
     diag.stage = 'pdf-loaded';
-
-    const fontReg = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const page = pdfDoc.getPage(0);
     const pageH = page.getHeight();
+    const fontReg = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold= await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+    // ---------- positions (tweak here) ----------
+    // All positions use { x, top } where "top" is distance from the top edge.
+    // Increase 'top' to move DOWN; decrease to move UP. Increase 'x' to move RIGHT.
     const BOX = {
-      title:           { x: 38,  top: 48,  w: 520, size: 20, bold: true },
-      intro:           { x: 38,  top: 78,  w: 520, size: 11,  lh: 14 },
+      title:           { x: 42,  top: 40,  w: 520, size: 20, bold: true },
+      intro:           { x: 42,  top: 68,  w: 520, size: 11.5, lh: 16 },
 
-      headline:        { x: 38,  top: 128, w: 520, size: 13,  bold: true },
-      how:             { x: 38,  top: 148, w: 520, size: 11,  lh: 14 },
+      headline:        { x: 42,  top: 118, w: 520, size: 13.5, bold: true },
+      how:             { x: 42,  top: 140, w: 520, size: 11.5, lh: 16 },
 
-      radar:           { x: 44,  top: 215, w: 270, h: 270 },
+      radar:           { x: 48,  top: 205, w: 320, h: 320 },  // bigger chart box
 
-      directionTitle:  { x: 330, top: 215, w: 230, size: 12, bold: true },
-      directionBody:   { x: 330, top: 233, w: 230, size: 11, lh: 14 },
-      themeTitle:      { x: 330, top: 273, w: 230, size: 12, bold: true },
-      themeBody:       { x: 330, top: 291, w: 230, size: 11, lh: 14 },
+      directionTitle:  { x: 390, top: 205, w: 180, size: 12.5, bold: true },
+      directionBody:   { x: 390, top: 225, w: 180, size: 11.5, lh: 16 },
+      themeTitle:      { x: 390, top: 270, w: 180, size: 12.5, bold: true },
+      themeBody:       { x: 390, top: 290, w: 180, size: 11.5, lh: 16 },
 
-      patternTitle:    { x: 38,  top: 355, w: 520, size: 12, bold: true },
-      patternLine:     { x: 38,  top: 373, w: 520, size: 11, lh: 14 },
-      patternDetail:   { x: 38,  top: 391, w: 520, size: 11, lh: 14 },
+      patternTitle:    { x: 42,  top: 345, w: 520, size: 12.5, bold: true },
+      patternLine:     { x: 42,  top: 365, w: 520, size: 11.5, lh: 16 },
+      patternDetail:   { x: 42,  top: 385, w: 520, size: 11.5, lh: 16 },
 
-      tip1Title:       { x: 38,  top: 435, w: 360, size: 12.5, bold: true },
-      tip1:            { x: 38,  top: 455, w: 360, size: 12,   lh: 16 },
-      tip2Title:       { x: 418, top: 435, w: 200, size: 12.5, bold: true },
-      tip2:            { x: 418, top: 455, w: 200, size: 12,   lh: 16 },
+      tip1Title:       { x: 42,  top: 435, w: 340, size: 13.5, bold: true },
+      tip1:            { x: 42,  top: 458, w: 340, size: 12.5, lh: 18 },  // roomier lines
+      tip2Title:       { x: 402, top: 435, w: 180, size: 13.5, bold: true },
+      tip2:            { x: 402, top: 458, w: 180, size: 12.5, lh: 18 },
     };
-    const Y = (top) => pageH - top;
-    function drawPara(txt, box, bold = false) {
+    const P = (top) => pageH - top;
+
+    // Draw paragraph inside a box
+    function drawPara(txt, box, useBold = false, color = rgb(0.11,0.10,0.13)) {
       if (!txt) return;
-      const f = bold ? fontBold : fontReg;
-      const size = box.size || 11;
-      const lh = box.lh || size * 1.25;
+      const f = useBold ? fontBold : fontReg;
+      const size = box.size || 11.5;
+      const lh = box.lh || size * 1.35;
       const lines = wrapText(txt, f, size, box.w);
-      let y = Y(box.top);
+      let y = P(box.top);
       for (const line of lines) {
-        page.drawText(line, { x: box.x, y, size, font: f, color: rgb(0.11, 0.1, 0.13) });
+        page.drawText(line, { x: box.x, y, size, font: f, color });
         y -= lh;
       }
+    }
+
+    // Optional: lightly outline boxes for alignment
+    function drawBoxOutline(box, label) {
+      const h = (box.lh || (box.size || 12) * 1.35) * 2.2; // 2 lines worth (approx)
+      page.drawRectangle({
+        x: box.x - 4, y: P(box.top) - h - 2, width: box.w + 8, height: h + 4,
+        borderColor: rgb(0.45,0.38,0.78), borderWidth: 0.8, color: undefined
+      });
+      page.drawText(label, { x: box.x - 3, y: P(box.top) + 3, size: 8, font: fontReg, color: rgb(0.45,0.38,0.78) });
+    }
+
+    // ---------- write content ----------
+    if (debug) {
+      drawBoxOutline(BOX.title,'title');
+      drawBoxOutline(BOX.intro,'intro');
+      drawBoxOutline(BOX.headline,'headline');
+      drawBoxOutline(BOX.how,'how');
+      drawBoxOutline(BOX.directionTitle,'directionTitle');
+      drawBoxOutline(BOX.directionBody,'directionBody');
+      drawBoxOutline(BOX.themeTitle,'themeTitle');
+      drawBoxOutline(BOX.themeBody,'themeBody');
+      drawBoxOutline(BOX.patternTitle,'patternTitle');
+      drawBoxOutline(BOX.patternLine,'patternLine');
+      drawBoxOutline(BOX.patternDetail,'patternDetail');
+      drawBoxOutline(BOX.tip1Title,'tip1Title');
+      drawBoxOutline(BOX.tip1,'tip1');
+      drawBoxOutline(BOX.tip2Title,'tip2Title');
+      drawBoxOutline(BOX.tip2,'tip2');
+      // radar box outline
+      page.drawRectangle({
+        x: BOX.radar.x - 4, y: P(BOX.radar.top) - BOX.radar.h - 4,
+        width: BOX.radar.w + 8, height: BOX.radar.h + 8,
+        borderColor: rgb(0.7,0.65,0.85), borderWidth: 0.8
+      });
+      page.drawText('radar', { x: BOX.radar.x - 3, y: P(BOX.radar.top) + 3, size: 8, font: fontReg, color: rgb(0.7,0.65,0.85) });
     }
 
     drawPara(payload.title, BOX.title, true);
@@ -202,16 +237,15 @@ export default async function handler(req, res) {
     drawPara(payload.patternLine || '', BOX.patternLine);
     drawPara(payload.patternDetail || '', BOX.patternDetail);
 
-    drawPara(payload.tip1Title || 'Try this', BOX.tip1Title, true);
+    drawPara(payload.tip1Title || 'Try this', BOX.tip1Title, true, rgb(0.15,0.12,0.18));
     drawPara(payload.tip1 || '', BOX.tip1);
-    drawPara(payload.tip2Title || 'Try this next time', BOX.tip2Title, true);
+    drawPara(payload.tip2Title || 'Try this next time', BOX.tip2Title, true, rgb(0.15,0.12,0.18));
     drawPara(payload.tip2 || '', BOX.tip2);
 
-    // radar image
+    // ---------- radar image ----------
     if (payload.chartUrl) {
       try {
         const r = await fetch(String(payload.chartUrl));
-        diag.chartFetch = { ok: r.ok, status: r.status };
         if (r.ok) {
           const buf = Buffer.from(await r.arrayBuffer());
           let img;
@@ -220,21 +254,18 @@ export default async function handler(req, res) {
           const s = Math.min(BOX.radar.w / img.width, BOX.radar.h / img.height);
           const w = img.width * s;
           const h = img.height * s;
-          page.drawImage(img, { x: BOX.radar.x, y: Y(BOX.radar.top) - h, width: w, height: h });
+          page.drawImage(img, { x: BOX.radar.x, y: P(BOX.radar.top) - h, width: w, height: h });
         }
-      } catch (e) {
-        diag.chartFetch = { ok: false, error: e?.message || String(e) };
-      }
+      } catch (_) { /* ignore chart fetch error in smoke */ }
     }
 
-    const pdfBytes = await PDFDocument.saveAsBase64 ? await pdfDoc.save() : await pdfDoc.save(); // ensure Node buffer
-    res.setHeader('Content-Type', 'application/pdf');
+    const bytes = await pdfDoc.save();
+    res.setHeader('Content-Type','application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-    res.end(Buffer.from(pdfBytes));
+    res.end(Buffer.from(bytes));
   } catch (e) {
-    // return a readable error (Vercel otherwise hides details)
     res.statusCode = 500;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ ok: false, error: e?.message || String(e), diag }));
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({ ok:false, error: e?.message || String(e), diag }));
   }
 }
