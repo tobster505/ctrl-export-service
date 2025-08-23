@@ -181,7 +181,7 @@ export default async function handler(req, res) {
       // Big headline inside the mauve box
       headlineState: {
         x: 90,         // left margin within the mauve panel
-        y: 345,        // tweak to sit vertically centered in your template
+        y: 425,        // tweak to sit vertically centered in your template
         w: 860,        // wide box so we can center text
         size: 72,
         lineGap: 4,
