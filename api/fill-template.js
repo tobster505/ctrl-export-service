@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 // -----------------------------
 const POS = {
   // Header cluster (top-left block)
-  headlineState:   { x: 120, y: 460, w: 350, lineGap: 18, size: 28, color: rgb(0.18, 0.16, 0.31) },
+  headlineState:   { x: 280, y: 350, w: 500, lineGap: 18, size: 44, color: rgb(0.18, 0.16, 0.31) },
   headlineMeaning: { x: 64, y: 674, w: 300, lineGap: 13, size: 10.5, color: rgb(0.29, 0.27, 0.35) },
 
   // Radar chart area (top-right)
