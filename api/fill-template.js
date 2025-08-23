@@ -161,4 +161,80 @@ export default async function handler(req, res) {
       radar:           { x: 44,  top: 215, w: 270, h: 270 },
 
       directionTitle:  { x: 330, top: 215, w: 230, size: 12, bold: true },
-      directionBody:   { x: 330, top: 233, w: 230, size: 11, lh: 14
+      directionBody:   { x: 330, top: 233, w: 230, size: 11, lh: 14 },
+      themeTitle:      { x: 330, top: 273, w: 230, size: 12, bold: true },
+      themeBody:       { x: 330, top: 291, w: 230, size: 11, lh: 14 },
+
+      patternTitle:    { x: 38,  top: 355, w: 520, size: 12, bold: true },
+      patternLine:     { x: 38,  top: 373, w: 520, size: 11, lh: 14 },
+      patternDetail:   { x: 38,  top: 391, w: 520, size: 11, lh: 14 },
+
+      tip1Title:       { x: 38,  top: 435, w: 360, size: 12.5, bold: true },
+      tip1:            { x: 38,  top: 455, w: 360, size: 12,   lh: 16 },
+      tip2Title:       { x: 418, top: 435, w: 200, size: 12.5, bold: true },
+      tip2:            { x: 418, top: 455, w: 200, size: 12,   lh: 16 },
+    };
+    const Y = (top) => pageH - top;
+    function drawPara(txt, box, bold = false) {
+      if (!txt) return;
+      const f = bold ? fontBold : fontReg;
+      const size = box.size || 11;
+      const lh = box.lh || size * 1.25;
+      const lines = wrapText(txt, f, size, box.w);
+      let y = Y(box.top);
+      for (const line of lines) {
+        page.drawText(line, { x: box.x, y, size, font: f, color: rgb(0.11, 0.1, 0.13) });
+        y -= lh;
+      }
+    }
+
+    drawPara(payload.title, BOX.title, true);
+    drawPara(payload.intro, BOX.intro);
+    drawPara(payload.headline, BOX.headline, true);
+    drawPara(payload.how, BOX.how);
+
+    drawPara(payload.directionLabel, BOX.directionTitle, true);
+    drawPara(payload.directionMeaning, BOX.directionBody);
+    drawPara(payload.themeLabel, BOX.themeTitle, true);
+    drawPara(payload.themeMeaning, BOX.themeBody);
+
+    drawPara('What the pattern suggests', BOX.patternTitle, true);
+    drawPara(payload.patternLine || '', BOX.patternLine);
+    drawPara(payload.patternDetail || '', BOX.patternDetail);
+
+    drawPara(payload.tip1Title || 'Try this', BOX.tip1Title, true);
+    drawPara(payload.tip1 || '', BOX.tip1);
+    drawPara(payload.tip2Title || 'Try this next time', BOX.tip2Title, true);
+    drawPara(payload.tip2 || '', BOX.tip2);
+
+    // radar image
+    if (payload.chartUrl) {
+      try {
+        const r = await fetch(String(payload.chartUrl));
+        diag.chartFetch = { ok: r.ok, status: r.status };
+        if (r.ok) {
+          const buf = Buffer.from(await r.arrayBuffer());
+          let img;
+          try { img = await pdfDoc.embedPng(buf); }
+          catch { img = await pdfDoc.embedJpg(buf); }
+          const s = Math.min(BOX.radar.w / img.width, BOX.radar.h / img.height);
+          const w = img.width * s;
+          const h = img.height * s;
+          page.drawImage(img, { x: BOX.radar.x, y: Y(BOX.radar.top) - h, width: w, height: h });
+        }
+      } catch (e) {
+        diag.chartFetch = { ok: false, error: e?.message || String(e) };
+      }
+    }
+
+    const pdfBytes = await PDFDocument.saveAsBase64 ? await pdfDoc.save() : await pdfDoc.save(); // ensure Node buffer
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.end(Buffer.from(pdfBytes));
+  } catch (e) {
+    // return a readable error (Vercel otherwise hides details)
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: false, error: e?.message || String(e), diag }));
+  }
+}
