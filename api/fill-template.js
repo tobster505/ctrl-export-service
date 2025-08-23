@@ -1,6 +1,21 @@
 // /api/fill-template.js
 // Fills your static PDF template (public/CTRL_Perspective_template.pdf)
 // with results from Botpress, using pdf-lib (no headless browser).
+//
+// TEST LINKS (safe to click; no Botpress payload required):
+//  • Single-state headline (+ tips/theme/direction):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
+//  • Two-state headline on ONE line (smaller type):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
+//  • Tuner for the radar position (draws a guide box):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&cx=1050&cy=620&cw=700&ch=400&box=1
+//
+// Query params you can pass anytime:
+//  - preview=1     → show inline in browser (otherwise downloads)
+//  - nograph=1     → skip the chart (helps isolate text issues)
+//  - debug=1       → return JSON with positions & data (no PDF)
+//  - cx,cy,cw,ch   → override radar x/y/width/height while tuning
+//  - box=1         → draw a thin guide rectangle around the radar box
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -74,6 +89,7 @@ async function loadTemplateBytes(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
+// parse numeric query param with default
 const num = (url, key, def) => {
   const n = Number(url.searchParams.get(key));
   return Number.isFinite(n) ? n : def;
@@ -84,12 +100,12 @@ const num = (url, key, def) => {
 --------------------------- */
 
 export default async function handler(req, res) {
-  const url = new URL(req.url, 'http://localhost');
-  const isTest = url.searchParams.get('test') === '1';
-  const isPair = url.searchParams.get('test') === 'pair';
-  const debug  = url.searchParams.get('debug') === '1';
-  const noGraph = url.searchParams.get('nograph') === '1';
-  const preview = url.searchParams.get('preview') === '1';
+  const url      = new URL(req.url, 'http://localhost');
+  const isTest   = url.searchParams.get('test') === '1';
+  const isPair   = url.searchParams.get('test') === 'pair';
+  const debug    = url.searchParams.get('debug') === '1';
+  const noGraph  = url.searchParams.get('nograph') === '1';
+  const preview  = url.searchParams.get('preview') === '1';
 
   // --- Demo payloads (no Botpress needed) ---
   let data;
@@ -101,6 +117,8 @@ export default async function handler(req, res) {
       themeMeaning:    'Settling yourself when feelings spike.',
       tip1: 'Take one breath and name it: "I’m on edge."',
       tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
+      // Optional “how this shows up” (only drawn if provided)
+      // how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: {
@@ -130,8 +148,8 @@ export default async function handler(req, res) {
       })),
     };
     data = isPair
-      ? { ...common, stateWords: ['Triggered', 'Regulated'] }
-      : { ...common, stateWord: 'Triggered' };
+      ? { ...common, stateWords: ['Triggered', 'Regulated'] } // two-state headline (one line)
+      : { ...common, stateWord: 'Triggered' };                // single-state headline
   } else {
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
@@ -142,9 +160,9 @@ export default async function handler(req, res) {
     }
   }
 
-  // Defaults for positions (tune y by increasing to move DOWN)
+  // Defaults for positions (increase y to move text DOWN the page)
   const POS = {
-    // headline (single vs pair)
+    // headline (single vs pair) — keep single-state position unchanged
     headlineSingle: { x: 90, y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90, y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
@@ -154,7 +172,11 @@ export default async function handler(req, res) {
     tip2Header:      { x: 540, y: 515, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
     tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // direction + theme
+    // OPTIONAL “how this shows up” (only drawn if data.how exists)
+    howHeader:       { x: 80,  y: 470, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
+    howBody:         { x: 80,  y: 490, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+
+    // direction + theme (right column)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
@@ -163,10 +185,11 @@ export default async function handler(req, res) {
     // radar chart (you can override with URL tuner)
     chart: { x: 1050, y: 620, w: 700, h: 400 },
 
+    // footer
     footerY: 20,
   };
 
-  // tuner overrides (?cx, cy, cw, ch, box)
+  // tuner overrides (?cx,cy,cw,ch,box)
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
@@ -175,7 +198,7 @@ export default async function handler(req, res) {
   };
   const showBox = url.searchParams.get('box') === '1';
 
-  // If you're stuck, flip on debug to see everything
+  // Optional debug JSON
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
@@ -210,11 +233,17 @@ export default async function handler(req, res) {
       { maxLines: 1, ellipsis: true }
     );
 
-    // tips
+    // tips row
     drawTextBox(page1, helvBold, 'Try this…',               POS.tip1Header, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, helv,     normText(data.tip1 || ''), POS.tip1Body,   { maxLines: 2, ellipsis: true });
     drawTextBox(page1, helvBold, 'Try this next time…',     POS.tip2Header, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, helv,     normText(data.tip2 || ''), POS.tip2Body,   { maxLines: 2, ellipsis: true });
+
+    // OPTIONAL “how this shows up” (only if provided)
+    if (data.how) {
+      drawTextBox(page1, helvBold, 'How this shows up…', POS.howHeader, { maxLines: 1, ellipsis: true });
+      drawTextBox(page1, helv,     normText(data.how),   POS.howBody,   { maxLines: 3, ellipsis: true });
+    }
 
     // direction + theme
     if (data.directionLabel)
@@ -227,9 +256,8 @@ export default async function handler(req, res) {
     if (data.themeMeaning)
       drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
 
-    // radar chart
+    // radar chart (optional)
     if (!noGraph && data.chartUrl) {
-      // draw guide box if asked
       if (showBox) {
         const { x, y, w, h } = POS.chart;
         const pageH = page1.getHeight();
@@ -246,12 +274,12 @@ export default async function handler(req, res) {
           const pageH = page1.getHeight();
           page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
         }
-      } catch (e) {
-        // don’t crash PDF if chart fails
+      } catch {
+        // ignore chart failures so PDF still renders
       }
     }
 
-    // footer
+    // footer (static)
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
     const fSize = 9;
@@ -266,7 +294,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     res.end(Buffer.from(bytes));
   } catch (e) {
-    // If anything blew up inside the try, show a readable error
+    // readable error instead of blank 500
     res.statusCode = 500;
     res.setHeader('Content-Type', 'text/plain');
     res.end('fill-template error: ' + (e?.message || String(e)));
