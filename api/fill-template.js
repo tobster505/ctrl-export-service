@@ -198,7 +198,7 @@ export default async function handler(req, res) {
       tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
       // Radar chart image — defaults; override via URL when tuning
-      chart: { x: 120, y: 320, w: 260, h: 260 },
+      chart: { x: 90, y: 320, w: 260, h: 260 },
 
       // Footer
       footerY: 20,
@@ -250,24 +250,28 @@ export default async function handler(req, res) {
 
     // Radar chart (PNG)
     if (data.chartUrl) {
-      if (showChartBox) {
-        const { x, y, w, h } = POS.chart;
-        const pageH = page1.getHeight();
-        page1.drawRectangle({
-          x, y: pageH - y - h, width: w, height: h,
-          borderColor: rgb(0.45, 0.35, 0.6), borderWidth: 1,
-        });
-      }
-      try {
-        const r = await fetch(String(data.chartUrl));
-        if (r.ok) {
-          const png = await pdfDoc.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.chart;
-          const pageH = page1.getHeight();
-          page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
-        }
-      } catch { /* ignore chart failures so PDF still renders */ }
+  if (showChartBox) {
+    const { x, y, w, h } = POS.chart;
+    const pageH = page1.getHeight();
+    // draw guide box using safe coords
+    const topY = Math.min(y, pageH - h - 1);
+    page1.drawRectangle({
+      x, y: pageH - topY - h, width: w, height: h,
+      borderColor: rgb(0.45, 0.35, 0.6), borderWidth: 1,
+    });
+  }
+  try {
+    const r = await fetch(String(data.chartUrl));
+    if (r.ok) {
+      const png = await pdfDoc.embedPng(await r.arrayBuffer());
+      const { x, y, w, h } = POS.chart;
+      const pageH = page1.getHeight();
+      // clamp top-based y to keep image on-page
+      const topY = Math.min(Math.max(0, y), pageH - h - 1);
+      page1.drawImage(png, { x, y: pageH - topY - h, width: w, height: h });
     }
+  } catch {/* ignore so PDF still renders */}
+}
 
     // Footer
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
