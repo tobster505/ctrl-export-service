@@ -1,29 +1,23 @@
-// /api/pdf.js — CTRL Snapshot (enhanced) — Node/Serverless on Vercel (ESM)
+// /api/pdf.js — CTRL PDF with boxed sections + big chart + prominent tips
+// ESM module (package.json has "type": "module")
 import PDFDocument from 'pdfkit';
 
-// ---------- Brand tokens (adjust once and reuse) ----------
-const BRAND = {
-  // CTRL Plum family (neutral, not "good/bad")
-  plum500: '#7348C7',
-  plum300: '#9D7BE0',
-  plum100: '#E9E1FB',
-  ink900:  '#2B2737',
-  ink600:  '#4A4458',
-  ink400:  '#6E6780',
-  line:    '#E8E6EF',
-};
-
-// ---------- Text helpers ----------
+// ---------- Helpers ----------
 function squash(s) {
+  // Keep text ASCII-safe and readable
   return String(s ?? '')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[\u2018\u2019]/g, "'")    // curly single quotes → '
+    .replace(/[\u201C\u201D]/g, '"')    // curly double quotes → "
+    .replace(/[\u2013\u2014]/g, '-')    // en/em dash → -
+    .replace(/\u00D7/g, 'x')            // multiplication sign × → x (prevents "Triggered  2" issue)
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 function toLines(v) {
   if (Array.isArray(v)) return v.map(squash).filter(Boolean);
-  return String(v ?? '').split('\n').map(squash).filter(Boolean);
+  return String(v ?? '')
+    .split('\n')
+    .map(squash)
+    .filter(Boolean);
 }
 function countsToLine(counts) {
   if (!counts || typeof counts !== 'object') return squash(String(counts ?? ''));
@@ -31,65 +25,79 @@ function countsToLine(counts) {
   return `C:${c}  T:${t}  R:${r}  L:${l}`;
 }
 
-// ---------- Tiny drawing helpers ----------
-function hRule(doc, x, y, w, color = BRAND.line) {
-  doc.save().lineWidth(1).strokeColor(color).moveTo(x, y).lineTo(x + w, y).stroke().restore();
-}
-function label(doc, x, y, text) {
-  doc.save()
-    .fillColor(BRAND.plum500)
-    .font('Helvetica-Bold').fontSize(9)
-    .text(squash(text).toUpperCase(), x, y)
-    .restore();
-}
-function sectionTitle(doc, x, y, text) {
-  doc.save()
-    .fillColor(BRAND.ink900)
-    .font('Helvetica-Bold').fontSize(13)
-    .text(squash(text), x, y)
-    .restore();
-}
-function body(doc, x, y, text, size = 10.5, color = BRAND.ink600, w = 0) {
-  doc.save()
-    .fillColor(color)
-    .font('Helvetica').fontSize(size)
-    .text(squash(text), x, y, { width: w || undefined })
-    .restore();
-}
-function bulletList(doc, x, y, lines, opts = {}) {
-  const { size = 10.5, gap = 4, color = BRAND.ink600, width = 0 } = opts;
-  let cy = y;
-  doc.save().fillColor(color).font('Helvetica').fontSize(size);
-  for (const line of lines) {
-    doc.circle(x + 2, cy + 5, 1.6).fill(color).fillColor(color);
-    doc.text(squash(line), x + 10, cy - 2, { width: width || undefined });
-    cy += doc.currentLineHeight() + gap;
+// ---------- Drawing helpers ----------
+function drawSectionBox(doc, { x, y, w, title, lines, pad = 12, fill = '#F4F2F8', titleColor = '#2B2540', textColor = '#2B2540' }) {
+  const textWidth = w - pad * 2;
+  let h = 0;
+
+  // Measure
+  const titleH = title ? doc.font('Helvetica-Bold').fontSize(12).heightOfString(title, { width: textWidth }) : 0;
+  h += title ? titleH + 6 : 0;
+
+  doc.font('Helvetica').fontSize(11);
+  for (const ln of (lines || [])) {
+    h += doc.heightOfString(ln, { width: textWidth }) + 6;
   }
+  h += pad * 2;
+
+  // Box
+  doc.save();
+  doc.roundedRect(x, y, w, h, 8).fill(fill);
   doc.restore();
-  return cy;
-}
-function chip(doc, x, y, text, fg = '#fff', bg = BRAND.plum500, padX = 8, padY = 4) {
-  const t = squash(text);
-  doc.save().font('Helvetica-Bold').fontSize(9);
-  const w = doc.widthOfString(t) + padX * 2;
-  const h = doc.currentLineHeight() + padY * 2;
-  doc.roundedRect(x, y, w, h, 6).fill(bg);
-  doc.fillColor(fg).text(t, x + padX, y + padY);
-  doc.restore();
-  return { w, h };
+
+  // Content
+  let ty = y + pad;
+  if (title) {
+    doc.fillColor(titleColor).font('Helvetica-Bold').fontSize(12).text(title, x + pad, ty, { width: textWidth });
+    ty += titleH + 6;
+  }
+  doc.fillColor(textColor).font('Helvetica').fontSize(11);
+  for (const ln of (lines || [])) {
+    doc.text(ln, x + pad, ty, { width: textWidth });
+    ty += doc.heightOfString(ln, { width: textWidth }) + 6;
+  }
+
+  return { boxHeight: h };
 }
 
-// ---------- Main handler ----------
+function drawTipBox(doc, { x, y, w, title, tip, pad = 12, fill = '#EDE8F8', titleColor = '#2B2540', accent = '#7348C7' }) {
+  const textWidth = w - pad * 2;
+  // Measure
+  const titleH = title ? doc.font('Helvetica-Bold').fontSize(11).heightOfString(title, { width: textWidth }) : 0;
+  doc.font('Helvetica').fontSize(11);
+  const tipH = doc.heightOfString(tip, { width: textWidth });
+
+  const h = pad + (title ? titleH + 6 : 0) + tipH + pad;
+
+  // Box
+  doc.save();
+  doc.roundedRect(x, y, w, h, 8).fill(fill);
+  doc.restore();
+
+  // Title
+  let ty = y + pad;
+  if (title) {
+    doc.fillColor(accent).font('Helvetica-Bold').fontSize(11).text(title, x + pad, ty, { width: textWidth });
+    ty += titleH + 6;
+  }
+  // Tip
+  doc.fillColor('#2B2540').font('Helvetica').fontSize(11).text(tip, x + pad, ty, { width: textWidth });
+
+  return { boxHeight: h };
+}
+
 export default async function handler(req, res) {
   try {
-    // Parse URL and payload
+    // --------------------------------
+    // 1) Parse query + payload as before
+    // --------------------------------
     const url = new URL(req.url, 'http://localhost');
     const hasTest = url.searchParams.has('test');
     const b64 = url.searchParams.get('data');
 
     let payload;
     if (hasTest && !b64) {
-      // Smoke-test payload (no Botpress needed)
+      // Minimal sample payload (kept for smoke test)
       const sampleChartSpec = {
         type: 'radar',
         data: {
@@ -98,56 +106,45 @@ export default async function handler(req, res) {
         },
         options: {
           plugins: { legend: { display: false } },
-          scales: {
-            r: {
-              min: 0, max: 5,
-              ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-              grid: { circular: true },
-              angleLines: { display: true },
-              pointLabels: { color: '#4A4458', font: { size: 12 } },
-            },
-          },
-        },
+          scales: { r: { min: 0, max: 5, ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' }, grid: { circular: true }, angleLines: { display: true }, pointLabels: { font: { size: 12 } } } }
+        }
       };
       const chartUrl = 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(sampleChartSpec));
       payload = {
         title: 'CTRL — Your Snapshot',
         intro: 'A big thank you for answering honestly. Treat this as a starting point — a quick indication of your current awareness across four states. For a fuller view, try the other CTRL paths when you’re ready.',
         headline: 'You sit mostly in Triggered.',
-        how: "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
         chartUrl,
-        directionLabel: 'Steady',
-        directionMeaning: 'You started and ended in similar zones — steady overall.',
-        themeLabel: 'Emotion regulation',
-        themeMeaning: 'Settling yourself when feelings spike.',
-        tip1: 'Take one breath and name it: “I’m on edge.”',
+        how: "You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ('I’m on edge') often settles it.",
+        // We’ll also accept tip1/tip2 if present (kept out of journey)
+        tip1: 'Take one breath and name it: "I’m on edge."',
         tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
         journey: [
-          'Direction: Steady',
+          'Direction: Steady — You started and ended in similar zones — steady overall.',
           'You touched three states: you can shift when needed; a brief pause helps you choose on purpose.',
-          'Least seen: Lead. Guiding wasn’t in focus; offer a simple next step or summary when it helps the group.',
+          'Least seen: Lead — guiding wasn’t in focus; offer a simple next step or summary when it helps the group.',
           'Pattern: Varied responses without one rhythm.',
-          'Switching: Three switches — high reactivity or agility; use a pause to make switches intentional. Longest run: Triggered × 2.',
+          'Switching: Three switches — high reactivity or agility; use a pause to make switches intentional. Longest run: Triggered x 2.',
           'Resilience: One upward recovery — evidence you can reset.',
           'Retreat: One slip — name it and reset.',
-          'Early vs late: clearly steadier later on.',
+          'Early vs late: clearly steadier later on.'
         ],
         themesExplainer: [
           'Emotion regulation — Settling yourself when feelings spike.',
           'Social navigation — Reading the room and adjusting to people and context.',
-          'Awareness of impact — Noticing how your words and actions land.',
+          'Awareness of impact — Noticing how your words and actions land.'
         ],
         raw: {
           sequence: 'T T C R T',
-          counts: { C: 1, T: 3, R: 1, L: 0 },
+          counts: { C:1, T:3, R:1, L:0 },
           perQuestion: [
-            { q: 'Q1', state: 'T', themes: ['social_navigation', 'awareness_impact', 'emotion_regulation'] },
-            { q: 'Q2', state: 'T', themes: ['stress_awareness', 'emotion_regulation', 'confidence_resilience'] },
-            { q: 'Q3', state: 'C', themes: ['feedback_handling', 'awareness_impact', 'emotion_regulation'] },
-            { q: 'Q4', state: 'R', themes: ['feedback_handling', 'confidence_resilience', 'intent_awareness'] },
-            { q: 'Q5', state: 'T', themes: ['social_navigation', 'boundary_awareness', 'awareness_intent'] },
-          ],
-        },
+            { q: 'Q1', state: 'T', themes: ['social_navigation','awareness_impact','emotion_regulation'] },
+            { q: 'Q2', state: 'T', themes: ['stress_awareness','emotion_regulation','confidence_resilience'] },
+            { q: 'Q3', state: 'C', themes: ['feedback_handling','awareness_impact','emotion_regulation'] },
+            { q: 'Q4', state: 'R', themes: ['feedback_handling','confidence_resilience','intent_awareness'] },
+            { q: 'Q5', state: 'T', themes: ['social_navigation','boundary_awareness','awareness_intent'] }
+          ]
+        }
       };
     } else {
       if (!b64) { res.status(400).send('Missing data'); return; }
@@ -158,43 +155,62 @@ export default async function handler(req, res) {
       }
     }
 
-    // Pull fields with safe defaults
+    if (!payload || typeof payload !== 'object') {
+      res.status(400).send('Invalid data'); return;
+    }
+
+    // --------------------------------
+    // 2) Extract fields (with fallbacks)
+    // --------------------------------
     const name = String(url.searchParams.get('name') || 'ctrl_report.pdf').replace(/[^\w.\-]+/g, '_');
-    const title    = squash(payload.title   ?? 'CTRL — Snapshot');
-    const intro    = squash(payload.intro   ?? '');
-    const headline = squash(payload.headline ?? '');
-    const how      = squash(payload.how     ?? '');
-    const chartUrl = String(payload.chartUrl || '');
 
-    // Optional richer fields
-    const directionLabel   = squash(payload.directionLabel   ?? '');
-    const directionMeaning = squash(payload.directionMeaning ?? '');
-    const themeLabel       = squash(payload.themeLabel       ?? '');
-    const themeMeaning     = squash(payload.themeMeaning     ?? '');
-    const tip1             = squash(payload.tip1 ?? '');
-    const tip2             = squash(payload.tip2 ?? '');
-    const tipsArr          = Array.isArray(payload.tips) ? payload.tips.map(squash) : [tip1, tip2].filter(Boolean);
+    const title     = squash(payload.title   ?? 'CTRL — Snapshot');
+    const intro     = squash(payload.intro   ?? '');
+    const headline  = squash(payload.headline ?? '');
+    const how       = squash(payload.how     ?? '');
+    const chartUrl  = String(payload.chartUrl || '');
 
-    // Lists
-    const journeyLines = toLines(payload.journey);
-    const themeLines   = toLines(payload.themesExplainer);
+    // Tips: prefer explicit tip1/tip2, else parse a "Tips: a | b" line out of journey
+    let tip1 = squash(payload.tip1 ?? '');
+    let tip2 = squash(payload.tip2 ?? '');
 
-    // Raw
+    let journeyLines = toLines(payload.journey);
+    if ((!tip1 || !tip2) && journeyLines.length) {
+      const tipsIdx = journeyLines.findIndex(l => /^tips\s*:/i.test(l));
+      if (tipsIdx >= 0) {
+        const raw = journeyLines.splice(tipsIdx, 1)[0]; // remove tips line from journey
+        const parts = raw.replace(/^tips\s*:\s*/i, '').split('|').map(s => squash(s.trim())).filter(Boolean);
+        if (!tip1 && parts[0]) tip1 = parts[0];
+        if (!tip2 && parts[1]) tip2 = parts[1];
+      }
+    }
+    // Always ensure two short tips exist
+    if (!tip1) tip1 = 'Take one slow breath before you speak.';
+    if (!tip2) tip2 = 'Add a 30-second check: “What does this moment need?”';
+
+    const themeLines = toLines(payload.themesExplainer);
+
     const raw = payload.raw || {};
     const rawSequence = squash(raw.sequence ?? '');
     const rawCounts   = countsToLine(raw.counts);
     const rawPerQ     = Array.isArray(raw.perQuestion) ? raw.perQuestion : [];
 
-    // Chart image
+    // --------------------------------
+    // 3) Fetch chart image (bigger)
+    // --------------------------------
     let chartBuf = null;
     if (chartUrl) {
       try {
         const r = await fetch(chartUrl);
         if (r.ok) chartBuf = Buffer.from(await r.arrayBuffer());
-      } catch { /* ignore chart errors */ }
+      } catch (e) {
+        console.warn('[pdf] chart fetch failed:', e?.message || e);
+      }
     }
 
-    // ---------- Build PDF ----------
+    // --------------------------------
+    // 4) Build the PDF (boxed layout)
+    // --------------------------------
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.setHeader('Cache-Control', 'no-store');
@@ -202,122 +218,163 @@ export default async function handler(req, res) {
     const doc = new PDFDocument({ size: 'A4', margin: 40 });
     doc.pipe(res);
 
-    // PAGE 1 — Snapshot
-    const W = doc.page.width, H = doc.page.height, M = doc.page.margins.left;
-    const colGutter = 22;
-    const colW = (W - M - doc.page.margins.right - colGutter) / 2;
+    const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right; // ~515
+    let cursorY = doc.page.margins.top;
 
-    // Header label
-    label(doc, M, 36, 'CTRL Snapshot');
+    // Header
+    doc.fillColor('#2B2540').font('Helvetica-Bold').fontSize(18).text(squash(title), { width: pageW });
+    cursorY = doc.y + 8;
 
-    // Headline
-    doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(18).text(title, M, 54);
-
-    // Sub intro
     if (intro) {
-      body(doc, M, 80, intro, 10.5, BRAND.ink600, colW);
+      // Intro box
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: null,
+        lines: [intro],
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 12;
     }
 
-    // Two columns
-    let leftTop = 130;
-    let rightTop = 110;
-
-    // Left: headline state & "how"
+    // Headline (outside a box for emphasis)
     if (headline) {
-      doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(15).text(headline, M, leftTop, { width: colW });
-      leftTop = doc.y + 8;
+      doc.fillColor('#2B2540').font('Helvetica-Bold').fontSize(14).text(squash(headline), doc.page.margins.left, cursorY);
+      cursorY = doc.y + 8;
     }
 
-    if (directionLabel) {
-      const chipDims = chip(doc, M, leftTop, `Direction: ${directionLabel}`);
-      leftTop += chipDims.h + 8;
-      if (directionMeaning) {
-        body(doc, M, leftTop, directionMeaning, 10.5, BRAND.ink600, colW);
-        leftTop = doc.y + 10;
+    // Chart (bigger)
+    if (chartBuf) {
+      const imgW = Math.min(460, pageW); // larger radar
+      doc.image(chartBuf, doc.page.margins.left, cursorY, { width: imgW, height: imgW });
+      cursorY += imgW + 14;
+    }
+
+    // "How this tends to show up"
+    if (how) {
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'How this tends to show up',
+        lines: [how],
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 12;
+    }
+
+    // From journey, pick the first line that starts with "Direction:" for a small box
+    const dirLineIdx = journeyLines.findIndex(l => /^direction\b/i.test(l));
+    if (dirLineIdx >= 0) {
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'Direction of travel',
+        lines: [journeyLines[dirLineIdx].replace(/^direction:\s*/i, '')],
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 12;
+      journeyLines.splice(dirLineIdx, 1);
+    }
+
+    // Theme in focus: take the first theme as the “focus”
+    if (themeLines.length) {
+      const firstTheme = themeLines[0];
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'Theme in focus',
+        lines: [firstTheme],
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 16;
+    }
+
+    // Two tip boxes side-by-side
+    const colGap = 12;
+    const colW = (pageW - colGap) / 2;
+    // If not enough vertical space for both tip boxes, new page
+    const minTipBoxH = 80; // rough min
+    if (cursorY + minTipBoxH > (doc.page.height - doc.page.margins.bottom - 120)) {
+      doc.addPage();
+      cursorY = doc.page.margins.top;
+    }
+
+    const leftTip  = drawTipBox(doc, { x: doc.page.margins.left, y: cursorY, w: colW, title: 'Try this', tip: tip1 });
+    const rightTip = drawTipBox(doc, { x: doc.page.margins.left + colW + colGap, y: cursorY, w: colW, title: 'Try this next time', tip: tip2 });
+    const tipsH = Math.max(leftTip.boxHeight, rightTip.boxHeight);
+    cursorY += tipsH + 18;
+
+    // --- PAGE 2: More signals ---
+    doc.addPage();
+    cursorY = doc.page.margins.top;
+
+    doc.fillColor('#2B2540').font('Helvetica-Bold').fontSize(14).text('More signals from your five moments', doc.page.margins.left, cursorY);
+    doc.moveDown(0.4);
+    doc.fillColor('#4A4458').font('Helvetica').fontSize(10)
+      .text('These are descriptive, not a score. Use them as pointers for awareness.');
+    cursorY = doc.y + 10;
+
+    // What the pattern suggests (boxed list from the rest of journey lines)
+    if (journeyLines.length) {
+      const pretty = journeyLines.map(s => s.replace(/^-\s*/, ''));
+
+      // Split into bullet paragraphs (we’ll prefix with "• " but keep ASCII)
+      const para = pretty.map(s => '• ' + s);
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'What the pattern suggests',
+        lines: para,
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 12;
+    }
+
+    // Themes that kept showing up
+    if (themeLines.length) {
+      const bullets = themeLines.map(s => '• ' + s);
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'Themes that kept showing up',
+        lines: bullets,
+        pad: 12,
+        fill: '#F4F2F8'
+      });
+      cursorY += boxHeight + 12;
+    }
+
+    // Raw data (sequence + counts + perQ)
+    const rawLines = [];
+    if (rawSequence) rawLines.push('Sequence: ' + rawSequence);
+    if (rawCounts)   rawLines.push('Counts: ' + rawCounts);
+    if (rawPerQ.length) {
+      for (const item of rawPerQ.slice(0, 5)) {
+        const themesStr = Array.isArray(item.themes) && item.themes.length
+          ? ` — themes: ${item.themes.join(', ')}`
+          : '';
+        rawLines.push(`${item.q || ''}: ${item.state || ''}${themesStr}`);
       }
     }
-
-    if (how) {
-      sectionTitle(doc, M, leftTop, 'How this tends to show up');
-      leftTop += 18;
-      body(doc, M, leftTop, how, 10.5, BRAND.ink600, colW);
-      leftTop = doc.y + 14;
-    }
-
-    if (themeLabel || themeMeaning) {
-      sectionTitle(doc, M, leftTop, 'Theme in focus');
-      leftTop += 18;
-      if (themeLabel) doc.fillColor(BRAND.ink900).font('Helvetica-Bold').fontSize(11).text(themeLabel, M, leftTop, { width: colW });
-      if (themeMeaning) body(doc, M, doc.y + 2, themeMeaning, 10.5, BRAND.ink600, colW);
-      leftTop = doc.y + 10;
-    }
-
-    if (tipsArr.length) {
-      sectionTitle(doc, M, leftTop, 'Two tiny tips');
-      leftTop += 18;
-      leftTop = bulletList(doc, M, leftTop, tipsArr.slice(0, 2), { width: colW });
-      leftTop += 2;
-    }
-
-    // Right column: radar + (optional) sequence chips
-    if (chartBuf) {
-      const box = 360; // image box
-      doc.save()
-        .rect(M + colW + colGutter, rightTop, colW, box).strokeColor(BRAND.line).lineWidth(0.5).stroke()
-        .restore();
-
-      const imgW = Math.min(colW - 20, box - 20);
-      doc.image(chartBuf, M + colW + colGutter + (colW - imgW) / 2, rightTop + 10, { width: imgW });
-      rightTop += box + 12;
-    }
-
-    // A light divider
-    hRule(doc, M, Math.max(leftTop, rightTop) + 10, W - M * 2);
-
-    // PAGE 2 — Signals
-    doc.addPage();
-
-    label(doc, M, 36, 'CTRL Snapshot — signals');
-    sectionTitle(doc, M, 54, 'More signals from your five moments');
-    body(doc, M, 74, 'These are descriptive, not a score. Use them as pointers for awareness.', 10.5, BRAND.ink600);
-
-    // What the pattern suggests
-    sectionTitle(doc, M, 110, 'What the pattern suggests');
-    let cy = bulletList(doc, M, 130, journeyLines, { width: W - M * 2 });
-
-    // Themes
-    if (themeLines.length) {
-      cy += 8;
-      sectionTitle(doc, M, cy, 'Themes that kept showing up');
-      cy += 20;
-      cy = bulletList(doc, M, cy, themeLines, { width: W - M * 2 });
-    }
-
-    // Raw data
-    cy += 8;
-    sectionTitle(doc, M, cy, 'Raw data (for reference)');
-    cy += 18;
-    if (rawSequence) body(doc, M, cy, 'Sequence: ' + rawSequence, 10, BRAND.ink600); 
-    if (rawCounts)   body(doc, M, doc.y + 2, 'Counts: ' + rawCounts, 10, BRAND.ink600);
-    if (Array.isArray(rawPerQ) && rawPerQ.length) {
-      cy = doc.y + 6;
-      const lines = rawPerQ.slice(0, 5).map(it => {
-        const th = Array.isArray(it.themes) && it.themes.length ? ` — themes: ${it.themes.join(', ')}` : '';
-        return `${it.q || ''}: ${it.state || ''}${th}`;
+    if (rawLines.length) {
+      const { boxHeight } = drawSectionBox(doc, {
+        x: doc.page.margins.left, y: cursorY, w: pageW,
+        title: 'Raw data (for reference)',
+        lines: rawLines,
+        pad: 12,
+        fill: '#F4F2F8'
       });
-      cy = bulletList(doc, M, cy, lines, { width: W - M * 2, size: 10 });
+      cursorY += boxHeight + 12;
     }
 
-    // Next action (small callout)
-    cy += 10;
-    sectionTitle(doc, M, cy, 'A next action');
-    cy += 16;
-    const call = 'Choose one tiny thing you will try this week. Keep it under 60 seconds and repeat it once a day.';
-    doc.save()
-      .roundedRect(M, cy - 6, W - M * 2, 40, 8).fill(BRAND.plum100)
-      .fillColor(BRAND.ink900).font('Helvetica').fontSize(10.5)
-      .text(call, M + 12, cy, { width: W - M * 2 - 24 })
-      .restore();
+    // A next action
+    const nextAction = 'Choose one tiny thing you will try this week. Keep it under 60 seconds and repeat it once a day.';
+    drawSectionBox(doc, {
+      x: doc.page.margins.left, y: cursorY, w: pageW,
+      title: 'A next action',
+      lines: [nextAction],
+      pad: 12,
+      fill: '#F4F2F8'
+    });
 
     doc.end();
   } catch (e) {
