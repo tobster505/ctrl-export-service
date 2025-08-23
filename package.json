@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "pdf-lib": "^1.17.1",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.13.0",
+    "@sparticuz/chromium": "^123.0.1",
+    "puppeteer-core": "^22.12.1"
   }
 }
