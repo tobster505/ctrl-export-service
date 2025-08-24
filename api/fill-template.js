@@ -22,9 +22,10 @@
 //  - hx2,hy2,hw2,hs2,h2align  → override BLENDED two-state "what this means"
 //  - t1x,t1y,t1s,t1w,t1align  → Tip (left): position, size, width, alignment
 //  - t2x,t2y,t2s,t2w,t2align  → Next (right): position, size, width, alignment
-//  - cpyalign,cpyx,cpyw,cpyy,cpys,cpyoffset,cpybox → COPYRIGHT position/size,
-//    centre-within-box & optional guide rectangle (on ALL pages).
 //  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
+//
+// NOTE: This handler deliberately draws **no footer/copyright**;
+//       hard-code that in the PDF template itself.
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -271,19 +272,6 @@ export default async function handler(req, res) {
 
     // Radar chart — **LOCKED DEFAULTS**
     chart: { x: 1030, y: 620, w: 720, h: 420 },
-
-    // Footer (copyright) — **LOCKED DEFAULTS** (all pages)
-    // Centre within a box starting at x=540, width=950; y measured from bottom.
-    footer: {
-      align: 'center',
-      x: 540,     // left edge of the centring box (centre mode)
-      w: 950,     // width of the centring box
-      y: 5,       // distance from bottom of page
-      size: 11,   // font size (pt)
-      offset: -10,// extra ±px nudge after centring
-      color: rgb(0.36, 0.34, 0.50),
-      box: false  // guide box OFF by default
-    },
   };
 
   // tuner overrides
@@ -328,17 +316,6 @@ export default async function handler(req, res) {
     size: num(url, 't2s', POS.tip2Body.size),
     align: url.searchParams.get('t2align') || POS.tip2Body.align,
   };
-  // COPYRIGHT / FOOTER overrides (position + size + alignment + centring box)
-  POS.footer = {
-    ...POS.footer,
-    align:  url.searchParams.get('cpyalign') || POS.footer.align,
-    x:      num(url, 'cpyx', POS.footer.x),
-    w:      num(url, 'cpyw', POS.footer.w),
-    y:      num(url, 'cpyy', POS.footer.y),
-    size:   num(url, 'cpys', POS.footer.size),
-    offset: num(url, 'cpyoffset', POS.footer.offset),
-    box:    url.searchParams.get('cpybox') === '1' ? true : false, // default OFF
-  };
 
   const showBox = url.searchParams.get('box') === '1';
 
@@ -359,8 +336,7 @@ export default async function handler(req, res) {
     // load template + fonts
     const templateBytes = await loadTemplateBytes(req);
     const pdfDoc = await PDFDocument.load(templateBytes);
-    const pages = pdfDoc.getPages();
-    const page1 = pages[0];
+    const page1  = pdfDoc.getPage(0);
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
@@ -428,46 +404,6 @@ export default async function handler(req, res) {
       } catch {
         // ignore chart failures so PDF still renders
       }
-    }
-
-    // ===== Footer (copyright) on ALL pages =====
-    const footerText = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
-    for (const pg of pages) {
-      const pageW = pg.getWidth();
-      const fSize = POS.footer.size;
-      const fW = helv.widthOfTextAtSize(footerText, fSize);
-      const fY = POS.footer.y; // measured from bottom
-
-      let fX;
-      const align = (POS.footer.align || 'center').toLowerCase();
-
-      if (align === 'left') {
-        const leftEdge = Number.isFinite(POS.footer.x) ? POS.footer.x : 40;
-        fX = leftEdge;
-      } else if (align === 'right') {
-        const rightEdge = Number.isFinite(POS.footer.x) ? POS.footer.x : (pageW - 40);
-        fX = rightEdge - fW;
-      } else {
-        // centre: within optional box [x .. x+w], else whole page width
-        const boxLeft  = Number.isFinite(POS.footer.x) ? POS.footer.x : 0;
-        const boxWidth = Number.isFinite(POS.footer.w) ? POS.footer.w : pageW;
-        fX = boxLeft + (boxWidth - fW) / 2 + (Number.isFinite(POS.footer.offset) ? POS.footer.offset : 0);
-
-        // optional guide box for tuning (OFF by default)
-        if (POS.footer.box) {
-          const boxHeight = fSize + 10;
-          pg.drawRectangle({
-            x: boxLeft,
-            y: fY - 6, // small baseline pad
-            width: boxWidth,
-            height: boxHeight,
-            borderColor: rgb(0.7, 0.6, 0.8),
-            borderWidth: 0.7,
-          });
-        }
-      }
-
-      pg.drawText(footerText, { x: fX, y: fY, size: fSize, font: helv, color: POS.footer.color });
     }
 
     // send PDF
