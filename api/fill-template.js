@@ -6,6 +6,9 @@
 //  • Single-state headline + HOW body + tips + chart:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
 //
+//  • Two-state headline (one line) + BLENDED "what this means" body + chart:
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&blend=1&preview=1
+//
 //  • Two-state headline (one line) + TWO "what this means" bodies + chart:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
 //
@@ -19,7 +22,9 @@
 //  - cx,cy,cw,ch   → override radar x/y/width/height
 //  - box=1         → draw a thin guide rectangle around the radar
 //  - hx,hy,hw,hs,halign       → override SINGLE-state "how this shows up" body
-//  - mx2,my2,mw2,ms2,malign2  → override TWO-state "what this means" body
+//  - mx2,my2,mw2,ms2,malign2  → override TWO-state "what this means" split bodies
+//  - hx2,hy2,hw2,hs2,h2align  → override BLENDED TWO-state "what this means" body
+//  - blend=1       → force pair preview to use the blended body (for tuning)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -110,6 +115,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
+  const wantBlendParam = url.searchParams.get('blend') === '1';
 
   // --- Demo payloads (no Botpress needed) ---
   let data;
@@ -153,9 +159,10 @@ export default async function handler(req, res) {
       ? {
           ...common,
           stateWords: ['Triggered', 'Regulated'], // headline: A & B (one line)
-          // two-state "what this means" bodies (one for each state)
+          // Provide both modes for testing; 'blend=1' will pick the blended version
           how1: 'Feelings and energy arrive fast and show up visibly. Add a micro-pause so the energy helps rather than hijacks.',
-          how2: 'You’re steady and present. You notice what’s happening and adjust without losing yourself.'
+          how2: 'You’re steady and present. You notice what’s happening and adjust without losing yourself.',
+          howPair: 'Energy arrives fast but you settle it into useful motion. Add one micro-pause, then turn intensity into clarity and a simple invite.'
         }
       : {
           ...common,
@@ -175,23 +182,26 @@ export default async function handler(req, res) {
 
   // ======= POSITIONS (increase y to move text DOWN the page) =======
   const POS = {
-    // headline (single vs pair) — single position kept unchanged
+    // headline (single vs pair) — keep as you set them
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE-state: "how this shows up" (BODY ONLY; no title)
-    // Default = the coords you liked (centered, bigger type)
+    // SINGLE-state: "how this shows up" (BODY ONLY; no title) — keep your preferred coords
     howSingle: {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: "what this means" (two bodies, one per state).
-    // Default: a bit smaller and slightly lower than single.
+    // TWO-state: split bodies (keep as-is)
     howPairA: {
       x: 150, y: 880, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
     howPairB: {
       x: 150, y: 920, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
+    },
+
+    // NEW — TWO-state: blended single paragraph (centre by default; you will tune)
+    howPairBlend: {
+      x: 150, y: 870, w: 720, size: 22, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
     // Tips row — titles removed; bodies only
@@ -227,7 +237,7 @@ export default async function handler(req, res) {
     size: num(url, 'hs', POS.howSingle.size),
     align: url.searchParams.get('halign') || POS.howSingle.align,
   };
-  // allow tuning of two-state WHAT bodies as a pair
+  // allow tuning of two-state WHAT bodies as a pair (split mode)
   POS.howPairA = {
     ...POS.howPairA,
     x: num(url, 'mx2', POS.howPairA.x),
@@ -236,7 +246,7 @@ export default async function handler(req, res) {
     size: num(url, 'ms2', POS.howPairA.size),
     align: url.searchParams.get('malign2') || POS.howPairA.align,
   };
-  // keep B relative to A unless explicitly overridden (you can override with my2b/ms2b/etc. later if needed)
+  // keep B relative to A unless explicitly overridden
   POS.howPairB = {
     ...POS.howPairB,
     x: num(url, 'mx2', POS.howPairB.x),
@@ -244,6 +254,15 @@ export default async function handler(req, res) {
     w: num(url, 'mw2', POS.howPairB.w),
     size: num(url, 'ms2', POS.howPairB.size),
     align: url.searchParams.get('malign2') || POS.howPairB.align,
+  };
+  // allow tuning of BLENDED two-state body
+  POS.howPairBlend = {
+    ...POS.howPairBlend,
+    x:   num(url, 'hx2', POS.howPairBlend.x),
+    y:   num(url, 'hy2', POS.howPairBlend.y),
+    w:   num(url, 'hw2', POS.howPairBlend.w),
+    size:num(url, 'hs2', POS.howPairBlend.size),
+    align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
 
   const showBox = url.searchParams.get('box') === '1';
@@ -290,11 +309,23 @@ export default async function handler(req, res) {
         drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
       }
     } else {
-      // TWO-state bodies ("what this means") — two lines/paragraphs
-      const t1 = normText(data.how1 || data.how || '');
-      const t2 = normText(data.how2 || '');
-      if (t1) drawTextBox(page1, helv, t1, POS.howPairA, { maxLines: 2, ellipsis: true });
-      if (t2) drawTextBox(page1, helv, t2, POS.howPairB, { maxLines: 2, ellipsis: true });
+      // TWO-state: prefer BLENDED paragraph when present or explicitly requested
+      const wantBlend = wantBlendParam === true;
+      const tBlend = normText(
+        (data.howPair)
+          || ((wantBlend || (!data.how1 && !data.how2)) ? (data.how || '') : '')
+      );
+
+      if (tBlend) {
+        // single blended paragraph
+        drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 4, ellipsis: true });
+      } else {
+        // fallback: two separate bodies
+        const t1 = normText(data.how1 || '');
+        const t2 = normText(data.how2 || '');
+        if (t1) drawTextBox(page1, helv, t1, POS.howPairA, { maxLines: 2, ellipsis: true });
+        if (t2) drawTextBox(page1, helv, t2, POS.howPairB, { maxLines: 2, ellipsis: true });
+      }
     }
 
     // tips (titles removed; bodies only)
