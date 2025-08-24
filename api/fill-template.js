@@ -13,7 +13,7 @@
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
 //
 //  • Tuner for the radar (draws a guide box):
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1050&cy=620&cw=700&ch=400&box=1
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
 // Query params you can pass anytime while tuning:
 //  - preview=1     → show inline (otherwise downloads)
@@ -182,16 +182,16 @@ export default async function handler(req, res) {
 
   // ======= POSITIONS (increase y to move text DOWN the page) =======
   const POS = {
-    // headline (single vs pair) — keep as you set them
+    // headline (single vs pair)
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE-state: "how this shows up" (BODY ONLY; no title) — keep your preferred coords
+    // SINGLE-state: "how this shows up" (BODY ONLY; no title)
     howSingle: {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: split bodies (keep as-is)
+    // TWO-state: split bodies
     howPairA: {
       x: 150, y: 880, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
@@ -199,12 +199,12 @@ export default async function handler(req, res) {
       x: 150, y: 920, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // NEW — TWO-state: blended single paragraph (centre by default; you will tune)
+    // TWO-state: blended single paragraph
     howPairBlend: {
       x: 150, y: 870, w: 720, size: 22, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // Tips row — titles removed; bodies only
+    // Tips row — bodies only
     tip1Body:        { x: 80,  y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
     tip2Body:        { x: 540, y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
 
@@ -214,8 +214,8 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — **BAKED-IN** with your chosen coords
-    chart: { x: 1050, y: 620, w: 700, h: 400 },
+    // Radar chart — UPDATED DEFAULTS per your choice
+    chart: { x: 1030, y: 620, w: 720, h: 420 },
 
     // footer
     footerY: 20,
