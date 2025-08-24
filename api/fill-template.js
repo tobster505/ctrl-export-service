@@ -2,28 +2,34 @@
 // Fills your static PDF template (public/CTRL_Perspective_template.pdf)
 // with results from Botpress, using pdf-lib (no headless browser).
 //
-// TEST LINKS (safe to click; no Botpress payload required):
-//  • Single-state headline (+ tips/theme/direction):
+// TEST LINKS (chart included, no box):
+//  • Single-state headline:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
-//  • Two-state headline on ONE line (smaller type):
+//  • Two-state headline (A & B) on one line:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
-//  • Tuner for the radar position (draws a guide box):
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&cx=1050&cy=620&cw=700&ch=400&box=1
+//  • Tune the radar (cx,cy,cw,ch). Add &box=1 if you want a thin guide:
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&cx=1050&cy=620&cw=700&ch=400
+//  • Tune “how this shows up” body (hx,hy,hw,hs):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&hx=80&hy=490&hw=430&hs=11
+//  • Tune tip bodies (t1x,t1y,t1w,t1s and t2x,t2y,t2w,t2s):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&t1y=545&t2y=545
 //
 // Query params you can pass anytime:
-//  - preview=1     → show inline in browser (otherwise downloads)
-//  - nograph=1     → skip the chart (helps isolate text issues)
-//  - debug=1       → return JSON with positions & data (no PDF)
+//  - preview=1     → show inline in browser (otherwise download)
+//  - nograph=1     → skip the chart (for isolating text issues)
+//  - debug=1       → JSON with positions & data (no PDF)
 //  - cx,cy,cw,ch   → override radar x/y/width/height while tuning
 //  - box=1         → draw a thin guide rectangle around the radar box
+//  - hx,hy,hw,hs   → override “how this shows up” body block
+//  - t1x,t1y,t1w,t1s (tip1 body), t2x,t2y,t2w,t2s (tip2 body)
 
-export const config = { runtime: 'nodejs' }; // Vercel Node runtime
+export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-/* --------------------------
+/* --------------------------------
    Helpers
---------------------------- */
+--------------------------------- */
 
 // keep ASCII so standard fonts render reliably
 function normText(v, fallback = '') {
@@ -95,9 +101,9 @@ const num = (url, key, def) => {
   return Number.isFinite(n) ? n : def;
 };
 
-/* --------------------------
+/* --------------------------------
    Main handler
---------------------------- */
+--------------------------------- */
 
 export default async function handler(req, res) {
   const url      = new URL(req.url, 'http://localhost');
@@ -110,45 +116,42 @@ export default async function handler(req, res) {
   // --- Demo payloads (no Botpress needed) ---
   let data;
   if (isTest || isPair) {
-    const sampleChartSpec = {
-      type: 'radar',
-      data: {
-        labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-        datasets: [{
-          label: 'Frequency',
-          data: [1, 3, 1, 0],
-          fill: true,
-          backgroundColor: 'rgba(115,72,199,0.18)',
-          borderColor: '#7348C7',
-          borderWidth: 2,
-          pointRadius: [3, 6, 3, 0],
-        }],
-      },
-      options: {
-        plugins: { legend: { display: false } },
-        scales: {
-          r: {
-            min: 0, max: 5,
-            ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-            grid: { circular: true },
-            angleLines: { display: true },
-            pointLabels: { color: '#4A4458', font: { size: 12 } },
-          }
-        }
-      }
-    };
-    const chartUrl = 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(sampleChartSpec));
-
     const common = {
-      // Optional “how this shows up” BODY (no dynamic heading; your template has it)
-      how: 'You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ("I’m on edge") often settles it.',
       directionLabel:  'Steady',
       directionMeaning:'You started and ended in similar zones - steady overall.',
       themeLabel:      'Emotion regulation',
       themeMeaning:    'Settling yourself when feelings spike.',
       tip1: 'Take one breath and name it: "I’m on edge."',
       tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
-      chartUrl,
+      // OPTIONAL “how this shows up” (body only — title is static on the template)
+      how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.',
+      chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
+        type: 'radar',
+        data: {
+          labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
+          datasets: [{
+            label: 'Frequency',
+            data: [1, 3, 1, 0],
+            fill: true,
+            backgroundColor: 'rgba(115,72,199,0.18)',
+            borderColor: '#7348C7',
+            borderWidth: 2,
+            pointRadius: [3, 6, 3, 0],
+          }],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            r: {
+              min: 0, max: 5,
+              ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
+              grid: { circular: true },
+              angleLines: { display: true },
+              pointLabels: { color: '#4A4458', font: { size: 12 } },
+            }
+          }
+        }
+      })),
     };
     data = isPair
       ? { ...common, stateWords: ['Triggered', 'Regulated'] } // two-state headline (one line)
@@ -163,35 +166,34 @@ export default async function handler(req, res) {
     }
   }
 
-  // Defaults for positions (increase y to move text DOWN the page)
+  // ---- POSITIONS (increase y to move text DOWN) ----
   const POS = {
-    // headline (single vs pair) — keep single-state position unchanged
+    // HEADLINE (single vs pair) — single stays exactly where you liked it
     headlineSingle: { x: 90, y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90, y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // tips row
-    tip1Header:      { x: 80,  y: 515, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
-    tip1Body:        { x: 80,  y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
-    tip2Header:      { x: 540, y: 515, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
-    tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    // TIP BODIES (we drop the titles — template already has them)
+    tip1Body: { x: 80,  y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    tip2Body: { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // “How this shows up” BODY ONLY (no dynamic heading)
-    howBody:         { x: 80,  y: 490, w: 430, size: 11.5, color: rgb(0.20, 0.19, 0.30), lineGap: 4 },
+    // “HOW THIS SHOWS UP” (BODY ONLY — title is static on the template)
+    howBody:  { x: 80,  y: 490, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // direction + theme (right column)
+    // RIGHT COLUMN (direction + theme)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // radar chart (you can override with URL tuner)
+    // RADAR CHART (you can override with the tuner)
     chart: { x: 1050, y: 620, w: 700, h: 400 },
 
-    // footer
+    // FOOTER
     footerY: 20,
   };
 
-  // tuner overrides (?cx,cy,cw,ch,box)
+  // ---- TUNERS ----
+  // Radar
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
@@ -199,6 +201,31 @@ export default async function handler(req, res) {
     h: num(url, 'ch', POS.chart.h),
   };
   const showBox = url.searchParams.get('box') === '1';
+
+  // “How this shows up” body
+  POS.howBody = {
+    ...POS.howBody,
+    x: num(url, 'hx', POS.howBody.x),
+    y: num(url, 'hy', POS.howBody.y),
+    w: num(url, 'hw', POS.howBody.w),
+    size: num(url, 'hs', POS.howBody.size),
+  };
+
+  // Tip bodies only (no titles)
+  POS.tip1Body = {
+    ...POS.tip1Body,
+    x: num(url, 't1x', POS.tip1Body.x),
+    y: num(url, 't1y', POS.tip1Body.y),
+    w: num(url, 't1w', POS.tip1Body.w),
+    size: num(url, 't1s', POS.tip1Body.size),
+  };
+  POS.tip2Body = {
+    ...POS.tip2Body,
+    x: num(url, 't2x', POS.tip2Body.x),
+    y: num(url, 't2y', POS.tip2Body.y),
+    w: num(url, 't2w', POS.tip2Body.w),
+    size: num(url, 't2s', POS.tip2Body.size),
+  };
 
   // Optional debug JSON
   if (debug) {
@@ -221,7 +248,9 @@ export default async function handler(req, res) {
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // headline (single or pair on one line)
+    /* -------------------------------
+       DRAW: Headline (single or pair)
+    -------------------------------- */
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
@@ -235,18 +264,23 @@ export default async function handler(req, res) {
       { maxLines: 1, ellipsis: true }
     );
 
-    // tips row
-    drawTextBox(page1, helvBold, 'Try this…',               POS.tip1Header, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, helv,     normText(data.tip1 || ''), POS.tip1Body,   { maxLines: 2, ellipsis: true });
-    drawTextBox(page1, helvBold, 'Try this next time…',     POS.tip2Header, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, helv,     normText(data.tip2 || ''), POS.tip2Body,   { maxLines: 2, ellipsis: true });
+    /* -------------------------------
+       DRAW: Tip bodies (no titles)
+    -------------------------------- */
+    drawTextBox(page1, helv, normText(data.tip1 || ''), POS.tip1Body, { maxLines: 3, ellipsis: true });
+    drawTextBox(page1, helv, normText(data.tip2 || ''), POS.tip2Body, { maxLines: 3, ellipsis: true });
 
-    // “How this shows up” BODY ONLY (no dynamic title — your template already has it)
+    /* -----------------------------------------
+       DRAW: “How this shows up” (body only)
+       (we don’t draw a title; template has it)
+    ------------------------------------------ */
     if (data.how) {
       drawTextBox(page1, helv, normText(data.how), POS.howBody, { maxLines: 4, ellipsis: true });
     }
 
-    // direction + theme
+    /* -------------------------------
+       DRAW: Direction + Theme (right)
+    -------------------------------- */
     if (data.directionLabel)
       drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
     if (data.directionMeaning)
@@ -257,7 +291,9 @@ export default async function handler(req, res) {
     if (data.themeMeaning)
       drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
 
-    // radar chart (optional)
+    /* -------------------------------
+       DRAW: Radar chart (PNG)
+    -------------------------------- */
     if (!noGraph && data.chartUrl) {
       if (showBox) {
         const { x, y, w, h } = POS.chart;
@@ -280,7 +316,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // footer (static)
+    /* -------------------------------
+       DRAW: Footer
+    -------------------------------- */
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
     const fSize = 9;
