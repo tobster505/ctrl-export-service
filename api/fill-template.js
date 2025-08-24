@@ -10,7 +10,7 @@
 //    (pick which pair using &pair=TR | CT | RL | CR | CL | TL):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&pair=TR&preview=1
 //
-//  • Tuner for the radar (draws a guide box; uses your baked-in chart coords):
+//  • Tuner for the radar (uses your baked-in chart coords, box guide optional):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
 // Query params (blended only):
@@ -22,7 +22,7 @@
 //  - hx2,hy2,hw2,hs2,h2align  → override BLENDED two-state "what this means"
 //  - t1x,t1y,t1s,t1w,t1align  → Tip (left): position, size, width, alignment
 //  - t2x,t2y,t2s,t2w,t2align  → Next (right): position, size, width, alignment
-//  - fy,fx,fs                 → Footer/copyright: y (down), x nudge (right), font size
+//  - cpyx,cpyy,cpys,cpyalign  → COPYRIGHT: position (x/y), size, alignment
 //  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
@@ -253,14 +253,15 @@ export default async function handler(req, res) {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: BLENDED single paragraph — **LOCKED DEFAULTS**
+    // TWO-state: BLENDED single paragraph — **YOUR LOCKED DEFAULTS**
     howPairBlend: {
       x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // Tips row — **LOCKED NEW DEFAULTS**
-    tip1Body:        { x: 90,  y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
-    tip2Body:        { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    // Tips row — **LOCKED DEFAULTS** (now steerable via URL too)
+    // (Tip = left, Next = right)
+    tip1Body: { x: 90,  y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
     // Direction + Theme (right column)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
@@ -268,11 +269,11 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — **LOCKED DEFAULTS**
+    // Radar chart — **YOUR LOCKED DEFAULTS**
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // footer (default baseline; overridable by fy/fx/fs)
-    footerY: 20,
+    // Footer (copyright) — default centre bottom
+    footer: { x: null, y: 20, size: 9, align: 'center', color: rgb(0.36, 0.34, 0.50) },
   };
 
   // tuner overrides
@@ -316,6 +317,14 @@ export default async function handler(req, res) {
     w: num(url, 't2w', POS.tip2Body.w),
     size: num(url, 't2s', POS.tip2Body.size),
     align: url.searchParams.get('t2align') || POS.tip2Body.align,
+  };
+  // COPYRIGHT / FOOTER overrides (position + size + alignment)
+  POS.footer = {
+    ...POS.footer,
+    x:    num(url, 'cpyx', POS.footer.x),
+    y:    num(url, 'cpyy', POS.footer.y),      // measured from BOTTOM of page
+    size: num(url, 'cpys', POS.footer.size),
+    align: url.searchParams.get('cpyalign') || POS.footer.align,
   };
 
   const showBox = url.searchParams.get('box') === '1';
@@ -407,20 +416,28 @@ export default async function handler(req, res) {
       }
     }
 
-    // footer (static, now steerable)
+    // footer (copyright) — position + size + alignment
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
-    const footerY = num(url, 'fy', POS.footerY);
-    const footerSize = num(url, 'fs', 9);
-    const footerDx = num(url, 'fx', 0);
-    const fW = helv.widthOfTextAtSize(footer, footerSize);
-    page1.drawText(footer, {
-      x: (pageW - fW) / 2 + footerDx,
-      y: footerY,
-      size: footerSize,
-      font: helv,
-      color: rgb(0.36, 0.34, 0.50)
-    });
+    const fSize = POS.footer.size;
+    const fW = helv.widthOfTextAtSize(footer, fSize);
+    const fY = POS.footer.y; // measured from bottom
+
+    let fX;
+    const align = (POS.footer.align || 'center').toLowerCase();
+    if (align === 'left') {
+      fX = Number.isFinite(POS.footer.x) ? POS.footer.x : 40;
+    } else if (align === 'right') {
+      const rightEdge = Number.isFinite(POS.footer.x) ? POS.footer.x : (pageW - 40);
+      fX = rightEdge - fW;
+    } else {
+      // center (default)
+      fX = Number.isFinite(POS.footer.x)
+        ? POS.footer.x
+        : (pageW - fW) / 2;
+    }
+
+    page1.drawText(footer, { x: fX, y: fY, size: fSize, font: helv, color: POS.footer.color });
 
     // send PDF
     const bytes = await pdfDoc.save();
