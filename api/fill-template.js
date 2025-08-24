@@ -18,11 +18,11 @@
 //  - debug=1       → JSON with data + positions (no PDF)
 //  - nograph=1     → skip the chart
 //  - cx,cy,cw,ch   → override radar x/y/width/height (guide with &box=1)
-//  - hx,hy,hw,hs,halign     → override SINGLE-state "how this shows up"
-//  - hx2,hy2,hw2,hs2,h2align→ override BLENDED two-state "what this means"
-//  - t1x,t1y                 → move Tip (left) box
-//  - t2x,t2y                 → move Next (right) box
-//  - pair=TR|CT|RL|CR|CL|TL → choose which 2-state pair to demo (default TR)
+//  - hx,hy,hw,hs,halign       → override SINGLE-state "how this shows up"
+//  - hx2,hy2,hw2,hs2,h2align  → override BLENDED two-state "what this means"
+//  - t1x,t1y,t1s,t1align      → Tip (left) position, size, alignment
+//  - t2x,t2y,t2s,t2align      → Next (right) position, size, alignment
+//  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -258,8 +258,8 @@ export default async function handler(req, res) {
     },
 
     // Tips row — bodies only (defaults; now steerable via URL)
-    tip1Body:        { x: 80,  y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
-    tip2Body:        { x: 540, y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
+    tip1Body:        { x: 80,  y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'left'  },
+    tip2Body:        { x: 540, y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'left'  },
 
     // Direction + Theme (right column)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
@@ -299,16 +299,20 @@ export default async function handler(req, res) {
     size:num(url, 'hs2', POS.howPairBlend.size),
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
-  // NEW: allow tuning of Tip (left) and Next (right) positions via URL
+  // Tip (left) + Next (right) — add position, size, alignment overrides
   POS.tip1Body = {
     ...POS.tip1Body,
     x: num(url, 't1x', POS.tip1Body.x),
     y: num(url, 't1y', POS.tip1Body.y),
+    size: num(url, 't1s', POS.tip1Body.size),
+    align: url.searchParams.get('t1align') || POS.tip1Body.align,
   };
   POS.tip2Body = {
     ...POS.tip2Body,
     x: num(url, 't2x', POS.tip2Body.x),
     y: num(url, 't2y', POS.tip2Body.y),
+    size: num(url, 't2s', POS.tip2Body.size),
+    align: url.searchParams.get('t2align') || POS.tip2Body.align,
   };
 
   const showBox = url.searchParams.get('box') === '1';
