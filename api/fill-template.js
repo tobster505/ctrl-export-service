@@ -22,6 +22,7 @@
 //  - hx2,hy2,hw2,hs2,h2align  → override BLENDED two-state "what this means"
 //  - t1x,t1y,t1s,t1w,t1align  → Tip (left): position, size, width, alignment
 //  - t2x,t2y,t2s,t2w,t2align  → Next (right): position, size, width, alignment
+//  - fy,fx,fs                 → Footer/copyright: y (down), x nudge (right), font size
 //  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
@@ -252,14 +253,14 @@ export default async function handler(req, res) {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: BLENDED single paragraph — **YOUR LOCKED DEFAULTS**
+    // TWO-state: BLENDED single paragraph — **LOCKED DEFAULTS**
     howPairBlend: {
       x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // Tips row — bodies only (defaults; now steerable via URL)
-    tip1Body:        { x: 80,  y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'left'  },
-    tip2Body:        { x: 540, y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'left'  },
+    // Tips row — **LOCKED NEW DEFAULTS**
+    tip1Body:        { x: 90,  y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    tip2Body:        { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
     // Direction + Theme (right column)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
@@ -267,10 +268,10 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — **YOUR LOCKED DEFAULTS**
+    // Radar chart — **LOCKED DEFAULTS**
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // footer
+    // footer (default baseline; overridable by fy/fx/fs)
     footerY: 20,
   };
 
@@ -299,7 +300,7 @@ export default async function handler(req, res) {
     size:num(url, 'hs2', POS.howPairBlend.size),
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
-  // Tip (left) + Next (right) — add position, size, width, alignment overrides
+  // Tip (left) + Next (right) — position, size, width, alignment overrides
   POS.tip1Body = {
     ...POS.tip1Body,
     x: num(url, 't1x', POS.tip1Body.x),
@@ -406,12 +407,20 @@ export default async function handler(req, res) {
       }
     }
 
-    // footer (static)
+    // footer (static, now steerable)
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
-    const fSize = 9;
-    const fW = helv.widthOfTextAtSize(footer, fSize);
-    page1.drawText(footer, { x: (pageW - fW) / 2, y: POS.footerY, size: fSize, font: helv, color: rgb(0.36, 0.34, 0.50) });
+    const footerY = num(url, 'fy', POS.footerY);
+    const footerSize = num(url, 'fs', 9);
+    const footerDx = num(url, 'fx', 0);
+    const fW = helv.widthOfTextAtSize(footer, footerSize);
+    page1.drawText(footer, {
+      x: (pageW - fW) / 2 + footerDx,
+      y: footerY,
+      size: footerSize,
+      font: helv,
+      color: rgb(0.36, 0.34, 0.50)
+    });
 
     // send PDF
     const bytes = await pdfDoc.save();
