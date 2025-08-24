@@ -20,8 +20,8 @@
 //  - cx,cy,cw,ch   → override radar x/y/width/height (guide with &box=1)
 //  - hx,hy,hw,hs,halign       → override SINGLE-state "how this shows up"
 //  - hx2,hy2,hw2,hs2,h2align  → override BLENDED two-state "what this means"
-//  - t1x,t1y,t1s,t1align      → Tip (left) position, size, alignment
-//  - t2x,t2y,t2s,t2align      → Next (right) position, size, alignment
+//  - t1x,t1y,t1s,t1w,t1align  → Tip (left): position, size, width, alignment
+//  - t2x,t2y,t2s,t2w,t2align  → Next (right): position, size, width, alignment
 //  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
@@ -299,11 +299,12 @@ export default async function handler(req, res) {
     size:num(url, 'hs2', POS.howPairBlend.size),
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
-  // Tip (left) + Next (right) — add position, size, alignment overrides
+  // Tip (left) + Next (right) — add position, size, width, alignment overrides
   POS.tip1Body = {
     ...POS.tip1Body,
     x: num(url, 't1x', POS.tip1Body.x),
     y: num(url, 't1y', POS.tip1Body.y),
+    w: num(url, 't1w', POS.tip1Body.w),
     size: num(url, 't1s', POS.tip1Body.size),
     align: url.searchParams.get('t1align') || POS.tip1Body.align,
   };
@@ -311,6 +312,7 @@ export default async function handler(req, res) {
     ...POS.tip2Body,
     x: num(url, 't2x', POS.tip2Body.x),
     y: num(url, 't2y', POS.tip2Body.y),
+    w: num(url, 't2w', POS.tip2Body.w),
     size: num(url, 't2s', POS.tip2Body.size),
     align: url.searchParams.get('t2align') || POS.tip2Body.align,
   };
