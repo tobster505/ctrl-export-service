@@ -6,13 +6,11 @@
 //  • Single-state headline + HOW body + tips + chart:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
 //
-//  • Two-state headline (one line) + BLENDED "what this means" body + chart:
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&blend=1&preview=1
+//  • Two-state headline (one line) + BLENDED "what this means" body + chart
+//    (pick which pair using &pair=TR | CT | RL | CR | CL | TL):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&pair=TR&blend=1&preview=1
 //
-//  • Two-state headline (one line) + TWO "what this means" bodies + chart:
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
-//
-//  • Tuner for the radar (draws a guide box):
+//  • Tuner for the radar (draws a guide box; uses your baked-in chart coords):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
 // Query params you can pass anytime while tuning:
@@ -25,6 +23,7 @@
 //  - mx2,my2,mw2,ms2,malign2  → override TWO-state "what this means" split bodies
 //  - hx2,hy2,hw2,hs2,h2align  → override BLENDED TWO-state "what this means" body
 //  - blend=1       → force pair preview to use the blended body (for tuning)
+//  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -104,6 +103,15 @@ const num = (url, key, def) => {
   return Number.isFinite(n) ? n : def;
 };
 
+// parse & normalise a pair key from query
+function getPairKey(url) {
+  const raw = String(url.searchParams.get('pair') || '').toUpperCase().replace(/[^A-Z]/g, '');
+  // Accept TR, T_R, RT, R_T etc. → normalise to C_T, T_R, R_L, C_R, C_L, T_L
+  const map = { CT: 'C_T', TC: 'C_T', TR: 'T_R', RT: 'T_R', RL: 'R_L', LR: 'R_L',
+                CR: 'C_R', RC: 'C_R', CL: 'C_L', LC: 'C_L', TL: 'T_L', LT: 'T_L' };
+  return map[raw] || 'T_R';
+}
+
 /* --------------------------
    Main handler
 --------------------------- */
@@ -116,30 +124,88 @@ export default async function handler(req, res) {
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
   const wantBlendParam = url.searchParams.get('blend') === '1';
+  const pairKey  = getPairKey(url); // for pair test mode
 
   // --- Demo payloads (no Botpress needed) ---
   let data;
   if (isTest || isPair) {
+    // Balanced copy + micro-tips for ALL 6 pair combos
+    const PAIRS = {
+      C_T: {
+        words: ['Concealed', 'Triggered'],
+        what:  "You swing between holding back and reacting fast. That usually means safety and pressure signals are both active. The goal is not to pick one; it is to install a small buffer so you can choose how much to share and when.",
+        tips:  [
+          "10-second buffer: name it privately, then choose to speak or pause.",
+          "Share a headline, not the whole story: one sentence, then a question."
+        ]
+      },
+      T_R: {
+        words: ['Triggered', 'Regulated'],
+        what:  "You feel things quickly and can settle yourself. That is a strong self-regulation muscle: energy plus adjustment. The opportunity is to shorten the time from spike to steady.",
+        tips:  [
+          "Use a cue sequence: breathe -> label -> ask.",
+          "Have a micro-reset ready (one breath plus one sentence)."
+        ]
+      },
+      R_L: {
+        words: ['Regulated', 'Lead'],
+        what:  "You move from steady to guiding. People likely anchor around you. The nudge is to keep inviting contributions so leading does not become carrying.",
+        tips:  [
+          "Name the purpose; ask 'Who sees it differently?'",
+          "Hand the pen: let someone else summarise the decision."
+        ]
+      },
+      C_R: {
+        words: ['Concealed', 'Regulated'],
+        what:  "Calm cover. You often hold back until you have steadied, then engage. It reads as thoughtful and low-drama, but can drift into distance. Aim for calm disclosure: share a small, clear line once you are steady so people are not left guessing.",
+        tips:  [
+          "Two-sentence rule: 1) 'I notice...' 2) 'So my view is...'",
+          "Name a small feeling up-front: 'I am a bit uneasy - here is why...'"
+        ]
+      },
+      C_L: {
+        words: ['Concealed', 'Lead'],
+        what:  "Quiet leadership. You prefer to think first and steer without fanfare. Safe and efficient, but it can feel opaque. Go for transparent intent: reveal a sliver of your thinking while you guide.",
+        tips:  [
+          "Open with why plus boundary: 'Our aim is X; I want Y to stay intact.'",
+          "Invite a counterpoint early: 'What risk are we not seeing?'"
+        ]
+      },
+      T_L: {
+        words: ['Triggered', 'Lead'],
+        what:  "Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.",
+        tips:  [
+          "Three-beat check: breathe -> label ('I am fired up') -> quick temperature check.",
+          "Split your line: 'Intent is X. What would make this workable for you?'"
+        ]
+      }
+    };
+
+    const pick = PAIRS[pairKey] || PAIRS.T_R;
+
     const common = {
       directionLabel:  'Steady',
       directionMeaning:'You started and ended in similar zones - steady overall.',
       themeLabel:      'Emotion regulation',
       themeMeaning:    'Settling yourself when feelings spike.',
-      tip1: 'Take one breath and name it: "I’m on edge."', // titles dropped; body only
-      tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
+      tip1: pick.tips[0],
+      tip2: pick.tips[1],
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: {
           labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
           datasets: [{
             label: 'Frequency',
-            data: [1, 3, 1, 0],
+            data: [2, 2, 1, 0], // demo only; placement testing
             fill: true,
             backgroundColor: 'rgba(115,72,199,0.18)',
             borderColor: '#7348C7',
             borderWidth: 2,
-            pointRadius: [3, 6, 3, 0],
-          }],
+            pointRadius: [6, 6, 3, 0],
+            pointHoverRadius: [7, 7, 4, 0],
+            pointBackgroundColor: ['#7348C7','#7348C7','#9D7BE0','#9D7BE0'],
+            pointBorderColor: ['#7348C7','#7348C7','#9D7BE0','#9D7BE0']
+          }]
         },
         options: {
           plugins: { legend: { display: false } },
@@ -155,20 +221,18 @@ export default async function handler(req, res) {
         }
       })),
     };
+
     data = isPair
       ? {
           ...common,
-          stateWords: ['Triggered', 'Regulated'], // headline: A & B (one line)
-          // Provide both modes for testing; 'blend=1' will pick the blended version
-          how1: 'Feelings and energy arrive fast and show up visibly. Add a micro-pause so the energy helps rather than hijacks.',
-          how2: 'You’re steady and present. You notice what’s happening and adjust without losing yourself.',
-          howPair: 'Energy arrives fast but you settle it into useful motion. Add one micro-pause, then turn intensity into clarity and a simple invite.'
+          stateWords: pick.words,    // headline: e.g., 'Triggered & Regulated'
+          howPair: pick.what,        // blended pair body
+          how: pick.what             // also set 'how' so blended mode works even if howPair not used
         }
       : {
           ...common,
-          stateWord: 'Triggered',                  // headline: single state
-          // single-state HOW body
-          how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.'
+          stateWord: 'Triggered',    // single-state demo
+          how: 'You feel things fast and show it. A brief pause or naming the wobble ("I am on edge") often settles it.'
         };
   } else {
     const b64 = url.searchParams.get('data');
@@ -214,7 +278,7 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — UPDATED DEFAULTS per your choice
+    // Radar chart — DEFAULTS baked in from your last step
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
     // footer
@@ -367,7 +431,7 @@ export default async function handler(req, res) {
     }
 
     // footer (static)
-    const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
+    const footer = '© CTRL Model by Toby Newman. All rights reserved. "Orientate, do not rank."';
     const pageW = page1.getWidth();
     const fSize = 9;
     const fW = helv.widthOfTextAtSize(footer, fSize);
