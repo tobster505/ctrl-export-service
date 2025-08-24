@@ -13,7 +13,7 @@
 //  • Tuner for the radar (uses your baked-in chart coords; optional guide box):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
-// Query params (blended only):
+// Query params you can pass while tuning (blended only):
 //  - preview=1     → show inline (otherwise downloads)
 //  - debug=1       → JSON with data + positions (no PDF)
 //  - nograph=1     → skip the chart
@@ -249,12 +249,12 @@ export default async function handler(req, res) {
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE-state: "how this shows up" (BODY ONLY; no title)
+    // SINGLE-state: "how this shows up"
     howSingle: {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: BLENDED single paragraph — **YOUR LOCKED DEFAULTS**
+    // TWO-state: BLENDED single paragraph — **LOCKED DEFAULTS**
     howPairBlend: {
       x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
@@ -269,19 +269,20 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — **YOUR LOCKED DEFAULTS**
+    // Radar chart — **LOCKED DEFAULTS**
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // Footer (copyright) — **YOUR LOCKED DEFAULTS**
-    // Centre within a box starting at x=840, width=950; y measured from bottom.
+    // Footer (copyright) — **LOCKED DEFAULTS** (all pages)
+    // Centre within a box starting at x=540, width=950; y measured from bottom.
     footer: {
       align: 'center',
-      x: 840,     // left edge of the centring box (when align=center)
-      w: 950,     // width of the centring box (when align=center)
+      x: 540,     // left edge of the centring box (centre mode)
+      w: 950,     // width of the centring box
       y: 5,       // distance from bottom of page
       size: 11,   // font size (pt)
       offset: -10,// extra ±px nudge after centring
-      color: rgb(0.36, 0.34, 0.50)
+      color: rgb(0.36, 0.34, 0.50),
+      box: false  // guide box OFF by default
     },
   };
 
@@ -336,7 +337,7 @@ export default async function handler(req, res) {
     y:      num(url, 'cpyy', POS.footer.y),
     size:   num(url, 'cpys', POS.footer.size),
     offset: num(url, 'cpyoffset', POS.footer.offset),
-    box:    url.searchParams.get('cpybox') === '1',
+    box:    url.searchParams.get('cpybox') === '1' ? true : false, // default OFF
   };
 
   const showBox = url.searchParams.get('box') === '1';
@@ -379,7 +380,7 @@ export default async function handler(req, res) {
 
     // ===== HOW/WHAT BODY =====
     if (!twoStates) {
-      // SINGLE-state body ("how this shows up") — body only
+      // SINGLE-state body ("how this shows up")
       if (data.how) {
         drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
       }
@@ -441,11 +442,9 @@ export default async function handler(req, res) {
       const align = (POS.footer.align || 'center').toLowerCase();
 
       if (align === 'left') {
-        // left edge at cpyx (default 40 if unset)
         const leftEdge = Number.isFinite(POS.footer.x) ? POS.footer.x : 40;
         fX = leftEdge;
       } else if (align === 'right') {
-        // right edge at cpyx (default pageW-40 if unset)
         const rightEdge = Number.isFinite(POS.footer.x) ? POS.footer.x : (pageW - 40);
         fX = rightEdge - fW;
       } else {
@@ -454,7 +453,7 @@ export default async function handler(req, res) {
         const boxWidth = Number.isFinite(POS.footer.w) ? POS.footer.w : pageW;
         fX = boxLeft + (boxWidth - fW) / 2 + (Number.isFinite(POS.footer.offset) ? POS.footer.offset : 0);
 
-        // optional guide box for tuning
+        // optional guide box for tuning (OFF by default)
         if (POS.footer.box) {
           const boxHeight = fSize + 10;
           pg.drawRectangle({
