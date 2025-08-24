@@ -2,28 +2,25 @@
 // Fills your static PDF template (public/CTRL_Perspective_template.pdf)
 // with results from Botpress, using pdf-lib (no headless browser).
 //
-// TEST LINKS (safe to click; no Botpress payload required):
-//  • Single-state headline + HOW body + tips + chart:
+// TEST LINKS (no Botpress payload required):
+//  • Single-state headline + HOW body + chart:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
 //
-//  • Two-state headline (one line) + BLENDED "what this means" body + chart
+//  • Two-state headline (one line) + BLENDED "what this means" + chart
 //    (pick which pair using &pair=TR | CT | RL | CR | CL | TL):
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&pair=TR&blend=1&preview=1
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&pair=TR&preview=1
 //
 //  • Tuner for the radar (draws a guide box; uses your baked-in chart coords):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
-// Query params you can pass anytime while tuning:
+// Query params you can pass anytime while tuning (blended only):
 //  - preview=1     → show inline (otherwise downloads)
 //  - debug=1       → JSON with data + positions (no PDF)
 //  - nograph=1     → skip the chart
-//  - cx,cy,cw,ch   → override radar x/y/width/height
-//  - box=1         → draw a thin guide rectangle around the radar
-//  - hx,hy,hw,hs,halign       → override SINGLE-state "how this shows up" body
-//  - mx2,my2,mw2,ms2,malign2  → override TWO-state "what this means" split bodies
-//  - hx2,hy2,hw2,hs2,h2align  → override BLENDED TWO-state "what this means" body
-//  - blend=1       → force pair preview to use the blended body (for tuning)
-//  - pair=TR|CT|RL|CR|CL|TL   → choose which 2-state pair to demo (default TR)
+//  - cx,cy,cw,ch   → override radar x/y/width/height (guide with &box=1)
+//  - hx,hy,hw,hs,halign   → override SINGLE-state "how this shows up" body
+//  - hx2,hy2,hw2,hs2,h2align → override BLENDED TWO-state "what this means" body
+//  - pair=TR|CT|RL|CR|CL|TL → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
@@ -106,7 +103,6 @@ const num = (url, key, def) => {
 // parse & normalise a pair key from query
 function getPairKey(url) {
   const raw = String(url.searchParams.get('pair') || '').toUpperCase().replace(/[^A-Z]/g, '');
-  // Accept TR, T_R, RT, R_T etc. → normalise to C_T, T_R, R_L, C_R, C_L, T_L
   const map = { CT: 'C_T', TC: 'C_T', TR: 'T_R', RT: 'T_R', RL: 'R_L', LR: 'R_L',
                 CR: 'C_R', RC: 'C_R', CL: 'C_L', LC: 'C_L', TL: 'T_L', LT: 'T_L' };
   return map[raw] || 'T_R';
@@ -123,13 +119,12 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
-  const wantBlendParam = url.searchParams.get('blend') === '1';
   const pairKey  = getPairKey(url); // for pair test mode
 
   // --- Demo payloads (no Botpress needed) ---
   let data;
   if (isTest || isPair) {
-    // Balanced copy + micro-tips for ALL 6 pair combos
+    // Balanced copy + micro-tips for ALL 6 pair combos (blended)
     const PAIRS = {
       C_T: {
         words: ['Concealed', 'Triggered'],
@@ -196,7 +191,7 @@ export default async function handler(req, res) {
           labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
           datasets: [{
             label: 'Frequency',
-            data: [2, 2, 1, 0], // demo only; placement testing
+            data: [2, 2, 1, 0], // demo only; for placement testing
             fill: true,
             backgroundColor: 'rgba(115,72,199,0.18)',
             borderColor: '#7348C7',
@@ -225,13 +220,13 @@ export default async function handler(req, res) {
     data = isPair
       ? {
           ...common,
-          stateWords: pick.words,    // headline: e.g., 'Triggered & Regulated'
-          howPair: pick.what,        // blended pair body
-          how: pick.what             // also set 'how' so blended mode works even if howPair not used
+          stateWords: pick.words, // headline: e.g., 'Triggered & Regulated'
+          howPair: pick.what,     // blended pair body
+          how: pick.what          // also set 'how' so blended mode works even if howPair not used
         }
       : {
           ...common,
-          stateWord: 'Triggered',    // single-state demo
+          stateWord: 'Triggered', // single-state demo
           how: 'You feel things fast and show it. A brief pause or naming the wobble ("I am on edge") often settles it.'
         };
   } else {
@@ -255,17 +250,9 @@ export default async function handler(req, res) {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: split bodies
-    howPairA: {
-      x: 150, y: 880, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
-    },
-    howPairB: {
-      x: 150, y: 920, w: 720, size: 20, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
-    },
-
-    // TWO-state: blended single paragraph
+    // TWO-state: BLENDED single paragraph (your defaults baked in)
     howPairBlend: {
-      x: 150, y: 870, w: 720, size: 22, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
+      x: 160, y: 880, w: 700, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
     // Tips row — bodies only
@@ -300,24 +287,6 @@ export default async function handler(req, res) {
     w: num(url, 'hw', POS.howSingle.w),
     size: num(url, 'hs', POS.howSingle.size),
     align: url.searchParams.get('halign') || POS.howSingle.align,
-  };
-  // allow tuning of two-state WHAT bodies as a pair (split mode)
-  POS.howPairA = {
-    ...POS.howPairA,
-    x: num(url, 'mx2', POS.howPairA.x),
-    y: num(url, 'my2', POS.howPairA.y),
-    w: num(url, 'mw2', POS.howPairA.w),
-    size: num(url, 'ms2', POS.howPairA.size),
-    align: url.searchParams.get('malign2') || POS.howPairA.align,
-  };
-  // keep B relative to A unless explicitly overridden
-  POS.howPairB = {
-    ...POS.howPairB,
-    x: num(url, 'mx2', POS.howPairB.x),
-    y: num(url, 'my2b', POS.howPairB.y),
-    w: num(url, 'mw2', POS.howPairB.w),
-    size: num(url, 'ms2', POS.howPairB.size),
-    align: url.searchParams.get('malign2') || POS.howPairB.align,
   };
   // allow tuning of BLENDED two-state body
   POS.howPairBlend = {
@@ -373,22 +342,10 @@ export default async function handler(req, res) {
         drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
       }
     } else {
-      // TWO-state: prefer BLENDED paragraph when present or explicitly requested
-      const wantBlend = wantBlendParam === true;
-      const tBlend = normText(
-        (data.howPair)
-          || ((wantBlend || (!data.how1 && !data.how2)) ? (data.how || '') : '')
-      );
-
+      // TWO-state: BLENDED paragraph only (split mode removed)
+      const tBlend = normText(data.howPair || data.how || '');
       if (tBlend) {
-        // single blended paragraph
         drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 4, ellipsis: true });
-      } else {
-        // fallback: two separate bodies
-        const t1 = normText(data.how1 || '');
-        const t2 = normText(data.how2 || '');
-        if (t1) drawTextBox(page1, helv, t1, POS.howPairA, { maxLines: 2, ellipsis: true });
-        if (t2) drawTextBox(page1, helv, t2, POS.howPairB, { maxLines: 2, ellipsis: true });
       }
     }
 
@@ -431,7 +388,7 @@ export default async function handler(req, res) {
     }
 
     // footer (static)
-    const footer = '© CTRL Model by Toby Newman. All rights reserved. "Orientate, do not rank."';
+    const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
     const fSize = 9;
     const fW = helv.widthOfTextAtSize(footer, fSize);
