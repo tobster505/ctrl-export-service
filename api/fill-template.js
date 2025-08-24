@@ -110,42 +110,45 @@ export default async function handler(req, res) {
   // --- Demo payloads (no Botpress needed) ---
   let data;
   if (isTest || isPair) {
+    const sampleChartSpec = {
+      type: 'radar',
+      data: {
+        labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
+        datasets: [{
+          label: 'Frequency',
+          data: [1, 3, 1, 0],
+          fill: true,
+          backgroundColor: 'rgba(115,72,199,0.18)',
+          borderColor: '#7348C7',
+          borderWidth: 2,
+          pointRadius: [3, 6, 3, 0],
+        }],
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          r: {
+            min: 0, max: 5,
+            ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
+            grid: { circular: true },
+            angleLines: { display: true },
+            pointLabels: { color: '#4A4458', font: { size: 12 } },
+          }
+        }
+      }
+    };
+    const chartUrl = 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify(sampleChartSpec));
+
     const common = {
+      // Optional “how this shows up” BODY (no dynamic heading; your template has it)
+      how: 'You feel things fast and show it. Energy rises quickly. A brief pause or naming the wobble ("I’m on edge") often settles it.',
       directionLabel:  'Steady',
       directionMeaning:'You started and ended in similar zones - steady overall.',
       themeLabel:      'Emotion regulation',
       themeMeaning:    'Settling yourself when feelings spike.',
       tip1: 'Take one breath and name it: "I’m on edge."',
       tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
-      // Optional “how this shows up” (only drawn if provided)
-      // how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.',
-      chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
-        type: 'radar',
-        data: {
-          labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-          datasets: [{
-            label: 'Frequency',
-            data: [1, 3, 1, 0],
-            fill: true,
-            backgroundColor: 'rgba(115,72,199,0.18)',
-            borderColor: '#7348C7',
-            borderWidth: 2,
-            pointRadius: [3, 6, 3, 0],
-          }],
-        },
-        options: {
-          plugins: { legend: { display: false } },
-          scales: {
-            r: {
-              min: 0, max: 5,
-              ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-              grid: { circular: true },
-              angleLines: { display: true },
-              pointLabels: { color: '#4A4458', font: { size: 12 } },
-            }
-          }
-        }
-      })),
+      chartUrl,
     };
     data = isPair
       ? { ...common, stateWords: ['Triggered', 'Regulated'] } // two-state headline (one line)
@@ -172,9 +175,8 @@ export default async function handler(req, res) {
     tip2Header:      { x: 540, y: 515, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
     tip2Body:        { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // OPTIONAL “how this shows up” (only drawn if data.how exists)
-    howHeader:       { x: 80,  y: 470, w: 430, size: 12, color: rgb(0.24, 0.23, 0.35) },
-    howBody:         { x: 80,  y: 490, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    // “How this shows up” BODY ONLY (no dynamic heading)
+    howBody:         { x: 80,  y: 490, w: 430, size: 11.5, color: rgb(0.20, 0.19, 0.30), lineGap: 4 },
 
     // direction + theme (right column)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
@@ -239,10 +241,9 @@ export default async function handler(req, res) {
     drawTextBox(page1, helvBold, 'Try this next time…',     POS.tip2Header, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, helv,     normText(data.tip2 || ''), POS.tip2Body,   { maxLines: 2, ellipsis: true });
 
-    // OPTIONAL “how this shows up” (only if provided)
+    // “How this shows up” BODY ONLY (no dynamic title — your template already has it)
     if (data.how) {
-      drawTextBox(page1, helvBold, 'How this shows up…', POS.howHeader, { maxLines: 1, ellipsis: true });
-      drawTextBox(page1, helv,     normText(data.how),   POS.howBody,   { maxLines: 3, ellipsis: true });
+      drawTextBox(page1, helv, normText(data.how), POS.howBody, { maxLines: 4, ellipsis: true });
     }
 
     // direction + theme
