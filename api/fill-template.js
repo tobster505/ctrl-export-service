@@ -13,13 +13,15 @@
 //  • Tuner for the radar (draws a guide box; uses your baked-in chart coords):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1&cx=1030&cy=620&cw=720&ch=420&box=1
 //
-// Query params you can pass anytime while tuning (blended only):
+// Query params (blended only):
 //  - preview=1     → show inline (otherwise downloads)
 //  - debug=1       → JSON with data + positions (no PDF)
 //  - nograph=1     → skip the chart
 //  - cx,cy,cw,ch   → override radar x/y/width/height (guide with &box=1)
-//  - hx,hy,hw,hs,halign   → override SINGLE-state "how this shows up" body
-//  - hx2,hy2,hw2,hs2,h2align → override BLENDED TWO-state "what this means" body
+//  - hx,hy,hw,hs,halign     → override SINGLE-state "how this shows up"
+//  - hx2,hy2,hw2,hs2,h2align→ override BLENDED two-state "what this means"
+//  - t1x,t1y                 → move Tip (left) box
+//  - t2x,t2y                 → move Next (right) box
 //  - pair=TR|CT|RL|CR|CL|TL → choose which 2-state pair to demo (default TR)
 
 export const config = { runtime: 'nodejs' }; // Vercel Node runtime
@@ -250,12 +252,12 @@ export default async function handler(req, res) {
       x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // TWO-state: BLENDED single paragraph (your defaults baked in)
+    // TWO-state: BLENDED single paragraph — **YOUR LOCKED DEFAULTS**
     howPairBlend: {
-      x: 160, y: 880, w: 700, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
+      x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center'
     },
 
-    // Tips row — bodies only
+    // Tips row — bodies only (defaults; now steerable via URL)
     tip1Body:        { x: 80,  y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
     tip2Body:        { x: 540, y: 535, w: 430, size: 11, lineGap: 3, color: rgb(0.24, 0.23, 0.35) },
 
@@ -265,7 +267,7 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart — DEFAULTS baked in from your last step
+    // Radar chart — **YOUR LOCKED DEFAULTS**
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
     // footer
@@ -288,7 +290,7 @@ export default async function handler(req, res) {
     size: num(url, 'hs', POS.howSingle.size),
     align: url.searchParams.get('halign') || POS.howSingle.align,
   };
-  // allow tuning of BLENDED two-state body
+  // allow tuning of BLENDED two-state body (keeps your locked defaults)
   POS.howPairBlend = {
     ...POS.howPairBlend,
     x:   num(url, 'hx2', POS.howPairBlend.x),
@@ -296,6 +298,17 @@ export default async function handler(req, res) {
     w:   num(url, 'hw2', POS.howPairBlend.w),
     size:num(url, 'hs2', POS.howPairBlend.size),
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
+  };
+  // NEW: allow tuning of Tip (left) and Next (right) positions via URL
+  POS.tip1Body = {
+    ...POS.tip1Body,
+    x: num(url, 't1x', POS.tip1Body.x),
+    y: num(url, 't1y', POS.tip1Body.y),
+  };
+  POS.tip2Body = {
+    ...POS.tip2Body,
+    x: num(url, 't2x', POS.tip2Body.x),
+    y: num(url, 't2y', POS.tip2Body.y),
   };
 
   const showBox = url.searchParams.get('box') === '1';
@@ -342,7 +355,7 @@ export default async function handler(req, res) {
         drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
       }
     } else {
-      // TWO-state: BLENDED paragraph only (split mode removed)
+      // TWO-state: BLENDED paragraph only
       const tBlend = normText(data.howPair || data.how || '');
       if (tBlend) {
         drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 4, ellipsis: true });
