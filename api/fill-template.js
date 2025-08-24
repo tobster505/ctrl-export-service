@@ -2,28 +2,27 @@
 // Fills your static PDF template (public/CTRL_Perspective_template.pdf)
 // with results from Botpress, using pdf-lib (no headless browser).
 //
-// TEST LINKS (chart included, no box):
+// TEST LINKS (no Botpress payload needed; chart always included):
 //  • Single-state headline:
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1
-//  • Two-state headline (A & B) on one line:
+//  • Two-state headline on ONE line (smaller type):
 //    https://ctrl-export-service.vercel.app/api/fill-template?test=pair&preview=1
-//  • Tune the radar (cx,cy,cw,ch). Add &box=1 if you want a thin guide:
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&cx=1050&cy=620&cw=700&ch=400
-//  • Tune “how this shows up” body (hx,hy,hw,hs):
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&hx=80&hy=490&hw=430&hs=11
-//  • Tune tip bodies (t1x,t1y,t1w,t1s and t2x,t2y,t2w,t2s):
-//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&t1y=545&t2y=545
+//  • Tune ONLY the “How this shows up” box (position, width, size, centering):
+//    https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&hx=280&hy=850&hw=700&hs=18&halign=center
+//
+// Optional dev tuner (chart box):
+//  • https://ctrl-export-service.vercel.app/api/fill-template?test=1&preview=1&cx=1050&cy=620&cw=700&ch=400&box=1
 //
 // Query params you can pass anytime:
-//  - preview=1     → show inline in browser (otherwise download)
-//  - nograph=1     → skip the chart (for isolating text issues)
-//  - debug=1       → JSON with positions & data (no PDF)
+//  - preview=1     → show inline in browser (otherwise downloads)
+//  - nograph=1     → skip the chart (helps isolate text issues)
+//  - debug=1       → return JSON with positions & data (no PDF)
 //  - cx,cy,cw,ch   → override radar x/y/width/height while tuning
 //  - box=1         → draw a thin guide rectangle around the radar box
-//  - hx,hy,hw,hs   → override “how this shows up” body block
-//  - t1x,t1y,t1w,t1s (tip1 body), t2x,t2y,t2w,t2s (tip2 body)
+//  - hx,hy,hw,hs   → override “How this shows up” x/y/width/font-size
+//  - halign        → left | center | right (for “How…”)
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs' }; // Vercel Node runtime
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
@@ -40,7 +39,7 @@ function normText(v, fallback = '') {
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 
-// simple line-wrapper + box-draw (y measured from TOP of page)
+// precise line-wrap using actual font widths; then draw (y measured from TOP)
 function drawTextBox(page, font, text, spec, opts = {}) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
@@ -49,37 +48,43 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
-  const lines = normText(text).split('\n');
-  const avgCharW = size * 0.55;
-  const maxChars = Math.max(8, Math.floor(w / avgCharW));
-  const wrapped = [];
-  for (const raw of lines) {
-    let rem = raw.trim();
-    while (rem.length > maxChars) {
-      let cut = rem.lastIndexOf(' ', maxChars);
-      if (cut <= 0) cut = maxChars;
-      wrapped.push(rem.slice(0, cut).trim());
-      rem = rem.slice(cut).trim();
-    }
-    if (rem) wrapped.push(rem);
-  }
+  const pageH = page.getHeight();
+  const topY  = pageH - y; // convert to pdf-lib coords
 
-  let out = wrapped;
-  if (wrapped.length > maxLines) {
-    out = wrapped.slice(0, maxLines);
+  const words = normText(text).replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines = [];
+  const spaceW = font.widthOfTextAtSize(' ', size);
+  let cur = '';
+  let curW = 0;
+
+  for (const word of words) {
+    const wordW = font.widthOfTextAtSize(word, size);
+    if (!cur) { cur = word; curW = wordW; continue; }
+    if (curW + spaceW + wordW <= w) {
+      cur  += ' ' + word;
+      curW += spaceW + wordW;
+    } else {
+      lines.push(cur);
+      cur  = word;
+      curW = wordW;
+    }
+  }
+  if (cur) lines.push(cur);
+
+  let out = lines;
+  if (lines.length > maxLines) {
+    out = lines.slice(0, maxLines);
     if (ellipsis) out[out.length - 1] = out[out.length - 1].replace(/\.*$/, '…');
   }
 
-  const pageH = page.getHeight();
-  const topY = pageH - y; // convert to pdf-lib coords
-  const widthOf = (s) => font.widthOfTextAtSize(s, size);
   const lineHeight = size + lineGap;
-
   let yCursor = topY;
+
   for (const line of out) {
+    const lineW = font.widthOfTextAtSize(line, size);
     let drawX = x;
-    if (align === 'center')       drawX = x + (w - widthOf(line)) / 2;
-    else if (align === 'right')   drawX = x + (w - widthOf(line));
+    if (align === 'center')      drawX = x + (w - lineW) / 2;
+    else if (align === 'right')  drawX = x + (w - lineW);
     page.drawText(line, { x: drawX, y: yCursor, size, font, color });
     yCursor -= lineHeight;
   }
@@ -123,7 +128,6 @@ export default async function handler(req, res) {
       themeMeaning:    'Settling yourself when feelings spike.',
       tip1: 'Take one breath and name it: "I’m on edge."',
       tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
-      // OPTIONAL “how this shows up” (body only — title is static on the template)
       how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
@@ -166,34 +170,33 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---- POSITIONS (increase y to move text DOWN) ----
+  // Defaults for positions (increase y to move DOWN the page)
   const POS = {
-    // HEADLINE (single vs pair) — single stays exactly where you liked it
+    // headline (single vs pair) — single-state position unchanged
     headlineSingle: { x: 90, y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90, y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // TIP BODIES (we drop the titles — template already has them)
-    tip1Body: { x: 80,  y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
-    tip2Body: { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    // tips — BODY ONLY (no "Try this" titles)
+    tip1BodyOnly:   { x: 80,  y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    tip2BodyOnly:   { x: 540, y: 535, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // “HOW THIS SHOWS UP” (BODY ONLY — title is static on the template)
-    howBody:  { x: 80,  y: 490, w: 430, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    // OPTIONAL “How this shows up” paragraph (no title; template already has it)
+    howBox:         { x: 280, y: 850, w: 700, size: 18, color: rgb(0.12, 0.11, 0.2), align: 'center' },
 
-    // RIGHT COLUMN (direction + theme)
-    directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
-    directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
-    themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
-    themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    // direction + theme (right column)
+    directionHeader:{ x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
+    directionBody:  { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
+    themeHeader:    { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
+    themeBody:      { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // RADAR CHART (you can override with the tuner)
-    chart: { x: 1050, y: 620, w: 700, h: 400 },
+    // radar chart (defaults; you can override with URL tuner)
+    chart:          { x: 1050, y: 620, w: 700, h: 400 },
 
-    // FOOTER
+    // footer
     footerY: 20,
   };
 
-  // ---- TUNERS ----
-  // Radar
+  // tuners (chart + how paragraph)
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
@@ -202,29 +205,13 @@ export default async function handler(req, res) {
   };
   const showBox = url.searchParams.get('box') === '1';
 
-  // “How this shows up” body
-  POS.howBody = {
-    ...POS.howBody,
-    x: num(url, 'hx', POS.howBody.x),
-    y: num(url, 'hy', POS.howBody.y),
-    w: num(url, 'hw', POS.howBody.w),
-    size: num(url, 'hs', POS.howBody.size),
-  };
-
-  // Tip bodies only (no titles)
-  POS.tip1Body = {
-    ...POS.tip1Body,
-    x: num(url, 't1x', POS.tip1Body.x),
-    y: num(url, 't1y', POS.tip1Body.y),
-    w: num(url, 't1w', POS.tip1Body.w),
-    size: num(url, 't1s', POS.tip1Body.size),
-  };
-  POS.tip2Body = {
-    ...POS.tip2Body,
-    x: num(url, 't2x', POS.tip2Body.x),
-    y: num(url, 't2y', POS.tip2Body.y),
-    w: num(url, 't2w', POS.tip2Body.w),
-    size: num(url, 't2s', POS.tip2Body.size),
+  POS.howBox = {
+    x: num(url, 'hx', POS.howBox.x),
+    y: num(url, 'hy', POS.howBox.y),
+    w: num(url, 'hw', POS.howBox.w),
+    size: num(url, 'hs', POS.howBox.size),
+    color: POS.howBox.color,
+    align: (url.searchParams.get('halign') || POS.howBox.align || 'left'),
   };
 
   // Optional debug JSON
@@ -243,14 +230,12 @@ export default async function handler(req, res) {
   try {
     // load template + fonts
     const templateBytes = await loadTemplateBytes(req);
-    const pdfDoc = await PDFDocument.load(templateBytes);
-    const page1  = pdfDoc.getPage(0);
-    const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const pdfDoc  = await PDFDocument.load(templateBytes);
+    const page1   = pdfDoc.getPage(0);
+    const helv    = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const helvB   = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    /* -------------------------------
-       DRAW: Headline (single or pair)
-    -------------------------------- */
+    // headline (single or pair on one line)
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
@@ -258,42 +243,33 @@ export default async function handler(req, res) {
 
     drawTextBox(
       page1,
-      helvBold,
+      helvB,
       headlineText,
       { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' },
       { maxLines: 1, ellipsis: true }
     );
 
-    /* -------------------------------
-       DRAW: Tip bodies (no titles)
-    -------------------------------- */
-    drawTextBox(page1, helv, normText(data.tip1 || ''), POS.tip1Body, { maxLines: 3, ellipsis: true });
-    drawTextBox(page1, helv, normText(data.tip2 || ''), POS.tip2Body, { maxLines: 3, ellipsis: true });
+    // tips — body only
+    if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1BodyOnly, { maxLines: 3, ellipsis: true });
+    if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2BodyOnly, { maxLines: 3, ellipsis: true });
 
-    /* -----------------------------------------
-       DRAW: “How this shows up” (body only)
-       (we don’t draw a title; template has it)
-    ------------------------------------------ */
+    // “How this shows up” paragraph (only if provided; no title)
     if (data.how) {
-      drawTextBox(page1, helv, normText(data.how), POS.howBody, { maxLines: 4, ellipsis: true });
+      drawTextBox(page1, helv, normText(data.how), POS.howBox, { maxLines: 4, ellipsis: true });
     }
 
-    /* -------------------------------
-       DRAW: Direction + Theme (right)
-    -------------------------------- */
+    // direction + theme
     if (data.directionLabel)
-      drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
+      drawTextBox(page1, helvB, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
     if (data.directionMeaning)
-      drawTextBox(page1, helv,     normText(data.directionMeaning),      POS.directionBody,   { maxLines: 3, ellipsis: true });
+      drawTextBox(page1, helv,   normText(data.directionMeaning),      POS.directionBody,   { maxLines: 3, ellipsis: true });
 
     if (data.themeLabel)
-      drawTextBox(page1, helvBold, normText(data.themeLabel) + '…',      POS.themeHeader,     { maxLines: 1, ellipsis: true });
+      drawTextBox(page1, helvB,  normText(data.themeLabel) + '…',     POS.themeHeader,     { maxLines: 1, ellipsis: true });
     if (data.themeMeaning)
-      drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
+      drawTextBox(page1, helv,   normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
 
-    /* -------------------------------
-       DRAW: Radar chart (PNG)
-    -------------------------------- */
+    // radar chart (default: included; no border unless &box=1)
     if (!noGraph && data.chartUrl) {
       if (showBox) {
         const { x, y, w, h } = POS.chart;
@@ -316,9 +292,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* -------------------------------
-       DRAW: Footer
-    -------------------------------- */
+    // footer (static)
     const footer = '© CTRL Model by Toby Newman. All rights reserved. “Orientate, don’t rank.”';
     const pageW = page1.getWidth();
     const fSize = 9;
