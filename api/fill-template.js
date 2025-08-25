@@ -1,8 +1,9 @@
 // /api/fill-template.js
 // Draws your CTRL profile onto the static template using pdf-lib.
-// Safer version: lazy imports, early debug return, tolerant fetches.
+// Safe version: runtime "nodejs", lazy-import pdf-lib, early debug return,
+// tolerant template/chart fetch, all your tuners preserved.
 
-export const config = { runtime: 'nodejs18.x' }; // safe on Vercel; omit if you prefer project default
+export const config = { runtime: 'nodejs' };
 
 /* --------------------------
    Helpers (no heavy deps)
@@ -23,20 +24,17 @@ const num = (url, key, def) => {
   return Number.isFinite(n) ? n : def;
 };
 
-// load template from /public (with a fallback guard)
+// load template from /public (guards with readable error)
 async function loadTemplateBytes(req) {
   const host  = req.headers.host || 'ctrl-export-service.vercel.app';
   const proto = req.headers['x-forwarded-proto'] || 'https';
   const url   = `${proto}://${host}/CTRL_Perspective_template.pdf`;
   const r = await fetch(url);
-  if (!r.ok) {
-    throw new Error(`template fetch failed: ${r.status} ${r.statusText} @ ${url}`);
-  }
+  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText} @ ${url}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// simple line-wrapper + box-draw (y measured from TOP of page)
-// pdf-lib specifics are injected via args to avoid hard imports.
+// simple line-wrapper + draw (y measured from TOP of page)
 function drawTextBox(page, font, text, spec, opts = {}, pdfRgb) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = pdfRgb(0, 0, 0),
@@ -100,6 +98,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
+  const showBox  = url.searchParams.get('box') === '1';
 
   // --- Build data (NO pdf-lib yet) ---
   let data;
@@ -144,6 +143,7 @@ export default async function handler(req, res) {
         ? {
             ...common,
             stateWords: ['Triggered', 'Lead'],
+            // blended pair copy (example; real payload will come from Botpress)
             howPair: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.',
             how: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.'
           }
@@ -173,21 +173,21 @@ export default async function handler(req, res) {
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: [0.12, 0.11, 0.2] },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: [0.12, 0.11, 0.2] },
 
-    // SINGLE-state body (you said you’ve already tuned these elsewhere)
+    // SINGLE-state body (centre; you already tuned elsewhere)
     howSingle: {
       x: num(url, 'hx', 160), y: num(url, 'hy', 850), w: num(url, 'hw', 700),
       size: num(url, 'hs', 30), lineGap: 6, color: [0.24, 0.23, 0.35],
       align: url.searchParams.get('halign') || 'center'
     },
 
-    // BLENDED two-state body (locked by you)
+    // BLENDED two-state body — **locked** per your baseline
     howPairBlend: {
       x: num(url, 'hx2', 55), y: num(url, 'hy2', 830), w: num(url, 'hw2', 950),
       size: num(url, 'hs2', 24), lineGap: 5, color: [0.24, 0.23, 0.35],
       align: url.searchParams.get('h2align') || 'center'
     },
 
-    // Tips (“tip” and “next”) — tunable
+    // Tips (“tip” and “next”) — tunable + centred
     tip1Body: {
       x: num(url, 't1x', 90), y: num(url, 't1y', 1015), w: num(url, 't1w', 460),
       size: num(url, 't1s', 23), lineGap: 3, color: [0.24, 0.23, 0.35],
@@ -205,7 +205,7 @@ export default async function handler(req, res) {
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: [0.24, 0.23, 0.35] },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: [0.24, 0.23, 0.35] },
 
-    // Radar chart (locked by you; tunable via URL)
+    // Radar chart — **your locked defaults**, tunable via URL
     chart: {
       x: num(url, 'cx', 1030),
       y: num(url, 'cy', 620),
@@ -213,7 +213,7 @@ export default async function handler(req, res) {
       h: num(url, 'ch', 420),
     },
 
-    // Page 2 supporting blocks (tunable)
+    // (Optional) Page 2 supporting blocks (tunable; rendering off by default)
     p2: {
       x: num(url, 'p2x', 90),
       y: num(url, 'p2y', 160),
@@ -224,7 +224,7 @@ export default async function handler(req, res) {
       max: num(url, 'p2max', 3)    // max lines per body
     },
 
-    // footer (you’re hard-coding this in template now; we won’t draw)
+    // footer removed (you’re hard-coding this into the template now)
     footerY: 20,
   };
 
@@ -242,7 +242,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Lazy import pdf-lib so we don’t crash before debug returns
+    // Lazy import pdf-lib so we don’t blow up before debug mode returns
     const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
 
     // load template
@@ -253,8 +253,6 @@ export default async function handler(req, res) {
     // fonts
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    // util to translate RGB arrays into pdf-lib rgb()
     const pdfRgb = (r, g, b) => rgb(r, g, b);
     const useColor = (arr) => pdfRgb(arr[0], arr[1], arr[2]);
 
@@ -274,17 +272,15 @@ export default async function handler(req, res) {
 
     // ===== HOW/WHAT BODY =====
     if (!twoStates) {
-      // SINGLE-state body
       if (data.how) {
         const s = POS.howSingle;
         drawTextBox(page1, helv, normText(data.how), { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
       }
     } else {
-      // BLENDED two-state body (one paragraph)
-      const t = normText(data.howPair || data.how || '');
-      if (t) {
+      const blended = normText(data.howPair || data.how || '');
+      if (blended) {
         const s = POS.howPairBlend;
-        drawTextBox(page1, helv, t, { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
+        drawTextBox(page1, helv, blended, { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
       }
     }
 
@@ -324,29 +320,19 @@ export default async function handler(req, res) {
           const png = await pdfDoc.embedPng(await r.arrayBuffer());
           const { x, y, w, h } = POS.chart;
           const pageH = page1.getHeight();
+          if (showBox) {
+            page1.drawRectangle({
+              x, y: pageH - y - h, width: w, height: h,
+              borderColor: rgb(0.45, 0.35, 0.6), borderWidth: 1,
+            });
+          }
           page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
         }
-      } catch {
-        // ignore chart failures so PDF still renders
-      }
+      } catch { /* ignore chart failures */ }
     }
 
-    // -------- (Optional) Page 2 supporting blocks ----------
-    // If you later add a second page to the template, uncomment to render:
-    /*
-    const page2 = pdfDoc.addPage();
-    const p2 = POS.p2;
-    const hColor = pdfRgb(0.24, 0.23, 0.35);
-    const bColor = pdfRgb(0.24, 0.23, 0.35);
-    const blocks = Array.isArray(data.page2Blocks) ? data.page2Blocks : []; // [{title, body}, ...]
-    let y = p2.y;
-    for (const blk of blocks) {
-      drawTextBox(page2, helvBold, normText(blk.title||''), { x:p2.x, y, w:p2.w, size:p2.hSize, color:hColor }, { maxLines: 1, ellipsis: true }, pdfRgb);
-      y += p2.hSize + 6;
-      drawTextBox(page2, helv, normText(blk.body||''), { x:p2.x, y, w:p2.w, size:p2.bSize, color:bColor }, { maxLines: p2.max, ellipsis: true }, pdfRgb);
-      y += (p2.bSize + 3) * Math.min(p2.max, 3) + p2.gap;
-    }
-    */
+    // (Optional) Page 2 blocks are ready to use later:
+    // See commented code in previous message; keeping it off for now.
 
     // send PDF
     const bytes = await pdfDoc.save();
