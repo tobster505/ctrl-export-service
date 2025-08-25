@@ -1,56 +1,41 @@
 // /api/fill-template.js
-// Draws your CTRL profile onto the static template using pdf-lib.
-// Safe version: runtime "nodejs", lazy-import pdf-lib, early debug return,
-// tolerant template/chart fetch, all your tuners preserved.
+// Renders CTRL PDF (page 1 + page 2) using pdf-lib.
+// Uses locked defaults you approved; still tunable via query params.
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: "nodejs" };
+
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 /* --------------------------
-   Helpers (no heavy deps)
+   Helpers
 --------------------------- */
 
-// ASCII normaliser so standard fonts render reliably
-function normText(v, fallback = '') {
+// keep ASCII so standard fonts render reliably
+function normText(v, fallback = "") {
   return String(v ?? fallback)
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, '-')
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
 }
 
-// parse numeric query param with default
-const num = (url, key, def) => {
-  const n = Number(url.searchParams.get(key));
-  return Number.isFinite(n) ? n : def;
-};
-
-// load template from /public (guards with readable error)
-async function loadTemplateBytes(req) {
-  const host  = req.headers.host || 'ctrl-export-service.vercel.app';
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  const url   = `${proto}://${host}/CTRL_Perspective_template.pdf`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText} @ ${url}`);
-  return new Uint8Array(await r.arrayBuffer());
-}
-
-// simple line-wrapper + draw (y measured from TOP of page)
-function drawTextBox(page, font, text, spec, opts = {}, pdfRgb) {
+// simple line-wrapper + box-draw (y measured from TOP of page)
+function drawTextBox(page, font, text, spec, opts = {}) {
   const {
-    x = 40, y = 40, w = 520, size = 12, color = pdfRgb(0, 0, 0),
-    align = 'left', lineGap = 3,
+    x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
+    align = "left", lineGap = 3,
   } = spec || {};
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
-  const lines = normText(text).split('\n');
+  const lines = normText(text).split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
   const wrapped = [];
   for (const raw of lines) {
     let rem = raw.trim();
     while (rem.length > maxChars) {
-      let cut = rem.lastIndexOf(' ', maxChars);
+      let cut = rem.lastIndexOf(" ", maxChars);
       if (cut <= 0) cut = maxChars;
       wrapped.push(rem.slice(0, cut).trim());
       rem = rem.slice(cut).trim();
@@ -61,7 +46,7 @@ function drawTextBox(page, font, text, spec, opts = {}, pdfRgb) {
   let out = wrapped;
   if (wrapped.length > maxLines) {
     out = wrapped.slice(0, maxLines);
-    if (ellipsis) out[out.length - 1] = out[out.length - 1].replace(/\.*$/, '…');
+    if (ellipsis) out[out.length - 1] = out[out.length - 1].replace(/\.*$/, "…");
   }
 
   const pageH = page.getHeight();
@@ -72,278 +57,308 @@ function drawTextBox(page, font, text, spec, opts = {}, pdfRgb) {
   let yCursor = topY;
   for (const line of out) {
     let drawX = x;
-    if (align === 'center')       drawX = x + (w - widthOf(line)) / 2;
-    else if (align === 'right')   drawX = x + (w - widthOf(line));
+    if (align === "center")       drawX = x + (w - widthOf(line)) / 2;
+    else if (align === "right")   drawX = x + (w - widthOf(line));
     page.drawText(line, { x: drawX, y: yCursor, size, font, color });
     yCursor -= lineHeight;
   }
 }
+
+// load template from /public (works on Vercel)
+async function loadTemplateBytes(req) {
+  const host  = req.headers.host || "ctrl-export-service.vercel.app";
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const url   = `${proto}://${host}/CTRL_Perspective_template.pdf`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// parse numeric query param with default
+const num = (url, key, def) => {
+  const n = Number(url.searchParams.get(key));
+  return Number.isFinite(n) ? n : def;
+};
 
 /* --------------------------
    Main handler
 --------------------------- */
 
 export default async function handler(req, res) {
-  let url;
-  try {
-    url = new URL(req.url, 'http://localhost');
-  } catch {
-    res.statusCode = 400;
-    res.end('Bad URL');
-    return;
-  }
+  const url      = new URL(req.url, "http://localhost");
+  const isTest   = url.searchParams.get("test") === "1";
+  const isPair   = url.searchParams.get("test") === "pair";
+  const preview  = url.searchParams.get("preview") === "1";
+  const debug    = url.searchParams.get("debug") === "1";
+  const noGraph  = url.searchParams.get("nograph") === "1";
 
-  const isTest   = url.searchParams.get('test') === '1';
-  const isPair   = url.searchParams.get('test') === 'pair';
-  const debug    = url.searchParams.get('debug') === '1';
-  const noGraph  = url.searchParams.get('nograph') === '1';
-  const preview  = url.searchParams.get('preview') === '1';
-  const showBox  = url.searchParams.get('box') === '1';
-
-  // --- Build data (NO pdf-lib yet) ---
+  // --- Demo payloads (no Botpress needed) ---
   let data;
-  try {
-    if (isTest || isPair) {
-      const common = {
-        directionLabel:  'Steady',
-        directionMeaning:'You started and ended in similar zones - steady overall.',
-        themeLabel:      'Emotion regulation',
-        themeMeaning:    'Settling yourself when feelings spike.',
-        tip1: 'Take one breath and name it: "I’m on edge."',
-        tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
-        chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
-          type: 'radar',
-          data: {
-            labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
-            datasets: [{
-              label: 'Frequency',
-              data: [1, 3, 1, 0],
-              fill: true,
-              backgroundColor: 'rgba(115,72,199,0.18)',
-              borderColor: '#7348C7',
-              borderWidth: 2,
-              pointRadius: [3, 6, 3, 0],
-            }],
-          },
-          options: {
-            plugins: { legend: { display: false } },
-            scales: {
-              r: {
-                min: 0, max: 5,
-                ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-                grid: { circular: true },
-                angleLines: { display: true },
-                pointLabels: { color: '#4A4458', font: { size: 12 } },
-              }
+  if (isTest || isPair) {
+    const common = {
+      directionLabel:  "Steady",
+      directionMeaning:"You started and ended in similar zones - steady overall.",
+      themeLabel:      "Emotion regulation",
+      themeMeaning:    "Settling yourself when feelings spike.",
+      tip1: "Take one breath and name it: 'I am on edge.'",
+      tip2: "Choose your gear on purpose: protect, steady, or lead - say it in one line.",
+      chartUrl: "https://quickchart.io/chart?v=4&c=" + encodeURIComponent(JSON.stringify({
+        type: "radar",
+        data: {
+          labels: ["Concealed","Triggered","Regulated","Lead"],
+          datasets: [{
+            label: "Frequency",
+            data: [1,3,1,0],
+            fill: true,
+            backgroundColor: "rgba(115,72,199,0.18)",
+            borderColor: "#7348C7",
+            borderWidth: 2,
+            pointRadius: [3,6,3,0],
+            pointHoverRadius: [4,7,4,0],
+            pointBackgroundColor: ["#9D7BE0","#7348C7","#9D7BE0","#9D7BE0"],
+            pointBorderColor:     ["#9D7BE0","#7348C7","#9D7BE0","#9D7BE0"],
+          }],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            r: {
+              min: 0, max: 5,
+              ticks: { display: true, stepSize: 1, backdropColor: "rgba(0,0,0,0)" },
+              grid: { circular: true },
             }
           }
-        })),
-      };
-      data = isPair
-        ? {
-            ...common,
-            stateWords: ['Triggered', 'Lead'],
-            // blended pair copy (example; real payload will come from Botpress)
-            howPair: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.',
-            how: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.'
-          }
-        : {
-            ...common,
-            stateWord: 'Triggered',
-            how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.'
-          };
-    } else {
-      const b64 = url.searchParams.get('data');
-      if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
-      try {
-        data = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
-      } catch (e) {
-        res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
-      }
+        }
+      })),
+      // Page 2 demo items
+      page2Blocks: [
+        { title: "Most & least seen",     body: "Most seen: Triggered. Least seen: Lead. That is your current centre of gravity - keep its strengths and add one tiny counter-balance." },
+        { title: "Start → Finish",        body: "Started in Triggered, finished in Triggered — steady. You started and ended in similar zones - steady overall." },
+        { title: "Pattern shape",         body: "Varied responses without one rhythm. Reflect briefly to spot what flipped you." },
+        { title: "Switching & volatility",body: "You switched 3 of 4 steps (volatility ≈ 0.75). High volatility - helpful if chosen; draining if automatic." },
+        { title: "Streaks / clusters",    body: "Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction." },
+        { title: "Momentum",              body: "Steady. You started and ended in similar zones - steady overall." },
+        { title: "Resilience & retreat",  body: "Moved up after C/T: 1. Slipped down after R/L: 1. Even balance - keep the resets that help you recover." },
+        { title: "Early vs late",         body: "Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale)." },
+      ],
+    };
+    data = isPair
+      ? { ...common,
+          stateWords: ["Triggered","Lead"],
+          howPair: "Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps."
+        }
+      : { ...common,
+          stateWord: "Triggered",
+          how: "Feelings and energy arrive fast and show up visibly. The work is adding a micro-pause so the energy helps rather than hijacks."
+        };
+  } else {
+    const b64 = url.searchParams.get("data");
+    if (!b64) { res.statusCode = 400; res.end("Missing ?data"); return; }
+    try {
+      data = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+    } catch (e) {
+      res.statusCode = 400; res.end("Invalid ?data: " + (e?.message || e)); return;
     }
-  } catch (e) {
-    res.statusCode = 500;
-    res.end('payload build error: ' + (e?.message || e));
-    return;
   }
 
   // ======= POSITIONS (increase y to move text DOWN the page) =======
   const POS = {
-    // headline (single vs pair)
-    headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: [0.12, 0.11, 0.2] },
-    headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: [0.12, 0.11, 0.2] },
+    // Headline (single vs pair) — you already tuned these on the template; unchanged here
+    headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
+    headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE-state body (centre; you already tuned elsewhere)
-    howSingle: {
-      x: num(url, 'hx', 160), y: num(url, 'hy', 850), w: num(url, 'hw', 700),
-      size: num(url, 'hs', 30), lineGap: 6, color: [0.24, 0.23, 0.35],
-      align: url.searchParams.get('halign') || 'center'
-    },
+    // SINGLE-state "how this shows up" (kept centred/bigger by default)
+    howSingle: { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24,0.23,0.35), align: "center" },
 
-    // BLENDED two-state body — **locked** per your baseline
-    howPairBlend: {
-      x: num(url, 'hx2', 55), y: num(url, 'hy2', 830), w: num(url, 'hw2', 950),
-      size: num(url, 'hs2', 24), lineGap: 5, color: [0.24, 0.23, 0.35],
-      align: url.searchParams.get('h2align') || 'center'
-    },
+    // BLENDED two-state "what this means" — LOCKED defaults you approved
+    howPairBlend: { x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24,0.23,0.35), align: "center" },
 
-    // Tips (“tip” and “next”) — tunable + centred
-    tip1Body: {
-      x: num(url, 't1x', 90), y: num(url, 't1y', 1015), w: num(url, 't1w', 460),
-      size: num(url, 't1s', 23), lineGap: 3, color: [0.24, 0.23, 0.35],
-      align: url.searchParams.get('t1align') || 'center'
-    },
-    tip2Body: {
-      x: num(url, 't2x', 500), y: num(url, 't2y', 1015), w: num(url, 't2w', 460),
-      size: num(url, 't2s', 23), lineGap: 3, color: [0.24, 0.23, 0.35],
-      align: url.searchParams.get('t2align') || 'center'
-    },
+    // Tips row (bodies only) — defaults per your last “correct” URL
+    tip1Body: { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: "center" },
+    tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: "center" },
 
     // Right column (page 1)
-    directionHeader: { x: 320, y: 245, w: 360, size: 12, color: [0.24, 0.23, 0.35] },
-    directionBody:   { x: 320, y: 265, w: 360, size: 11, color: [0.24, 0.23, 0.35] },
-    themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: [0.24, 0.23, 0.35] },
-    themeBody:       { x: 320, y: 320, w: 360, size: 11, color: [0.24, 0.23, 0.35] },
+    directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24,0.23,0.35) },
+    directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24,0.23,0.35) },
+    themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24,0.23,0.35) },
+    themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24,0.23,0.35) },
 
-    // Radar chart — **your locked defaults**, tunable via URL
-    chart: {
-      x: num(url, 'cx', 1030),
-      y: num(url, 'cy', 620),
-      w: num(url, 'cw', 720),
-      h: num(url, 'ch', 420),
-    },
+    // Radar chart — LOCKED defaults
+    chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // (Optional) Page 2 supporting blocks (tunable; rendering off by default)
+    // Page 2 grid defaults (titles bold; bodies regular)
     p2: {
-      x: num(url, 'p2x', 90),
-      y: num(url, 'p2y', 160),
-      w: num(url, 'p2w', 850),
-      hSize: num(url, 'p2hs', 14), // header size
-      bSize: num(url, 'p2bs', 12), // body size
-      gap: num(url, 'p2gap', 28),  // vertical gap between blocks
-      max: num(url, 'p2max', 3)    // max lines per body
+      x: 90,         // left margin for page 2 blocks
+      y: 140,        // top offset from page top
+      w: 860,        // total width for the two columns area
+      hSize: 14,     // title font size
+      bSize: 12,     // body font size
+      gap: 16,       // vertical gap between title and body within a block
+      max: 8         // maximum blocks to draw (2 cols × 4 rows)
     },
 
-    // footer removed (you’re hard-coding this into the template now)
-    footerY: 20,
+    footerY: 20, // (no dynamic copyright drawing anymore)
   };
 
-  // ===== Early DEBUG short-circuit (no pdf-lib, no fetch) =====
+  // --- Tuner overrides (chart + blended how + tips + page2 grid) ---
+  POS.chart = {
+    x: num(url, "cx", POS.chart.x),
+    y: num(url, "cy", POS.chart.y),
+    w: num(url, "cw", POS.chart.w),
+    h: num(url, "ch", POS.chart.h),
+  };
+
+  POS.howPairBlend = {
+    ...POS.howPairBlend,
+    x: num(url, "hx2", POS.howPairBlend.x),
+    y: num(url, "hy2", POS.howPairBlend.y),
+    w: num(url, "hw2", POS.howPairBlend.w),
+    size: num(url, "hs2", POS.howPairBlend.size),
+    align: url.searchParams.get("h2align") || POS.howPairBlend.align,
+  };
+
+  POS.tip1Body = {
+    ...POS.tip1Body,
+    x: num(url, "t1x", POS.tip1Body.x),
+    y: num(url, "t1y", POS.tip1Body.y),
+    w: num(url, "t1w", POS.tip1Body.w),
+    size: num(url, "t1s", POS.tip1Body.size),
+    align: url.searchParams.get("t1align") || POS.tip1Body.align,
+  };
+  POS.tip2Body = {
+    ...POS.tip2Body,
+    x: num(url, "t2x", POS.tip2Body.x),
+    y: num(url, "t2y", POS.tip2Body.y),
+    w: num(url, "t2w", POS.tip2Body.w),
+    size: num(url, "t2s", POS.tip2Body.size),
+    align: url.searchParams.get("t2align") || POS.tip2Body.align,
+  };
+
+  POS.p2 = {
+    ...POS.p2,
+    x: num(url, "p2x", POS.p2.x),
+    y: num(url, "p2y", POS.p2.y),
+    w: num(url, "p2w", POS.p2.w),
+    hSize: num(url, "p2hs", POS.p2.hSize),
+    bSize: num(url, "p2bs", POS.p2.bSize),
+    gap: num(url, "p2gap", POS.p2.gap),
+    max: num(url, "p2max", POS.p2.max),
+  };
+
+  // Optional debug JSON
   if (debug) {
-    res.setHeader('Content-Type', 'application/json');
+    res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({
       ok: true,
-      hint: 'Add &preview=1 to view inline, &box=1 to draw chart guide, &nograph=1 to skip chart',
-      data,
-      pos: POS,
+      hint: "Add &preview=1 to view inline",
+      data, pos: POS,
       urlParams: Object.fromEntries(url.searchParams.entries())
     }, null, 2));
     return;
   }
 
   try {
-    // Lazy import pdf-lib so we don’t blow up before debug mode returns
-    const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
-
-    // load template
+    // load template + fonts
     const templateBytes = await loadTemplateBytes(req);
     const pdfDoc = await PDFDocument.load(templateBytes);
-    const page1  = pdfDoc.getPage(0);
-
-    // fonts
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const pdfRgb = (r, g, b) => rgb(r, g, b);
-    const useColor = (arr) => pdfRgb(arr[0], arr[1], arr[2]);
 
-    // headline (single or pair on one line)
+    // ===== PAGE 1 =====
+    const page1 = pdfDoc.getPage(0);
+
+    // headline (single or pair)
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
-      : normText(data.stateWord || '—');
+      : normText(data.stateWord || "—");
 
-    const headSpec = twoStates ? POS.headlinePair : POS.headlineSingle;
     drawTextBox(
-      page1, helvBold, headlineText,
-      { ...headSpec, color: useColor(headSpec.color), align: 'center' },
-      { maxLines: 1, ellipsis: true },
-      pdfRgb
+      page1,
+      helvBold,
+      headlineText,
+      { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: "center" },
+      { maxLines: 1, ellipsis: true }
     );
 
-    // ===== HOW/WHAT BODY =====
+    // HOW/WHAT body
     if (!twoStates) {
       if (data.how) {
-        const s = POS.howSingle;
-        drawTextBox(page1, helv, normText(data.how), { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
+        drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
       }
     } else {
-      const blended = normText(data.howPair || data.how || '');
-      if (blended) {
-        const s = POS.howPairBlend;
-        drawTextBox(page1, helv, blended, { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
+      const blend = normText(data.howPair || data.how || "");
+      if (blend) drawTextBox(page1, helv, blend, POS.howPairBlend, { maxLines: 3, ellipsis: true });
+    }
+
+    // tips
+    if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 2, ellipsis: true });
+    if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 2, ellipsis: true });
+
+    // right column
+    if (data.directionLabel)
+      drawTextBox(page1, helvBold, normText(data.directionLabel) + "…", POS.directionHeader, { maxLines: 1, ellipsis: true });
+    if (data.directionMeaning)
+      drawTextBox(page1, helv,     normText(data.directionMeaning),      POS.directionBody,   { maxLines: 3, ellipsis: true });
+
+    if (data.themeLabel)
+      drawTextBox(page1, helvBold, normText(data.themeLabel) + "…",      POS.themeHeader,     { maxLines: 1, ellipsis: true });
+    if (data.themeMeaning)
+      drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
+
+    // radar chart (unless suppressed)
+    if (!noGraph && data.chartUrl) {
+      const r = await fetch(String(data.chartUrl));
+      if (r.ok) {
+        const png = await pdfDoc.embedPng(await r.arrayBuffer());
+        const { x, y, w, h } = POS.chart;
+        const pageH = page1.getHeight();
+        page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
       }
     }
 
-    // tips (bodies only)
-    if (data.tip1) {
-      const s = POS.tip1Body;
-      drawTextBox(page1, helv, normText(data.tip1), { ...s, color: useColor(s.color) }, { maxLines: 2, ellipsis: true }, pdfRgb);
-    }
-    if (data.tip2) {
-      const s = POS.tip2Body;
-      drawTextBox(page1, helv, normText(data.tip2), { ...s, color: useColor(s.color) }, { maxLines: 2, ellipsis: true }, pdfRgb);
-    }
+    // ===== PAGE 2 =====
+    const blocks = Array.isArray(data.page2Blocks) ? data.page2Blocks.slice(0, POS.p2.max) : [];
+    if (blocks.length) {
+      const page2 = pdfDoc.addPage([page1.getWidth(), page1.getHeight()]); // same size
 
-    // direction + theme (right column)
-    if (data.directionLabel) {
-      const s = POS.directionHeader;
-      drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', { ...s, color: useColor(s.color) }, { maxLines: 1, ellipsis: true }, pdfRgb);
-    }
-    if (data.directionMeaning) {
-      const s = POS.directionBody;
-      drawTextBox(page1, helv, normText(data.directionMeaning), { ...s, color: useColor(s.color) }, { maxLines: 3, ellipsis: true }, pdfRgb);
-    }
-    if (data.themeLabel) {
-      const s = POS.themeHeader;
-      drawTextBox(page1, helvBold, normText(data.themeLabel) + '…', { ...s, color: useColor(s.color) }, { maxLines: 1, ellipsis: true }, pdfRgb);
-    }
-    if (data.themeMeaning) {
-      const s = POS.themeBody;
-      drawTextBox(page1, helv, normText(data.themeMeaning), { ...s, color: useColor(s.color) }, { maxLines: 2, ellipsis: true }, pdfRgb);
-    }
+      // two-column grid, up to 4 rows
+      const colGap = 40;
+      const colW = Math.floor((POS.p2.w - colGap) / 2);
+      const leftX  = POS.p2.x;
+      const rightX = POS.p2.x + colW + colGap;
+      const startY = POS.p2.y;
 
-    // radar chart (skip quietly if fetch fails or nograph=1)
-    if (!noGraph && data.chartUrl) {
-      try {
-        const r = await fetch(String(data.chartUrl));
-        if (r.ok) {
-          const png = await pdfDoc.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.chart;
-          const pageH = page1.getHeight();
-          if (showBox) {
-            page1.drawRectangle({
-              x, y: pageH - y - h, width: w, height: h,
-              borderColor: rgb(0.45, 0.35, 0.6), borderWidth: 1,
-            });
-          }
-          page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
-        }
-      } catch { /* ignore chart failures */ }
-    }
+      const blockLineGap = 3;
+      const rowGap       = 18; // gap between blocks vertically
+      const estBodyLines = 3;  // conservative; bodies wrap
 
-    // (Optional) Page 2 blocks are ready to use later:
-    // See commented code in previous message; keeping it off for now.
+      const rowHeight = (POS.p2.hSize + blockLineGap) + (POS.p2.bSize * estBodyLines + blockLineGap) + rowGap;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const col = i % 2;               // 0 = left, 1 = right
+        const row = Math.floor(i / 2);   // 0..3
+        const baseX = (col === 0) ? leftX : rightX;
+        const baseY = startY + row * rowHeight;
+
+        const title = normText(blocks[i]?.title || "");
+        const body  = normText(blocks[i]?.body  || "");
+
+        if (title) drawTextBox(page2, helvBold, title, { x: baseX, y: baseY, w: colW, size: POS.p2.hSize, lineGap: blockLineGap, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+        if (body)  drawTextBox(page2, helv,     body,  { x: baseX, y: baseY + POS.p2.gap, w: colW, size: POS.p2.bSize, lineGap: blockLineGap, color: rgb(0.24,0.23,0.35) }, { maxLines: 4, ellipsis: true });
+      }
+    }
 
     // send PDF
     const bytes = await pdfDoc.save();
     res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${url.searchParams.get('name') || 'ctrl_profile.pdf'}"`);
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${normText(url.searchParams.get("name") || "ctrl_profile.pdf")}"`);
+    res.setHeader("Cache-Control", "no-store");
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader('Content-Type', 'text/plain');
-    res.end('fill-template error: ' + (e?.message || e));
+    res.setHeader("Content-Type", "text/plain");
+    res.end("fill-template error: " + (e?.message || e));
   }
 }
