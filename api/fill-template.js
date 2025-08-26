@@ -1,4 +1,10 @@
 // /api/fill-template.js
+// Renders CTRL report PDF (2 pages) with tunable coordinates via query params.
+// Page 1: headline, blended “what this means”, tips, chart.
+// Page 2: left column “Patterns”, right column “Themes (Top 3)”.
+// NOTE: Page-1 right column (Direction + Top Theme) is HIDDEN by default to avoid duplication.
+//       Re-enable temporarily with ?p1right=1
+
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -14,6 +20,7 @@ function normText(v, fallback = '') {
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 
+// simple wrapper + draw (page coords: y from TOP)
 function drawTextBox(page, font, text, spec, opts = {}) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
@@ -58,6 +65,7 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   }
 }
 
+// load template from /public
 async function loadTemplateBytes(req) {
   const host  = req.headers.host || 'ctrl-export-service.vercel.app';
   const proto = req.headers['x-forwarded-proto'] || 'https';
@@ -67,6 +75,7 @@ async function loadTemplateBytes(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
+// parse numeric query param with default
 const num = (url, key, def) => {
   const n = Number(url.searchParams.get(key));
   return Number.isFinite(n) ? n : def;
@@ -82,6 +91,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
+  const showP1Right = url.searchParams.get('p1right') === '1'; // <<< hide by default
 
   // --- Demo payloads (no Botpress needed) ---
   let data;
@@ -120,7 +130,7 @@ export default async function handler(req, res) {
           }
         }
       })),
-      // Page 2 — PATTERNS demo blocks (left column)
+      // Page 2 — PATTERNS (left)
       page2Blocks: [
         { title: 'Most & least seen',    body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity—keep its strengths and add one tiny counter-balance.' },
         { title: 'Start → Finish',       body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones—steady overall.' },
@@ -131,7 +141,7 @@ export default async function handler(req, res) {
         { title: 'Resilience & retreat', body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance—keep the resets that help you recover.' },
         { title: 'Early vs late',        body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
       ],
-      // Page 2 — THEMES demo blocks (right column; Top 3)
+      // Page 2 — THEMES (right)
       page2Themes: [
         { title: 'Emotion regulation', body: 'Settling yourself when feelings spike.' },
         { title: 'Social navigation',  body: 'Reading the room and adjusting to people and context.' },
@@ -153,31 +163,31 @@ export default async function handler(req, res) {
 
   // ======= POSITIONS (increase y to move text DOWN the page) =======
   const POS = {
-    // Headline
+    // headline (single vs pair)
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // Single-state HOW (kept unchanged)
+    // SINGLE-state “how this shows up”
     howSingle: { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
-    // Blended two-state HOW
+    // TWO-state BLENDED “what this means”
     howPairBlend: { x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
-    // Tips row (your locked values can be passed via URL)
+    // Tips row
     tip1Body: { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
     tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
 
-    // Right column (page 1)
+    // (page-1 right column coords kept but we won’t draw unless ?p1right=1)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart (kept configurable)
+    // Radar chart
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
     // Page 2 — left column (Patterns)
-    p2Patterns: { x: 90, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
+    p2Patterns: { x: 90,  y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
 
     // Page 2 — right column (Themes Top 3)
     p2Themes:   { x: 840, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 3 },
@@ -185,7 +195,7 @@ export default async function handler(req, res) {
     footerY: 20,
   };
 
-  // tuner overrides (chart)
+  // tuner overrides — chart
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
@@ -263,22 +273,27 @@ export default async function handler(req, res) {
     const templateBytes = await loadTemplateBytes(req);
     const pdfDoc = await PDFDocument.load(templateBytes);
     const page1  = pdfDoc.getPage(0);
-    const page2  = pdfDoc.getPage(1); // <-- draw texts on the existing 2nd page
+    const page2  = pdfDoc.getPage(1); // draw on existing second page
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // ----- PAGE 1 -----
+    // ===== PAGE 1 =====
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
       : normText(data.stateWord || '—');
 
-    drawTextBox(page1, helvBold, headlineText, { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' }, { maxLines: 1, ellipsis: true });
+    drawTextBox(
+      page1,
+      helvBold,
+      headlineText,
+      { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' },
+      { maxLines: 1, ellipsis: true }
+    );
 
     if (!twoStates) {
       if (data.how) drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
     } else {
-      // blended pair
       const tBlend = normText(data.howPair || data.how || '');
       if (tBlend) drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 3, ellipsis: true });
     }
@@ -287,16 +302,18 @@ export default async function handler(req, res) {
     if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 2, ellipsis: true });
     if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 2, ellipsis: true });
 
-    // direction + top theme
-    if (data.directionLabel)
-      drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
-    if (data.directionMeaning)
-      drawTextBox(page1, helv,     normText(data.directionMeaning),      POS.directionBody,   { maxLines: 3, ellipsis: true });
+    // (HIDDEN by default) direction + top theme on page 1 right column
+    if (showP1Right) {
+      if (data.directionLabel)
+        drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
+      if (data.directionMeaning)
+        drawTextBox(page1, helv,     normText(data.directionMeaning),      POS.directionBody,   { maxLines: 3, ellipsis: true });
 
-    if (data.themeLabel)
-      drawTextBox(page1, helvBold, normText(data.themeLabel) + '…',      POS.themeHeader,     { maxLines: 1, ellipsis: true });
-    if (data.themeMeaning)
-      drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
+      if (data.themeLabel)
+        drawTextBox(page1, helvBold, normText(data.themeLabel) + '…',      POS.themeHeader,     { maxLines: 1, ellipsis: true });
+      if (data.themeMeaning)
+        drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
+    }
 
     // radar chart
     if (!noGraph && data.chartUrl) {
@@ -311,7 +328,7 @@ export default async function handler(req, res) {
       } catch { /* ignore */ }
     }
 
-    // ----- PAGE 2 -----
+    // ===== PAGE 2 =====
     const drawBlocks = (page, blocks, spec) => {
       if (!Array.isArray(blocks) || !blocks.length) return;
       const { x, y, w, hSize, bSize, gap, max } = spec;
@@ -328,7 +345,7 @@ export default async function handler(req, res) {
         }
         if (body) {
           drawTextBox(page, helv, normText(body), { x, y: (pageH - cursor), w, size: bSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 3, ellipsis: true });
-          cursor -= (3 * (bSize + 3)); // approximate 3 lines height budget
+          cursor -= (3 * (bSize + 3)); // ~3 lines
         }
         cursor -= gap;
       }
@@ -339,12 +356,12 @@ export default async function handler(req, res) {
       drawBlocks(page2, data.page2Blocks, POS.p2Patterns);
     }
 
-    // right column — Top 3 Themes
+    // right column — Themes Top 3
     if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
       drawBlocks(page2, data.page2Themes, POS.p2Themes);
     }
 
-    // ----- send PDF -----
+    // send PDF
     const bytes = await pdfDoc.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
