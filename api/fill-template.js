@@ -1,24 +1,24 @@
-// Fills your static PDF template (public/CTRL_Perspective_template.pdf)
-// with results from Botpress (or test payloads), using pdf-lib.
-//
-// Runtime: Vercel Node runtime (NOT edge).
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-/* --------------------------
-   Small helpers
---------------------------- */
+/* ---------- helpers ---------- */
 
-function normText(v, fallback = '') {
-  return String(v ?? fallback)
+function toStr(x, fb = '') {
+  if (x == null) return String(fb);
+  try { return String(x); } catch { return String(fb); }
+}
+
+function normText(v, fb = '') {
+  const s = toStr(v, fb);
+  // Always operate on a string
+  return s
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 
-// Basic word-wrap renderer. y in "spec" is distance from TOP of page.
 function drawTextBox(page, font, text, spec, opts = {}) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
@@ -27,7 +27,9 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
-  const lines = normText(text).split('\n');
+  const clean = normText(text);
+  const lines = clean.split('\n');
+
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
   const wrapped = [];
@@ -68,31 +70,38 @@ function drawTextBox(page, font, text, spec, opts = {}) {
 }
 
 async function loadTemplateBytes(req) {
-  const host  = req.headers.host || 'ctrl-export-service.vercel.app';
-  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const headers = (req && req.headers) || {};
+  const host  = toStr(headers.host, 'ctrl-export-service.vercel.app');
+  const proto = toStr(headers['x-forwarded-proto'], 'https');
   const url   = `${proto}://${host}/CTRL_Perspective_template.pdf`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
   return new Uint8Array(await r.arrayBuffer());
 }
+
 const num = (url, key, def) => {
-  const n = Number(url.searchParams.get(key));
+  const v = url.searchParams.get(key);
+  const n = Number(v);
   return Number.isFinite(n) ? n : def;
 };
 
-/* --------------------------
-   Handler
---------------------------- */
+/* ---------- handler ---------- */
 
 export default async function handler(req, res) {
-  const url      = new URL(req.url, 'http://localhost');
-  const isTest   = url.searchParams.get('test') === '1';
-  const isPair   = url.searchParams.get('test') === 'pair';
-  const debug    = url.searchParams.get('debug') === '1';
-  const noGraph  = url.searchParams.get('nograph') === '1';
-  const preview  = url.searchParams.get('preview') === '1';
+  // Safe URL parsing even if req.url is missing
+  const rawUrl = (req && typeof req.url === 'string') ? req.url : '';
+  let url;
+  try { url = new URL(rawUrl || '/', 'http://localhost'); }
+  catch { url = new URL('/', 'http://localhost'); }
 
-  // -------- Demo payloads (for quick checks) --------
+  const modeTest  = url.searchParams.get('test');
+  const isTest    = modeTest === '1';
+  const isPair    = modeTest === 'pair';
+  const debug     = url.searchParams.get('debug') === '1';
+  const noGraph   = url.searchParams.get('nograph') === '1';
+  const preview   = url.searchParams.get('preview') === '1';
+
+  // --- demo payloads for quick checks ---
   let data;
   if (isTest || isPair) {
     const common = {
@@ -121,29 +130,27 @@ export default async function handler(req, res) {
         },
         options: {
           plugins: { legend: { display: false } },
-          scales: {
-            r: {
-              min: 0, max: 5,
-              ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
-              grid: { circular: true },
-              angleLines: { display: true },
-              pointLabels: { color: '#4A4458', font: { size: 12 } },
-            }
-          }
+          scales: { r: {
+            min: 0, max: 5,
+            ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
+            grid: { circular: true },
+            angleLines: { display: true },
+            pointLabels: { color: '#4A4458', font: { size: 12 } },
+          } }
         }
       })),
-      // Left column (patterns)
+      // LEFT column (patterns)
       page2Patterns: [
-        { title: 'Most & least seen', body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity - keep its strengths and add one tiny counter-balance.' },
-        { title: 'Start → Finish', body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones - steady overall.' },
-        { title: 'Pattern shape', body: 'Varied responses without one rhythm. Reflect briefly to spot what flipped you.' },
-        { title: 'Switching & volatility', body: 'You switched 3 of 4 steps (volatility ≈ 0.75). High volatility - helpful if chosen; draining if automatic.' },
-        { title: 'Streaks / clusters', body: 'Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction.' },
-        { title: 'Momentum', body: 'Steady. You started and ended in similar zones - steady overall.' },
-        { title: 'Resilience & retreat', body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance - keep the resets that help you recover.' },
-        { title: 'Early vs late', body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
+        { title: 'Most & least seen',       body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity - keep its strengths and add one tiny counter-balance.' },
+        { title: 'Start → Finish',          body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones - steady overall.' },
+        { title: 'Pattern shape',           body: 'Varied responses without one rhythm. Reflect briefly to spot what flipped you.' },
+        { title: 'Switching & volatility',  body: 'You switched 3 of 4 steps (volatility ≈ 0.75). High volatility - helpful if chosen; draining if automatic.' },
+        { title: 'Streaks / clusters',      body: 'Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction.' },
+        { title: 'Momentum',                body: 'Steady. You started and ended in similar zones - steady overall.' },
+        { title: 'Resilience & retreat',    body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance - keep the resets that help you recover.' },
+        { title: 'Early vs late',           body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
       ],
-      // Right column (top 3 themes)
+      // RIGHT column (themes)
       page2Themes: [
         { title: 'Emotion regulation', body: 'Settling yourself when feelings spike.' },
         { title: 'Social navigation',  body: 'Reading the room and adjusting to people and context.' },
@@ -157,45 +164,39 @@ export default async function handler(req, res) {
         }
       : { ...common,
           stateWord: 'Triggered',
-          how: 'Feelings and energy arrive fast and show up visibly. A brief pause or naming the wobble ("I’m on edge") often settles it.',
+          how: 'Feelings and energy arrive fast and show up visibly. A brief pause or naming the wobble ("I am on edge") often settles it.',
         };
   } else {
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
     try {
-      data = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+      const raw = Buffer.from(toStr(b64, ''), 'base64').toString('utf8');
+      data = JSON.parse(raw);
     } catch (e) {
-      res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
+      res.statusCode = 400; res.end('Invalid ?data: ' + (e && e.message || e)); return;
     }
   }
 
-  // -------- LOCKED DEFAULTS (your URL baked in) --------
+  // ---------- LOCKED DEFAULTS (your URL baked in) ----------
   const POS = {
-    // headline (single/pair)
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE: how body (kept for single-state mode)
-    howSingle: { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24,0.23,0.35), align: 'center' },
+    howSingle:      { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24,0.23,0.35), align: 'center' },
+    howPairBlend:   { x: 55,  y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24,0.23,0.35), align: 'center' },
 
-    // PAIR: blended what-this-means
-    howPairBlend: { x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24,0.23,0.35), align: 'center' },
+    tip1Body:       { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
+    tip2Body:       { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
 
-    // Tips / Next (bodies only)
-    tip1Body: { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
-    tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
+    chart:          { x: 1030, y: 620, w: 720, h: 420 },
 
-    // Radar chart
-    chart: { x: 1030, y: 620, w: 720, h: 420 },
-
-    // PAGE 2 — Patterns (LEFT) — locked to your values
+    // Page 2 — Patterns (LEFT)
     p2Patterns: {
       x: 120, y: 520, w: 1260,
       hSize: 14, bSize: 20, align: 'left',
       titleGap: 6, blockGap: 12, maxBodyLines: 4,
     },
-
-    // PAGE 2 — Themes (RIGHT) — locked to your values
+    // Page 2 — Themes (RIGHT)
     p2Themes: {
       x: 1280, y: 620, w: 630,
       hSize: 34, bSize: 30, align: 'left',
@@ -203,7 +204,7 @@ export default async function handler(req, res) {
     },
   };
 
-  // -------- Optional tuners (still supported) --------
+  // Optional tuners (still supported)
   POS.howPairBlend = {
     ...POS.howPairBlend,
     x: num(url, 'hx2', POS.howPairBlend.x),
@@ -242,8 +243,8 @@ export default async function handler(req, res) {
     hSize:  num(url, 'p2hs', POS.p2Patterns.hSize),
     bSize:  num(url, 'p2bs', POS.p2Patterns.bSize),
     align:  url.searchParams.get('p2align') || POS.p2Patterns.align,
-    titleGap: num(url, 'p2hgap', POS.p2Patterns.titleGap),
-    blockGap: num(url, 'p2gap',  POS.p2Patterns.blockGap),
+    titleGap:   num(url, 'p2hgap', POS.p2Patterns.titleGap),
+    blockGap:   num(url, 'p2gap',  POS.p2Patterns.blockGap),
     maxBodyLines: num(url, 'p2max', POS.p2Patterns.maxBodyLines),
   };
   POS.p2Themes = {
@@ -254,16 +255,19 @@ export default async function handler(req, res) {
     hSize:  num(url, 'p2ths', POS.p2Themes.hSize),
     bSize:  num(url, 'p2tbs', POS.p2Themes.bSize),
     align:  url.searchParams.get('p2talign') || POS.p2Themes.align,
-    titleGap: num(url, 'p2thgap', POS.p2Themes.titleGap),
-    blockGap: num(url, 'p2tgap',  POS.p2Themes.blockGap),
+    titleGap:   num(url, 'p2thgap', POS.p2Themes.titleGap),
+    blockGap:   num(url, 'p2tgap',  POS.p2Themes.blockGap),
     maxBodyLines: num(url, 'p2tmax', POS.p2Themes.maxBodyLines),
   };
 
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
-      ok: true, hint: 'Add &preview=1 to view inline',
-      data, pos: POS, urlParams: Object.fromEntries(url.searchParams.entries())
+      ok: true,
+      hint: 'Add &preview=1 to view inline',
+      data,
+      pos: POS,
+      urlParams: Object.fromEntries(url.searchParams.entries()),
     }, null, 2));
     return;
   }
@@ -276,10 +280,10 @@ export default async function handler(req, res) {
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // Headline (single or pair)
+    // Headline
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
-      ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
+      ? `${normText((data.stateWords || [])[0])} & ${normText((data.stateWords || [])[1])}`
       : normText(data.stateWord || '—');
 
     drawTextBox(
@@ -290,49 +294,67 @@ export default async function handler(req, res) {
 
     // HOW / WHAT
     if (!twoStates) {
-      if (data.how) drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
+      if (data.how) drawTextBox(page1, helv, data.how, POS.howSingle, { maxLines: 3, ellipsis: true });
     } else {
-      const tBlend = normText(data.howPair || data.how || '');
+      const tBlend = data.howPair || data.how || '';
       if (tBlend) drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 3, ellipsis: true });
     }
 
-    // Tips (bodies only)
-    if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 2, ellipsis: true });
-    if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 2, ellipsis: true });
+    // Tips
+    if (data.tip1) drawTextBox(page1, helv, data.tip1, POS.tip1Body, { maxLines: 2, ellipsis: true });
+    if (data.tip2) drawTextBox(page1, helv, data.tip2, POS.tip2Body, { maxLines: 2, ellipsis: true });
 
     // Chart
     if (!noGraph && data.chartUrl) {
       try {
-        const r = await fetch(String(data.chartUrl));
+        const r = await fetch(toStr(data.chartUrl, ''));
         if (r.ok) {
           const png = await pdfDoc.embedPng(await r.arrayBuffer());
           const { x, y, w, h } = POS.chart;
           const pageH = page1.getHeight();
           page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
         }
-      } catch { /* ignore chart errors */ }
+      } catch { /* ignore */ }
     }
 
-    // ---------- PAGE 2: Patterns (left) & Themes (right) ----------
-    const patterns = Array.isArray(data.page2Patterns) ? data.page2Patterns
-                    : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
-    const themes =
-      Array.isArray(data.page2Themes) ? data.page2Themes
-      : (typeof data.themesExplainer === 'string'
-          ? data.themesExplainer.split('\n').map(s => s.replace(/^•\s*/, '')).filter(Boolean).slice(0,3).map(t => {
-              const [title, ...rest] = t.split(' - ');
-              return { title: (title || '').trim().replace(/\b\w/g,c=>c.toUpperCase()), body: (rest.join(' - ') || '').trim() };
-            })
-          : []);
+    // PAGE 2 content
+    const patterns = Array.isArray(data.page2Patterns)
+      ? data.page2Patterns
+      : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
+
+    // themes: either explicit blocks, or parse "themesExplainer"
+    let themes = [];
+    if (Array.isArray(data.page2Themes)) {
+      themes = data.page2Themes.map(b => ({
+        title: normText(b.title || ''),
+        body:  normText(b.body  || ''),
+      }));
+    } else if (typeof data.themesExplainer === 'string') {
+      const rows = data.themesExplainer.split('\n').map(s => toStr(s, ''));
+      themes = rows
+        .map((t) => {
+          const clean = t.replace(/^•\s*/, '');
+          const parts = clean.split(' - ');
+          const title = normText(parts.shift() || '');
+          const body  = normText(parts.join(' - ') || '');
+          // Title Case
+          const titled = title.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+          return { title: titled, body };
+        })
+        .filter(b => b.title || b.body)
+        .slice(0, 3);
+    }
 
     function drawColumn(page, blocks, fonts, spec) {
+      const list = Array.isArray(blocks) ? blocks : [];
       const { font, fontBold } = fonts;
       const { x, y, w, hSize, bSize, align, titleGap, blockGap, maxBodyLines } = spec;
       let curY = y;
 
-      for (const blk of blocks) {
-        const title = normText(blk.title || '');
-        const body  = normText(blk.body  || '');
+      for (const raw of list) {
+        const title = normText(raw && raw.title);
+        const body  = normText(raw && raw.body);
+
         if (title) {
           drawTextBox(page, fontBold, title,
             { x, y: curY, w, size: hSize, align, color: rgb(0.24,0.23,0.35), lineGap: 3 },
@@ -354,7 +376,7 @@ export default async function handler(req, res) {
     drawColumn(page2, patterns, { font: helv, fontBold: helvBold }, POS.p2Patterns);
     drawColumn(page2, themes,   { font: helv, fontBold: helvBold }, POS.p2Themes);
 
-    // 🔕 No dynamic copyright footer — removed by request.
+    // No dynamic copyright (you’ve hard-coded it).
 
     const bytes = await pdfDoc.save();
     res.statusCode = 200;
@@ -365,6 +387,6 @@ export default async function handler(req, res) {
   } catch (e) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'text/plain');
-    res.end('fill-template error: ' + (e?.message || e));
+    res.end('fill-template error: ' + (e && e.message || e));
   }
 }
