@@ -20,7 +20,6 @@ function normText(v, fallback = '') {
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 
-// simple wrapper + draw (page coords: y from TOP)
 function drawTextBox(page, font, text, spec, opts = {}) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
@@ -65,7 +64,6 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   }
 }
 
-// load template from /public
 async function loadTemplateBytes(req) {
   const host  = req.headers.host || 'ctrl-export-service.vercel.app';
   const proto = req.headers['x-forwarded-proto'] || 'https';
@@ -75,7 +73,6 @@ async function loadTemplateBytes(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// parse numeric query param with default
 const num = (url, key, def) => {
   const n = Number(url.searchParams.get(key));
   return Number.isFinite(n) ? n : def;
@@ -91,9 +88,9 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
-  const showP1Right = url.searchParams.get('p1right') === '1'; // <<< hide by default
+  const showP1Right = url.searchParams.get('p1right') === '1';
 
-  // --- Demo payloads (no Botpress needed) ---
+  // --- Demo payloads ---
   let data;
   if (isTest || isPair) {
     const common = {
@@ -130,7 +127,6 @@ export default async function handler(req, res) {
           }
         }
       })),
-      // Page 2 — PATTERNS (left)
       page2Blocks: [
         { title: 'Most & least seen',    body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity—keep its strengths and add one tiny counter-balance.' },
         { title: 'Start → Finish',       body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones—steady overall.' },
@@ -141,7 +137,6 @@ export default async function handler(req, res) {
         { title: 'Resilience & retreat', body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance—keep the resets that help you recover.' },
         { title: 'Early vs late',        body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
       ],
-      // Page 2 — THEMES (right)
       page2Themes: [
         { title: 'Emotion regulation', body: 'Settling yourself when feelings spike.' },
         { title: 'Social navigation',  body: 'Reading the room and adjusting to people and context.' },
@@ -161,41 +156,35 @@ export default async function handler(req, res) {
     }
   }
 
-  // ======= POSITIONS (increase y to move text DOWN the page) =======
+  // ======= POSITIONS =======
   const POS = {
-    // headline (single vs pair)
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // SINGLE-state “how this shows up”
-    howSingle: { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    howSingle:     { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    howPairBlend:  { x: 55,  y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
-    // TWO-state BLENDED “what this means”
-    howPairBlend: { x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center' },
-
-    // Tips row
     tip1Body: { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
     tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
 
-    // (page-1 right column coords kept but we won’t draw unless ?p1right=1)
+    // Page-1 (hidden by default)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // Radar chart
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // Page 2 — left column (Patterns)
-    p2Patterns: { x: 90,  y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
+    // Page 2 — Patterns (left)
+    p2Patterns: { x: 90, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
 
-    // Page 2 — right column (Themes Top 3)
+    // Page 2 — Themes (right)
     p2Themes:   { x: 840, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 3 },
 
     footerY: 20,
   };
 
-  // tuner overrides — chart
+  // ---- tuner overrides: chart ----
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
@@ -203,7 +192,7 @@ export default async function handler(req, res) {
     h: num(url, 'ch', POS.chart.h),
   };
 
-  // blended HOW tuner
+  // ---- blended HOW tuner ----
   POS.howPairBlend = {
     ...POS.howPairBlend,
     x: num(url, 'hx2', POS.howPairBlend.x),
@@ -213,7 +202,7 @@ export default async function handler(req, res) {
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
 
-  // tips tuner
+  // ---- tips tuner ----
   POS.tip1Body = {
     ...POS.tip1Body,
     x: num(url, 't1x', POS.tip1Body.x),
@@ -231,29 +220,44 @@ export default async function handler(req, res) {
     align: url.searchParams.get('t2align') || POS.tip2Body.align,
   };
 
-  // page 2 patterns tuner
+  // ---- PAGE 2: shorthand then fine-grain (Patterns) ----
   POS.p2Patterns = {
     ...POS.p2Patterns,
     x: num(url, 'p2x',  POS.p2Patterns.x),
     y: num(url, 'p2y',  POS.p2Patterns.y),
     w: num(url, 'p2w',  POS.p2Patterns.w),
-    hSize: num(url, 'p2hs', POS.p2Patterns.hSize),
-    bSize: num(url, 'p2bs', POS.p2Patterns.bSize),
+    hSize: POS.p2Patterns.hSize,
+    bSize: POS.p2Patterns.bSize,
     gap:   num(url, 'p2gap', POS.p2Patterns.gap),
     max:   num(url, 'p2max', POS.p2Patterns.max),
   };
+  const p2s = num(url, 'p2s', NaN); // shorthand size for Patterns
+  if (Number.isFinite(p2s)) {
+    POS.p2Patterns.bSize = p2s;
+    POS.p2Patterns.hSize = p2s + 3;
+  }
+  // allow explicit overrides after shorthand
+  POS.p2Patterns.hSize = num(url, 'p2hs', POS.p2Patterns.hSize);
+  POS.p2Patterns.bSize = num(url, 'p2bs', POS.p2Patterns.bSize);
 
-  // page 2 themes tuner
+  // ---- PAGE 2: shorthand then fine-grain (Themes) ----
   POS.p2Themes = {
     ...POS.p2Themes,
     x: num(url, 'p2tx',  POS.p2Themes.x),
     y: num(url, 'p2ty',  POS.p2Themes.y),
     w: num(url, 'p2tw',  POS.p2Themes.w),
-    hSize: num(url, 'p2ths', POS.p2Themes.hSize),
-    bSize: num(url, 'p2tbs', POS.p2Themes.bSize),
+    hSize: POS.p2Themes.hSize,
+    bSize: POS.p2Themes.bSize,
     gap:   num(url, 'p2tgap', POS.p2Themes.gap),
     max:   num(url, 'p2tmax', POS.p2Themes.max),
   };
+  const p2ts = num(url, 'p2ts', NaN); // shorthand size for Themes
+  if (Number.isFinite(p2ts)) {
+    POS.p2Themes.bSize = p2ts;
+    POS.p2Themes.hSize = p2ts + 3;
+  }
+  POS.p2Themes.hSize = num(url, 'p2ths', POS.p2Themes.hSize);
+  POS.p2Themes.bSize = num(url, 'p2tbs', POS.p2Themes.bSize);
 
   // Optional debug JSON
   if (debug) {
@@ -269,11 +273,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    // load template + fonts
     const templateBytes = await loadTemplateBytes(req);
     const pdfDoc = await PDFDocument.load(templateBytes);
     const page1  = pdfDoc.getPage(0);
-    const page2  = pdfDoc.getPage(1); // draw on existing second page
+    const page2  = pdfDoc.getPage(1);
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
@@ -283,10 +286,7 @@ export default async function handler(req, res) {
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
       : normText(data.stateWord || '—');
 
-    drawTextBox(
-      page1,
-      helvBold,
-      headlineText,
+    drawTextBox(page1, helvBold, headlineText,
       { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' },
       { maxLines: 1, ellipsis: true }
     );
@@ -298,11 +298,9 @@ export default async function handler(req, res) {
       if (tBlend) drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 3, ellipsis: true });
     }
 
-    // tips
     if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 2, ellipsis: true });
     if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 2, ellipsis: true });
 
-    // (HIDDEN by default) direction + top theme on page 1 right column
     if (showP1Right) {
       if (data.directionLabel)
         drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
@@ -315,7 +313,6 @@ export default async function handler(req, res) {
         drawTextBox(page1, helv,     normText(data.themeMeaning),          POS.themeBody,       { maxLines: 2, ellipsis: true });
     }
 
-    // radar chart
     if (!noGraph && data.chartUrl) {
       try {
         const r = await fetch(String(data.chartUrl));
@@ -325,7 +322,7 @@ export default async function handler(req, res) {
           const pageH = page1.getHeight();
           page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
         }
-      } catch { /* ignore */ }
+      } catch {}
     }
 
     // ===== PAGE 2 =====
@@ -345,23 +342,19 @@ export default async function handler(req, res) {
         }
         if (body) {
           drawTextBox(page, helv, normText(body), { x, y: (pageH - cursor), w, size: bSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 3, ellipsis: true });
-          cursor -= (3 * (bSize + 3)); // ~3 lines
+          cursor -= (3 * (bSize + 3));
         }
         cursor -= gap;
       }
     };
 
-    // left column — Patterns
     if (Array.isArray(data.page2Blocks) && data.page2Blocks.length) {
       drawBlocks(page2, data.page2Blocks, POS.p2Patterns);
     }
-
-    // right column — Themes Top 3
     if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
       drawBlocks(page2, data.page2Themes, POS.p2Themes);
     }
 
-    // send PDF
     const bytes = await pdfDoc.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
