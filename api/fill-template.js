@@ -1,15 +1,11 @@
-// Fills your static PDF template (public/CTRL_Perspective_template.pdf)
-// with results from Botpress, using pdf-lib (no headless browser).
-
-export const config = { runtime: 'nodejs' }; // Vercel Node runtime
+// /api/fill-template.js
+export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 /* --------------------------
    Helpers
 --------------------------- */
-
-// keep ASCII so standard fonts render reliably
 function normText(v, fallback = '') {
   return String(v ?? fallback)
     .replace(/[\u2018\u2019]/g, "'")
@@ -18,7 +14,6 @@ function normText(v, fallback = '') {
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
 }
 
-// simple line-wrapper + box-draw (y measured from TOP of page)
 function drawTextBox(page, font, text, spec, opts = {}) {
   const {
     x = 40, y = 40, w = 520, size = 12, color = rgb(0, 0, 0),
@@ -49,7 +44,7 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   }
 
   const pageH = page.getHeight();
-  const topY = pageH - y; // convert to pdf-lib coords
+  const topY = pageH - y;
   const widthOf = (s) => font.widthOfTextAtSize(s, size);
   const lineHeight = size + lineGap;
 
@@ -63,7 +58,6 @@ function drawTextBox(page, font, text, spec, opts = {}) {
   }
 }
 
-// load template from /public (works on Vercel preview & prod)
 async function loadTemplateBytes(req) {
   const host  = req.headers.host || 'ctrl-export-service.vercel.app';
   const proto = req.headers['x-forwarded-proto'] || 'https';
@@ -73,7 +67,6 @@ async function loadTemplateBytes(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// parse numeric query param with default
 const num = (url, key, def) => {
   const n = Number(url.searchParams.get(key));
   return Number.isFinite(n) ? n : def;
@@ -82,12 +75,10 @@ const num = (url, key, def) => {
 /* --------------------------
    Main handler
 --------------------------- */
-
 export default async function handler(req, res) {
   const url      = new URL(req.url, 'http://localhost');
   const isTest   = url.searchParams.get('test') === '1';
   const isPair   = url.searchParams.get('test') === 'pair';
-  const blend    = url.searchParams.get('blend') === '1';
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
   const preview  = url.searchParams.get('preview') === '1';
@@ -100,8 +91,8 @@ export default async function handler(req, res) {
       directionMeaning:'You started and ended in similar zones - steady overall.',
       themeLabel:      'Emotion regulation',
       themeMeaning:    'Settling yourself when feelings spike.',
-      tip1: "Take one breath and name it: 'I am on edge.'",
-      tip2: "Choose your gear on purpose: protect, steady, or lead - say it in one line.",
+      tip1: 'Take one breath and name it: "I am on edge."',
+      tip2: 'Choose your gear on purpose: protect, steady, or lead - say it in one line.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: {
@@ -114,9 +105,6 @@ export default async function handler(req, res) {
             borderColor: '#7348C7',
             borderWidth: 2,
             pointRadius: [3, 6, 3, 0],
-            pointHoverRadius: [4, 7, 4, 0],
-            pointBackgroundColor: ['#9D7BE0','#7348C7','#9D7BE0','#9D7BE0'],
-            pointBorderColor:     ['#9D7BE0','#7348C7','#9D7BE0','#9D7BE0'],
           }],
         },
         options: {
@@ -132,37 +120,28 @@ export default async function handler(req, res) {
           }
         }
       })),
-      // Page 2 default blocks (Patterns & Themes)
+      // Page 2 — PATTERNS demo blocks (left column)
       page2Blocks: [
-        { title: 'Most & least seen',       body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity - keep its strengths and add one tiny counter-balance.' },
-        { title: 'Start → Finish',          body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones - steady overall.' },
-        { title: 'Pattern shape',           body: 'Varied responses without one rhythm. Reflect briefly to spot what flipped you.' },
-        { title: 'Switching & volatility',  body: 'You switched 3 of 4 steps (volatility ≈ 0.75). High volatility - helpful if chosen; draining if automatic.' },
-        { title: 'Streaks / clusters',      body: 'Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction.' },
-        { title: 'Momentum',                body: 'Steady. You started and ended in similar zones - steady overall.' },
-        { title: 'Resilience & retreat',    body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance - keep the resets that help you recover.' },
-        { title: 'Early vs late',           body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
+        { title: 'Most & least seen',    body: 'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity—keep its strengths and add one tiny counter-balance.' },
+        { title: 'Start → Finish',       body: 'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones—steady overall.' },
+        { title: 'Pattern shape',        body: 'Varied responses without one rhythm. Reflect briefly to spot what flipped you.' },
+        { title: 'Switching & volatility', body: 'You switched 3 of 4 steps (volatility ≈ 0.75). High volatility—helpful if chosen; draining if automatic.' },
+        { title: 'Streaks / clusters',   body: 'Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction.' },
+        { title: 'Momentum',             body: 'Steady. You started and ended in similar zones—steady overall.' },
+        { title: 'Resilience & retreat', body: 'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance—keep the resets that help you recover.' },
+        { title: 'Early vs late',        body: 'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
+      ],
+      // Page 2 — THEMES demo blocks (right column; Top 3)
+      page2Themes: [
+        { title: 'Emotion regulation', body: 'Settling yourself when feelings spike.' },
+        { title: 'Social navigation',  body: 'Reading the room and adjusting to people and context.' },
+        { title: 'Awareness of impact',body: 'Noticing how your words and actions land.' },
       ],
     };
-    const pair = (url.searchParams.get('pair') || 'TL').toUpperCase();
     data = isPair
-      ? {
-          ...common,
-          stateWords: pair.split('').map(k =>
-            ({T: 'Triggered', L: 'Lead', C: 'Concealed', R: 'Regulated'}[k] || k)
-          ),
-          howPair: pair.split('').sort().join('') === 'LR'
-            ? 'You move from steady to guiding. People anchor around you. Keep inviting contributions so leading does not become carrying.'
-            : 'Charged direction. Energy arrives fast and you point it at outcomes. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.'
-        }
-      : {
-          ...common,
-          stateWord: 'Triggered',
-          how: 'Feelings and energy arrive fast and show up visibly. That drive can push things forward, but it can also narrow your focus or make you over-defend. The work is adding a micro-pause so the energy helps rather than hijacks.'
-        };
-    if (blend && data.howPair) data.how = data.howPair; // blended copy uses howPair into "how"
+      ? { ...common, stateWords: ['Triggered', 'Lead'], howPair: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.' }
+      : { ...common, stateWord: 'Triggered', how: 'You feel things fast and show it. A brief pause or naming the wobble ("I’m on edge") often settles it.' };
   } else {
-    // Botpress payload
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
     try {
@@ -172,44 +151,49 @@ export default async function handler(req, res) {
     }
   }
 
-  /* ========= POSITIONS (defaults locked to your chosen coords) ========= */
+  // ======= POSITIONS (increase y to move text DOWN the page) =======
   const POS = {
-    // headlines
+    // Headline
     headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
     headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12, 0.11, 0.2) },
 
-    // HOW / WHAT
-    howSingle:   { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center' },
-    howPairBlend:{ x:  55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+    // Single-state HOW (kept unchanged)
+    howSingle: { x: 160, y: 850, w: 700, size: 30, lineGap: 6, color: rgb(0.24, 0.23, 0.35), align: 'center' },
 
-    // tips (bodies only)
+    // Blended two-state HOW
+    howPairBlend: { x: 55, y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24, 0.23, 0.35), align: 'center' },
+
+    // Tips row (your locked values can be passed via URL)
     tip1Body: { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
     tip2Body: { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align: 'center' },
 
-    // right column
+    // Right column (page 1)
     directionHeader: { x: 320, y: 245, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     directionBody:   { x: 320, y: 265, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
     themeHeader:     { x: 320, y: 300, w: 360, size: 12, color: rgb(0.24, 0.23, 0.35) },
     themeBody:       { x: 320, y: 320, w: 360, size: 11, color: rgb(0.24, 0.23, 0.35) },
 
-    // radar chart (locked)
+    // Radar chart (kept configurable)
     chart: { x: 1030, y: 620, w: 720, h: 420 },
 
-    // page 2 blocks (column layout on template page 2)
-    p2: { x: 90, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
+    // Page 2 — left column (Patterns)
+    p2Patterns: { x: 90, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 8 },
+
+    // Page 2 — right column (Themes Top 3)
+    p2Themes:   { x: 840, y: 260, w: 560, hSize: 14, bSize: 11, gap: 10, max: 3 },
 
     footerY: 20,
   };
 
-  /* ----------- Tuner overrides (URL params) ----------- */
-  // chart
+  // tuner overrides (chart)
   POS.chart = {
     x: num(url, 'cx', POS.chart.x),
     y: num(url, 'cy', POS.chart.y),
     w: num(url, 'cw', POS.chart.w),
     h: num(url, 'ch', POS.chart.h),
   };
-  // blended HOW (pair mode)
+
+  // blended HOW tuner
   POS.howPairBlend = {
     ...POS.howPairBlend,
     x: num(url, 'hx2', POS.howPairBlend.x),
@@ -218,7 +202,8 @@ export default async function handler(req, res) {
     size: num(url, 'hs2', POS.howPairBlend.size),
     align: url.searchParams.get('h2align') || POS.howPairBlend.align,
   };
-  // tips
+
+  // tips tuner
   POS.tip1Body = {
     ...POS.tip1Body,
     x: num(url, 't1x', POS.tip1Body.x),
@@ -235,17 +220,29 @@ export default async function handler(req, res) {
     size: num(url, 't2s', POS.tip2Body.size),
     align: url.searchParams.get('t2align') || POS.tip2Body.align,
   };
-  // page 2 blocks
-  POS.p2 = {
-    x:  num(url, 'p2x',  POS.p2.x),
-    y:  num(url, 'p2y',  POS.p2.y),
-    w:  num(url, 'p2w',  POS.p2.w),
-    hSize: num(url, 'p2hs', POS.p2.hSize),
-    bSize: num(url, 'p2bs', POS.p2.bSize),
-    gap:   num(url, 'p2gap', POS.p2.gap),
-    max:   num(url, 'p2max', POS.p2.max),
-    // which page to draw on (0-based). **Default 1 = second page of template**
-    pageIndex: num(url, 'p2page', 1),
+
+  // page 2 patterns tuner
+  POS.p2Patterns = {
+    ...POS.p2Patterns,
+    x: num(url, 'p2x',  POS.p2Patterns.x),
+    y: num(url, 'p2y',  POS.p2Patterns.y),
+    w: num(url, 'p2w',  POS.p2Patterns.w),
+    hSize: num(url, 'p2hs', POS.p2Patterns.hSize),
+    bSize: num(url, 'p2bs', POS.p2Patterns.bSize),
+    gap:   num(url, 'p2gap', POS.p2Patterns.gap),
+    max:   num(url, 'p2max', POS.p2Patterns.max),
+  };
+
+  // page 2 themes tuner
+  POS.p2Themes = {
+    ...POS.p2Themes,
+    x: num(url, 'p2tx',  POS.p2Themes.x),
+    y: num(url, 'p2ty',  POS.p2Themes.y),
+    w: num(url, 'p2tw',  POS.p2Themes.w),
+    hSize: num(url, 'p2ths', POS.p2Themes.hSize),
+    bSize: num(url, 'p2tbs', POS.p2Themes.bSize),
+    gap:   num(url, 'p2tgap', POS.p2Themes.gap),
+    max:   num(url, 'p2tmax', POS.p2Themes.max),
   };
 
   // Optional debug JSON
@@ -265,44 +262,32 @@ export default async function handler(req, res) {
     // load template + fonts
     const templateBytes = await loadTemplateBytes(req);
     const pdfDoc = await PDFDocument.load(templateBytes);
-    const pages = pdfDoc.getPages();
-    const page1  = pages[0];
-    // *** FIX: target existing page 2 (index 1); only add if truly missing ***
-    let page2 = pages[POS.p2.pageIndex];
-    if (!page2) page2 = pdfDoc.addPage([page1.getWidth(), page1.getHeight()]);
-
+    const page1  = pdfDoc.getPage(0);
+    const page2  = pdfDoc.getPage(1); // <-- draw texts on the existing 2nd page
     const helv     = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // headline (single or pair on one line)
+    // ----- PAGE 1 -----
     const twoStates = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headlineText = twoStates
       ? `${normText(data.stateWords[0])} & ${normText(data.stateWords[1])}`
       : normText(data.stateWord || '—');
 
-    drawTextBox(
-      page1,
-      helvBold,
-      headlineText,
-      { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' },
-      { maxLines: 1, ellipsis: true }
-    );
+    drawTextBox(page1, helvBold, headlineText, { ...(twoStates ? POS.headlinePair : POS.headlineSingle), align: 'center' }, { maxLines: 1, ellipsis: true });
 
-    // HOW/WHAT body
-    if (twoStates) {
-      // blended mode: use howPair (already copied into "how" when &blend=1)
-      const t = normText(data.how || data.howPair || '');
-      if (t) drawTextBox(page1, helv, t, POS.howPairBlend, { maxLines: 3, ellipsis: true });
+    if (!twoStates) {
+      if (data.how) drawTextBox(page1, helv, normText(data.how), POS.howSingle, { maxLines: 3, ellipsis: true });
     } else {
-      const t = normText(data.how || '');
-      if (t) drawTextBox(page1, helv, t, POS.howSingle, { maxLines: 3, ellipsis: true });
+      // blended pair
+      const tBlend = normText(data.howPair || data.how || '');
+      if (tBlend) drawTextBox(page1, helv, tBlend, POS.howPairBlend, { maxLines: 3, ellipsis: true });
     }
 
     // tips
-    if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 3, ellipsis: true });
-    if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 3, ellipsis: true });
+    if (data.tip1) drawTextBox(page1, helv, normText(data.tip1), POS.tip1Body, { maxLines: 2, ellipsis: true });
+    if (data.tip2) drawTextBox(page1, helv, normText(data.tip2), POS.tip2Body, { maxLines: 2, ellipsis: true });
 
-    // direction + theme
+    // direction + top theme
     if (data.directionLabel)
       drawTextBox(page1, helvBold, normText(data.directionLabel) + '…', POS.directionHeader, { maxLines: 1, ellipsis: true });
     if (data.directionMeaning)
@@ -323,35 +308,50 @@ export default async function handler(req, res) {
           const pageH = page1.getHeight();
           page1.drawImage(png, { x, y: pageH - y - h, width: w, height: h });
         }
-      } catch {
-        // ignore chart failures so PDF still renders
-      }
+      } catch { /* ignore */ }
     }
 
-    // ===== PAGE 2: Patterns & Themes blocks =====
-    const blocks = Array.isArray(data.page2Blocks) ? data.page2Blocks.slice(0, POS.p2.max) : [];
-    if (blocks.length) {
-      let cursorY = POS.p2.y;
-      for (const b of blocks) {
-        const title = normText(b.title || '');
-        const body  = normText(b.body  || '');
-        if (title) drawTextBox(page2, helvBold, title, { x: POS.p2.x, y: cursorY, w: POS.p2.w, size: POS.p2.hSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-        if (body)  drawTextBox(page2, helv,     body,  { x: POS.p2.x, y: cursorY + 20, w: POS.p2.w, size: POS.p2.bSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 3, ellipsis: true });
-        cursorY += (title ? 0 : 0) + 20 + 3 * (POS.p2.bSize + 3) * 0; // spacing baseline
-        cursorY += POS.p2.gap + 40; // simple vertical step between blocks
+    // ----- PAGE 2 -----
+    const drawBlocks = (page, blocks, spec) => {
+      if (!Array.isArray(blocks) || !blocks.length) return;
+      const { x, y, w, hSize, bSize, gap, max } = spec;
+      const pageH = page.getHeight();
+      let cursor = pageH - y;
+      const maxItems = Math.max(1, max);
+
+      for (const b of blocks.slice(0, maxItems)) {
+        const title = (b && b.title) ? String(b.title) : '';
+        const body  = (b && b.body)  ? String(b.body)  : '';
+        if (title) {
+          drawTextBox(page, helvBold, normText(title), { x, y: (pageH - cursor), w, size: hSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+          cursor -= (hSize + 6);
+        }
+        if (body) {
+          drawTextBox(page, helv, normText(body), { x, y: (pageH - cursor), w, size: bSize, color: rgb(0.24,0.23,0.35) }, { maxLines: 3, ellipsis: true });
+          cursor -= (3 * (bSize + 3)); // approximate 3 lines height budget
+        }
+        cursor -= gap;
       }
+    };
+
+    // left column — Patterns
+    if (Array.isArray(data.page2Blocks) && data.page2Blocks.length) {
+      drawBlocks(page2, data.page2Blocks, POS.p2Patterns);
     }
 
-    // send PDF
+    // right column — Top 3 Themes
+    if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
+      drawBlocks(page2, data.page2Themes, POS.p2Themes);
+    }
+
+    // ----- send PDF -----
     const bytes = await pdfDoc.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    const name = url.searchParams.get('name') || 'ctrl_profile.pdf';
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${name}"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${(url.searchParams.get('name') || 'ctrl_profile')}.pdf"`);
     res.setHeader('Cache-Control', 'no-store');
     res.end(Buffer.from(bytes));
   } catch (e) {
-    // readable error instead of blank 500
     res.statusCode = 500;
     res.setHeader('Content-Type', 'text/plain');
     res.end('fill-template error: ' + (e?.message || e));
