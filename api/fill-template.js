@@ -193,7 +193,7 @@ export default async function handler(req, res) {
 
     // NEW: Page 1 — Cover Name (does not affect existing coords)
     // Defaults: centered below the headline area.
-    nameCover: { x:90, y:600, w:860, size:26, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
+    nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
 
     tip1Body: { x:120, y:1015, w:410, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
     tip2Body: { x:500, y:1015, w:460, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
