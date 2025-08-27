@@ -188,12 +188,12 @@ export default async function handler(req, res) {
     headlineSingle: { x:90, y:650, w:860, size:72, lineGap:4, color:rgb(0.12,0.11,0.2) },
     headlinePair:   { x:90, y:650, w:860, size:56, lineGap:4, color:rgb(0.12,0.11,0.2) },
 
-    // SINGLE-STATE "how it shows up" (tunable via hx,hy,hw,hs,halign)
-    howSingle:    { x:160, y:850, w:700, size:30, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
+    // SINGLE-STATE "how it shows up" (locked as requested; tunable via hx,hy,hw,hs,halign)
+    howSingle:    { x:85, y:818, w:890, size:25, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
     // PAIR "how" blend (tunable via hx2,hy2,hw2,hs2,h2align)
-    howPairBlend: { x:55,  y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
+    howPairBlend: { x:55, y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
-    // Page 1 — Cover Name (locked defaults per your request; still tunable)
+    // Page 1 — Cover Name (locked defaults; still tunable)
     nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
 
     tip1Body: { x:120, y:1015, w:410, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
@@ -204,7 +204,7 @@ export default async function handler(req, res) {
     // PAGE 2 — Patterns (left)
     p2Patterns: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:12, maxBodyLines:4 },
     // PAGE 2 — Themes (right)
-    p2Themes:   { x:1280, y:620, w:630,  hSize:34, bSize:30, align:'left', titleGap:6, blockGap:30, maxBodyLines:4 },
+    p2Themes:   { x:1280, y:620, w:630, hSize:34, bSize:30, align:'left', titleGap:6, blockGap:30, maxBodyLines:4 },
   };
 
   // Optional tuners (fallback to defaults)
@@ -219,7 +219,7 @@ export default async function handler(req, res) {
     align: qstr(url,'halign', POS.howSingle.align),
   };
 
-  // PAIR how tuners (existing)
+  // PAIR how tuners
   POS.howPairBlend = {
     ...POS.howPairBlend,
     x: qnum(url,'hx2',POS.howPairBlend.x),
