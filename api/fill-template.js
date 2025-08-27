@@ -16,6 +16,7 @@ const norm = (v, fb = '') =>
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
+// Wrap/align text into a box (y = distance from top, not bottom)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -74,8 +75,29 @@ async function fetchTemplate(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-function qnum(url, key, fb) { return N(url.searchParams.get(key), fb); }
-function qstr(url, key, fb) { const v = url.searchParams.get(key); return v == null ? fb : v; }
+// FIXED: missing tuner params should fall back to defaults (not zero)
+function qnum(url, key, fb) {
+  const s = url.searchParams.get(key);
+  if (s === null || s === '') return fb;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fb;
+}
+function qstr(url, key, fb) {
+  const v = url.searchParams.get(key);
+  return v == null || v === '' ? fb : v;
+}
+
+// Robustly choose a cover name (with legacy + URL override support)
+const pickCoverName = (data, url) => norm(
+  (data?.person?.coverName) ??
+  data?.coverName ??
+  data?.person?.fullName ??
+  data?.fullName ??
+  data?.summary?.user?.reportCoverName ?? // legacy
+  data?.summary?.user?.fullName ??        // legacy
+  url?.searchParams?.get('cover') ??      // manual override for quick tests
+  ''
+);
 
 /* ----------------------------- handler ----------------------------- */
 
@@ -91,7 +113,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
 
-  // ---- Demo payloads (match your latest structure) ----
+  // ---- Demo payloads (include demo name so you can preview placement) ----
   let data;
   if (isTest || isPair) {
     const common = {
@@ -138,9 +160,8 @@ export default async function handler(req, res) {
         { title:'Social navigation',  body:'Reading the room and adjusting to people and context.' },
         { title:'Awareness of impact',body:'Noticing how your words and actions land.' },
       ],
-      // demo name so you can preview placement with ?preview=1
-      person: { coverName: 'Avery Example', preferredName: 'Avery', fullName: 'Avery Example', initials: 'AE' },
-      coverName: 'Avery Example'
+      person:   { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
+      coverName:'Avery Example'
     };
     data = isPair
       ? { ...common,
@@ -171,7 +192,7 @@ export default async function handler(req, res) {
     howPairBlend: { x:55,  y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
     // NEW: Page 1 — Cover Name (does not affect existing coords)
-    // Defaults place the name centered below the headline area.
+    // Defaults: centered below the headline area.
     nameCover: { x:90, y:600, w:860, size:26, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
 
     tip1Body: { x:120, y:1015, w:410, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
@@ -262,17 +283,10 @@ export default async function handler(req, res) {
       { maxLines:1, ellipsis:true }
     );
 
-    // --- (NEW) Cover Name — user’s name on page 1 ---
-    // Prefers data.person.coverName, then coverName, then fullName fields.
-    const coverName =
-      norm(
-        (data?.person?.coverName) ??
-        (data?.coverName) ??
-        (data?.person?.fullName) ??
-        (data?.fullName) ?? ''
-      );
+    // --- Cover Name — user's name on page 1 (optional) ---
+    const coverName = pickCoverName(data, url);
     if (coverName) {
-      drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines:1, ellipsis:true });
+      drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines: 1, ellipsis: true });
     }
 
     // --- HOW / WHAT (blended for pair) ---
