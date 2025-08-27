@@ -138,6 +138,9 @@ export default async function handler(req, res) {
         { title:'Social navigation',  body:'Reading the room and adjusting to people and context.' },
         { title:'Awareness of impact',body:'Noticing how your words and actions land.' },
       ],
+      // demo name so you can preview placement with ?preview=1
+      person: { coverName: 'Avery Example', preferredName: 'Avery', fullName: 'Avery Example', initials: 'AE' },
+      coverName: 'Avery Example'
     };
     data = isPair
       ? { ...common,
@@ -167,6 +170,10 @@ export default async function handler(req, res) {
     howSingle:    { x:160, y:850, w:700, size:30, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
     howPairBlend: { x:55,  y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
+    // NEW: Page 1 — Cover Name (does not affect existing coords)
+    // Defaults place the name centered below the headline area.
+    nameCover: { x:90, y:600, w:860, size:26, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
+
     tip1Body: { x:120, y:1015, w:410, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
     tip2Body: { x:500, y:1015, w:460, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
 
@@ -187,6 +194,17 @@ export default async function handler(req, res) {
     size: qnum(url,'hs2',POS.howPairBlend.size),
     align: qstr(url,'h2align',POS.howPairBlend.align),
   };
+
+  // NEW: tuners for the cover name (position / size / align)
+  POS.nameCover = {
+    ...POS.nameCover,
+    x: qnum(url,'nx',POS.nameCover.x),
+    y: qnum(url,'ny',POS.nameCover.y),
+    w: qnum(url,'nw',POS.nameCover.w),
+    size: qnum(url,'ns',POS.nameCover.size),
+    align: qstr(url,'nalign',POS.nameCover.align),
+  };
+
   POS.tip1Body = { ...POS.tip1Body,
     x: qnum(url,'t1x',POS.tip1Body.x), y: qnum(url,'t1y',POS.tip1Body.y),
     w: qnum(url,'t1w',POS.tip1Body.w), size: qnum(url,'t1s',POS.tip1Body.size),
@@ -243,6 +261,19 @@ export default async function handler(req, res) {
       { ...(two ? POS.headlinePair : POS.headlineSingle), align:'center' },
       { maxLines:1, ellipsis:true }
     );
+
+    // --- (NEW) Cover Name — user’s name on page 1 ---
+    // Prefers data.person.coverName, then coverName, then fullName fields.
+    const coverName =
+      norm(
+        (data?.person?.coverName) ??
+        (data?.coverName) ??
+        (data?.person?.fullName) ??
+        (data?.fullName) ?? ''
+      );
+    if (coverName) {
+      drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines:1, ellipsis:true });
+    }
 
     // --- HOW / WHAT (blended for pair) ---
     if (two) {
@@ -310,8 +341,9 @@ export default async function handler(req, res) {
       }
     }
 
-    drawBlocks(page2, patterns, { font:Helv, bold:HelvB }, POS.p2Patterns);
-    drawBlocks(page2, themes,   { font:Helv, bold:HelvB }, POS.p2Themes);
+    const HelvFonts = { font:Helv, bold:HelvB };
+    drawBlocks(page2, patterns, HelvFonts, POS.p2Patterns);
+    drawBlocks(page2, themes,   HelvFonts, POS.p2Themes);
 
     // No dynamic copyright drawn (it lives in the template).
 
