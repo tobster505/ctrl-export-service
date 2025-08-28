@@ -75,7 +75,7 @@ async function fetchTemplate(req) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// FIXED: missing tuner params should fall back to defaults (not zero)
+// Tuners: missing params fall back to defaults (not zero)
 function qnum(url, key, fb) {
   const s = url.searchParams.get(key);
   if (s === null || s === '') return fb;
@@ -145,33 +145,25 @@ export default async function handler(req, res) {
           } }
         }
       })),
+      // Page 2 content — demo
       page2Patterns: [
-        { title:'Most & least seen',      body:'Most seen: Triggered. Least seen: Lead. That is your current centre of gravity - keep its strengths and add one tiny counter-balance.' },
-        { title:'Start → Finish',         body:'Started in Triggered, finished in Triggered — steady. You started and ended in similar zones - steady overall.' },
-        { title:'Pattern shape',          body:'Varied responses without one rhythm. Reflect briefly to spot what flipped you.' },
-        { title:'Switching & volatility', body:'You switched 3 of 4 steps (volatility ≈ 0.75). High volatility - helpful if chosen; draining if automatic.' },
-        { title:'Streaks / clusters',     body:'Longest run: Triggered × 2. Pairs showed up. Brief runs; small anchors help keep direction.' },
-        { title:'Momentum',               body:'Steady. You started and ended in similar zones - steady overall.' },
-        { title:'Resilience & retreat',   body:'Moved up after C/T: 1. Slipped down after R/L: 1. Even balance - keep the resets that help you recover.' },
-        { title:'Early vs late',          body:'Slightly steadier later on (gentle rise). (Δ ≈ 0.83 on a 1–4 scale).' },
+        { title:'Direction & shape', body:'Steady line with mixed steps. You kept to a similar zone overall; keep the little habits that held you there.' },
+        { title:'Coverage & edges',  body:'You touched 3 states and saw little of Lead. Solid range with one area to explore when useful.' },
       ],
-      page2Themes: [
-        { title:'Emotion regulation', body:'Settling yourself when feelings spike.' },
-        { title:'Social navigation',  body:'Reading the room and adjusting to people and context.' },
-        { title:'Awareness of impact',body:'Noticing how your words and actions land.' },
-      ],
+      themeNarrative: 'You steady yourself when feelings spike, you read the room, and you notice how your words land — together that points to clear intent and cleaner repair when needed.',
       person:   { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
-      coverName:'Avery Example'
+      coverName:'Avery Example',
+      // Headline
+      stateWord: 'Triggered',
+      how: 'Feelings and energy arrive fast and show up visibly. A brief pause or naming the wobble ("I am on edge") often settles it.'
     };
     data = isPair
       ? { ...common,
+          stateWord: undefined,
           stateWords: ['Triggered','Lead'],
-          howPair: 'Charged direction. Energy arrives fast and you point it at outcomes. That can rally a room or outrun it. Pivot from urgency to service: micro-pause, then turn intensity into clear invites and next steps.',
+          howPair: 'Energy arrives quickly and you can channel it into calm direction when you pause first. That shift turns urgency into service.',
         }
-      : { ...common,
-          stateWord:'Triggered',
-          how:'Feelings and energy arrive fast and show up visibly. A brief pause or naming the wobble ("I am on edge") often settles it.',
-        };
+      : common;
   } else {
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
@@ -183,32 +175,35 @@ export default async function handler(req, res) {
     }
   }
 
-  /* ---- LOCKED DEFAULTS (your chosen coordinates) ---- */
+  /* ---- LOCKED DEFAULTS (exact coordinates) ---- */
   const POS = {
+    // Page 1 — Headline (unchanged)
     headlineSingle: { x:90, y:650, w:860, size:72, lineGap:4, color:rgb(0.12,0.11,0.2) },
     headlinePair:   { x:90, y:650, w:860, size:56, lineGap:4, color:rgb(0.12,0.11,0.2) },
 
-    // SINGLE-STATE "how it shows up" (locked as requested; tunable via hx,hy,hw,hs,halign)
+    // Page 1 — “How it shows up” (single) — LOCKED
     howSingle:    { x:85, y:818, w:890, size:25, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
-    // PAIR "how" blend (tunable via hx2,hy2,hw2,hs2,h2align)
+    // Page 1 — “How” (pair blend) — unchanged
     howPairBlend: { x:55, y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
-    // Page 1 — Cover Name (locked defaults; still tunable)
+    // Page 1 — Cover Name — LOCKED
     nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
 
+    // Page 1 — Tips / Action (unchanged)
     tip1Body: { x:120, y:1015, w:410, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
     tip2Body: { x:500, y:1015, w:460, size:23, lineGap:3, color:rgb(0.24,0.23,0.35), align:'center' },
 
+    // Page 1 — Chart (unchanged)
     chart: { x:1030, y:620, w:720, h:420 },
 
-    // PAGE 2 — Patterns (left)
-    p2Patterns: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:12, maxBodyLines:4 },
-    // PAGE 2 — Themes (right)
-    p2Themes:   { x:1280, y:620, w:630, hSize:34, bSize:30, align:'left', titleGap:6, blockGap:30, maxBodyLines:4 },
+    // Page 2 — Patterns (left) — now exactly TWO blocks, coordinates re-locked
+    p2Patterns: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:20, maxBodyLines:6 },
+
+    // Page 2 — Themes (right) — one paragraph, coordinates re-locked
+    p2ThemePara: { x:1280, y:620, w:630, size:30, lineGap:4, align:'left', color: rgb(0.24,0.23,0.35), maxLines:14 },
   };
 
-  // Optional tuners (fallback to defaults)
-
+  // Tuners kept only for name + how + chart (as before)
   // SINGLE-STATE how tuners
   POS.howSingle = {
     ...POS.howSingle,
@@ -218,7 +213,6 @@ export default async function handler(req, res) {
     size: qnum(url,'hs', POS.howSingle.size),
     align: qstr(url,'halign', POS.howSingle.align),
   };
-
   // PAIR how tuners
   POS.howPairBlend = {
     ...POS.howPairBlend,
@@ -228,7 +222,6 @@ export default async function handler(req, res) {
     size: qnum(url,'hs2',POS.howPairBlend.size),
     align: qstr(url,'h2align',POS.howPairBlend.align),
   };
-
   // NAME cover tuners
   POS.nameCover = {
     ...POS.nameCover,
@@ -238,43 +231,21 @@ export default async function handler(req, res) {
     size: qnum(url,'ns',POS.nameCover.size),
     align: qstr(url,'nalign',POS.nameCover.align),
   };
-
-  POS.tip1Body = { ...POS.tip1Body,
-    x: qnum(url,'t1x',POS.tip1Body.x), y: qnum(url,'t1y',POS.tip1Body.y),
-    w: qnum(url,'t1w',POS.tip1Body.w), size: qnum(url,'t1s',POS.tip1Body.size),
-    align: qstr(url,'t1align',POS.tip1Body.align),
-  };
-  POS.tip2Body = { ...POS.tip2Body,
-    x: qnum(url,'t2x',POS.tip2Body.x), y: qnum(url,'t2y',POS.tip2Body.y),
-    w: qnum(url,'t2w',POS.tip2Body.w), size: qnum(url,'t2s',POS.tip2Body.size),
-    align: qstr(url,'t2align',POS.tip2Body.align),
-  };
+  // Chart tuners (unchanged)
   POS.chart = { ...POS.chart,
     x: qnum(url,'cx',POS.chart.x), y: qnum(url,'cy',POS.chart.y),
     w: qnum(url,'cw',POS.chart.w), h: qnum(url,'ch',POS.chart.h),
   };
-  POS.p2Patterns = { ...POS.p2Patterns,
-    x: qnum(url,'p2x',POS.p2Patterns.x), y: qnum(url,'p2y',POS.p2Patterns.y),
-    w: qnum(url,'p2w',POS.p2Patterns.w),
-    hSize: qnum(url,'p2hs',POS.p2Patterns.hSize), bSize: qnum(url,'p2bs',POS.p2Patterns.bSize),
-    align: qstr(url,'p2align',POS.p2Patterns.align),
-    titleGap: qnum(url,'p2hgap',POS.p2Patterns.titleGap),
-    blockGap: qnum(url,'p2gap', POS.p2Patterns.blockGap),
-    maxBodyLines: qnum(url,'p2max',POS.p2Patterns.maxBodyLines),
-  };
-  POS.p2Themes = { ...POS.p2Themes,
-    x: qnum(url,'p2tx',POS.p2Themes.x), y: qnum(url,'p2ty',POS.p2Themes.y),
-    w: qnum(url,'p2tw',POS.p2Themes.w),
-    hSize: qnum(url,'p2ths',POS.p2Themes.hSize), bSize: qnum(url,'p2tbs',POS.p2Themes.bSize),
-    align: qstr(url,'p2talign',POS.p2Themes.align),
-    titleGap: qnum(url,'p2thgap',POS.p2Themes.titleGap),
-    blockGap: qnum(url,'p2tgap', POS.p2Themes.blockGap),
-    maxBodyLines: qnum(url,'p2tmax',POS.p2Themes.maxBodyLines),
-  };
 
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok:true, hint:'Add &preview=1 to view inline', data, pos:POS, urlParams:Object.fromEntries(url.searchParams.entries()) }, null, 2));
+    res.end(JSON.stringify({
+      ok:true,
+      hint:'Add &preview=1 to view inline',
+      pos:POS,
+      data,
+      urlParams:Object.fromEntries(url.searchParams.entries())
+    }, null, 2));
     return;
   }
 
@@ -286,7 +257,9 @@ export default async function handler(req, res) {
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    // --- Headline (single vs pair) ---
+    /* ---------------- Page 1 ---------------- */
+
+    // Headline (single vs pair) — unchanged logic
     const two = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
     const headline = two
       ? `${norm((data.stateWords||[])[0])} & ${norm((data.stateWords||[])[1])}`
@@ -296,13 +269,13 @@ export default async function handler(req, res) {
       { maxLines:1, ellipsis:true }
     );
 
-    // --- Cover Name — user's name on page 1 (optional) ---
+    // Cover Name — locked coords
     const coverName = pickCoverName(data, url);
     if (coverName) {
       drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines: 1, ellipsis: true });
     }
 
-    // --- HOW / WHAT (blended for pair or single) ---
+    // HOW / WHAT — single vs pair
     if (two) {
       const t = data.howPair || data.how || '';
       if (t) drawTextBox(page1, Helv, t, POS.howPairBlend, { maxLines:3, ellipsis:true });
@@ -310,11 +283,11 @@ export default async function handler(req, res) {
       if (data.how) drawTextBox(page1, Helv, data.how, POS.howSingle, { maxLines:3, ellipsis:true });
     }
 
-    // --- Tips ---
+    // Tip & Action — same coords, content pulled from data.tip1 / data.tip2
     if (data.tip1) drawTextBox(page1, Helv, data.tip1, POS.tip1Body, { maxLines:2, ellipsis:true });
     if (data.tip2) drawTextBox(page1, Helv, data.tip2, POS.tip2Body, { maxLines:2, ellipsis:true });
 
-    // --- Chart ---
+    // Chart — unchanged
     if (!noGraph && data.chartUrl) {
       try {
         const r = await fetch(S(data.chartUrl,''));
@@ -327,51 +300,65 @@ export default async function handler(req, res) {
       } catch { /* ignore chart errors */ }
     }
 
-    // --- Page 2: columns ---
-    const patterns = Array.isArray(data.page2Patterns)
+    /* ---------------- Page 2 ---------------- */
+
+    // Left: Patterns (now exactly TWO blocks)
+    const rawBlocks = Array.isArray(data.page2Patterns)
       ? data.page2Patterns
       : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
+    const twoBlocks = rawBlocks
+      .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
+      .filter(b => b.title || b.body)
+      .slice(0, 2);
 
-    let themes = [];
-    if (Array.isArray(data.page2Themes)) {
-      themes = data.page2Themes;
-    } else if (typeof data.themesExplainer === 'string') {
-      themes = data.themesExplainer
-        .split('\n')
-        .map(s => S(s,'').replace(/^•\s*/, ''))
-        .filter(Boolean)
-        .map(row => {
-          const [titleRaw, ...rest] = row.split(' - ');
-          const title = norm(titleRaw || '');
-          const body  = norm(rest.join(' - ') || '');
-          const titled = title.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-          return { title: titled, body };
-        })
-        .slice(0, 3);
-    }
-
-    function drawBlocks(page, blocks, fonts, spec) {
-      const { font, bold } = fonts;
-      const { x, y, w, hSize, bSize, align, titleGap, blockGap, maxBodyLines } = spec;
-      let curY = y;
-      for (const b of (blocks || [])) {
-        const t = norm(b?.title || '');
-        const body = norm(b?.body || '');
-        if (t) {
-          drawTextBox(page, bold, t, { x, y: curY, w, size: hSize, align, color: rgb(0.24,0.23,0.35), lineGap:3 }, { maxLines:1, ellipsis:true });
-          curY += (hSize + 3) + titleGap;
-        }
-        if (body) {
-          const r = drawTextBox(page, font, body, { x, y: curY, w, size: bSize, align, color: rgb(0.24,0.23,0.35), lineGap:3 }, { maxLines: maxBodyLines, ellipsis:true });
-          curY += r.height + blockGap;
-        }
+    let curY = POS.p2Patterns.y;
+    for (const b of twoBlocks) {
+      if (b.title) {
+        drawTextBox(
+          page2,
+          HelvB,
+          b.title,
+          { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.hSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+          { maxLines: 1, ellipsis: true }
+        );
+        curY += (POS.p2Patterns.hSize + 3) + POS.p2Patterns.titleGap;
+      }
+      if (b.body) {
+        const r = drawTextBox(
+          page2,
+          Helv,
+          b.body,
+          { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.bSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+          { maxLines: POS.p2Patterns.maxBodyLines, ellipsis: true }
+        );
+        curY += r.height + POS.p2Patterns.blockGap;
       }
     }
 
-    const HelvFonts = { font:Helv, bold:HelvB };
-    drawBlocks(page2, patterns, HelvFonts, POS.p2Patterns);
-    drawBlocks(page2, themes,   HelvFonts, POS.p2Themes);
+    // Right: Themes — single paragraph narrative
+    let themeNarr = '';
+    if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim()) {
+      themeNarr = norm(data.themeNarrative.trim());
+    } else if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
+      // Fallback: flatten any provided theme blocks into one paragraph
+      const bits = data.page2Themes
+        .map(t => [t?.title, t?.body].filter(Boolean).join(': '))
+        .filter(Boolean);
+      themeNarr = norm(bits.join('  '));
+    } else if (typeof data.themesExplainer === 'string' && data.themesExplainer.trim()) {
+      themeNarr = norm(data.themesExplainer.replace(/\n+/g, ' ').replace(/•\s*/g, '').trim());
+    }
+    if (themeNarr) {
+      drawTextBox(
+        page2,
+        Helv,
+        themeNarr,
+        { x: POS.p2ThemePara.x, y: POS.p2ThemePara.y, w: POS.p2ThemePara.w, size: POS.p2ThemePara.size, align: POS.p2ThemePara.align, color: POS.p2ThemePara.color, lineGap: POS.p2ThemePara.lineGap },
+        { maxLines: POS.p2ThemePara.maxLines, ellipsis: true }
+      );
+    }
 
+    // Save
     const bytes = await pdf.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
