@@ -77,6 +77,7 @@ async function fetchTemplate(req) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, 'ctrl-export-service.vercel.app');
   const proto = S(h['x-forwarded-proto'], 'https');
+  // Use your template filename
   const url   = `${proto}://${host}/CTRL_Perspective_Assessment_Profile_template.pdf`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -143,12 +144,11 @@ export default async function handler(req, res) {
       coverName:'Toby New',
       fullName: 'Toby New',
       dateISO:  new Date().toISOString(),
-      directionLabel:  'Steady',
-      directionMeaning:'You started and ended in similar zones—steady overall.',
-      themeLabel:      'Emotion regulation',
-      themeMeaning:    'Settling yourself when feelings spike.',
-      tip1: 'Take one breath and name it: “I am on edge.”',
-      tip2: 'Choose your gear on purpose—protect, steady, or lead.',
+
+      // Page 5 demo (dominant + how + chart)
+      stateWord: 'Regulated',
+      dominantParagraph: 'You connect the most with Mika—grounded, fair, steady under pressure.',
+      how: 'Steady presence; keep clarity alive.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: { labels: ['Concealed','Triggered','Regulated','Lead'],
@@ -171,16 +171,14 @@ export default async function handler(req, res) {
           } }
         }
       })),
-      // Page 2 demo
+
+      // Page 2 demo content
       page2Patterns: [
         { title:'Direction & shape', body:'Steady line with mixed steps; keep the little habits that held you there.' },
         { title:'Coverage & edges',  body:'You touched 2 states and saw little of Lead or Concealed—two areas to explore.' },
       ],
       themeNarrative: 'You steady yourself when feelings spike and notice how your words land—clear intent and cleaner repair.',
-      // Page 5 demo
-      stateWord: 'Regulated',
-      dominantParagraph: 'You connect the most with Mika—grounded, fair, steady under pressure.',
-      how: 'Steady presence; keep clarity alive.',
+
       // Page 6 demo blocks
       blockShapeCoverage: 'Mixed shape with moderate coverage; stable centre of gravity with some flex.',
       blockMissingState:  'Least present: Concealed & Lead—consider when either could be useful.',
@@ -202,31 +200,22 @@ export default async function handler(req, res) {
 
   /* ---------------- POSITIONS (defaults) ---------------- */
   const POS = {
-    // Page 1 headline
-    headlineSingle: { x:90, y:650, w:860, size:72, lineGap:4, color:rgb(0.12,0.11,0.2) },
-    headlinePair:   { x:90, y:650, w:860, size:56, lineGap:4, color:rgb(0.12,0.11,0.2) },
+    // ==== PAGE 1 (Locked per your request) ====
+    // PathName (flow label) — LOCKED to your coords
+    p1Flow: { x:285, y:165, w:400, size:40, align:'left',  color: rgb(0.12,0.11,0.2) },
+    // FullName (small header) — LOCKED to your coords
+    p1Name: { x:-10, y:570, w:600, size:32, align:'center', color: rgb(0.24,0.23,0.35) },
+    // Date (DD/MMM/YYYY) — keep (you already liked this); still tunable if needed
+    p1Date: { x:120, y:630, w:500, size:25, align:'left', color: rgb(0.24,0.23,0.35) },
 
-    // Page 1 how blocks
-    howSingle:    { x:85, y:818, w:890, size:25, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
-    howPairBlend: { x:55, y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
+    // ==== Removed on Page 1 ====
+    // (no howSingle / howPair / nameCover / chart on Page 1)
 
-    // Page 1 large cover name
-    nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
-
-    // Page 1 small header: FullName + Date
-    p1Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
-    p1Date: { x:90,  y:120, w:400, size:16, align:'left',   color: rgb(0.24,0.23,0.35) },
-
-    // Page 1 chart
-    chart: { x:1030, y:620, w:720, h:420 },
-
-    // Page 2 left patterns (two blocks)
+    // ==== PAGE 2 ====
     p2Patterns: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:20, maxBodyLines:6 },
-    // Page 2 right theme paragraph
     p2ThemePara:{ x:1280, y:620, w:630,  size:30, align:'left', color: rgb(0.24,0.23,0.35), lineGap:4, maxLines:14 },
 
     // Flow labels (pages 1–8)
-    p1Flow: { x:90, y:60, w:400, size:20, align:'left',  color: rgb(0.12,0.11,0.2) },
     p2Flow: { x:90, y:60, w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
     p3Flow: { x:90, y:60, w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
     p4Flow: { x:90, y:60, w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
@@ -244,41 +233,27 @@ export default async function handler(req, res) {
     p7Name: { x:460, y:60, w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
     p8Name: { x:460, y:60, w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
 
-    /* Page 5 content */
+    /* PAGE 5 content (dominant + how + chart) */
     dom5Title: { x:120, y:250, w:900, size:36, align:'left',  color: rgb(0.12,0.11,0.2) },
     dom5Desc:  { x:120, y:300, w:900, size:22, align:'left',  color: rgb(0.24,0.23,0.35), lineGap:4, maxLines:6 },
     how5:      { x:120, y:360, w:900, size:22, align:'left',  color: rgb(0.24,0.23,0.35), lineGap:4, maxLines:4 },
     chart5:    { x:1100, y:300, w:650, h:420 },
 
-    /* Page 6 blocks (vertical stack, individually tunable) */
-    b61: { x:120,  y:260, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Shape+Coverage
-    b62: { x:120,  y:410, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Missing
+    /* PAGE 6 blocks */
+    b61: { x:120,  y:260, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Shape + Coverage
+    b62: { x:120,  y:410, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Missing State
     b63: { x:120,  y:560, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:6 }, // Themes
     b64: { x:120,  y:740, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Tips
     b65: { x:120,  y:890, w:1500, hSize:16, bSize:22, align:'left', titleGap:6, maxLines:5 }, // Actions
   };
 
   /* ---------------- tuners ---------------- */
-  // How (single & pair)
-  POS.howSingle = { ...POS.howSingle,
-    x:qnum(url,'hx',POS.howSingle.x), y:qnum(url,'hy',POS.howSingle.y),
-    w:qnum(url,'hw',POS.howSingle.w), size:qnum(url,'hs',POS.howSingle.size),
-    align: alignNorm(qstr(url,'halign',POS.howSingle.align), POS.howSingle.align)
+  // Keep Page 1: PathName + FullName + Date tunable (defaults are your locked values)
+  POS.p1Flow = { ...POS.p1Flow,
+    x:qnum(url,'f1x',POS.p1Flow.x), y:qnum(url,'f1y',POS.p1Flow.y),
+    w:qnum(url,'f1w',POS.p1Flow.w), size:qnum(url,'f1s',POS.p1Flow.size),
+    align: alignNorm(qstr(url,'f1align',POS.p1Flow.align), POS.p1Flow.align)
   };
-  POS.howPairBlend = { ...POS.howPairBlend,
-    x:qnum(url,'hx2',POS.howPairBlend.x), y:qnum(url,'hy2',POS.howPairBlend.y),
-    w:qnum(url,'hw2',POS.howPairBlend.w), size:qnum(url,'hs2',POS.howPairBlend.size),
-    align: alignNorm(qstr(url,'h2align',POS.howPairBlend.align), POS.howPairBlend.align)
-  };
-
-  // Cover name (big)
-  POS.nameCover = { ...POS.nameCover,
-    x:qnum(url,'nx',POS.nameCover.x), y:qnum(url,'ny',POS.nameCover.y),
-    w:qnum(url,'nw',POS.nameCover.w), size:qnum(url,'ns',POS.nameCover.size),
-    align: alignNorm(qstr(url,'nalign',POS.nameCover.align), POS.nameCover.align)
-  };
-
-  // Page 1 headers
   POS.p1Name = { ...POS.p1Name,
     x:qnum(url,'n1x',POS.p1Name.x), y:qnum(url,'n1y',POS.p1Name.y),
     w:qnum(url,'n1w',POS.p1Name.w), size:qnum(url,'n1s',POS.p1Name.size),
@@ -290,14 +265,8 @@ export default async function handler(req, res) {
     align: alignNorm(qstr(url,'d1align',POS.p1Date.align), POS.p1Date.align)
   };
 
-  // Page 1 chart
-  POS.chart = { ...POS.chart,
-    x:qnum(url,'cx',POS.chart.x), y:qnum(url,'cy',POS.chart.y),
-    w:qnum(url,'cw',POS.chart.w), h:qnum(url,'ch',POS.chart.h)
-  };
-
-  // Flow & FullName for pages 1–8
-  for (let n=1;n<=8;n++){
+  // Flow & FullName for pages 2–8 (tunable)
+  for (let n=2;n<=8;n++){
     const fk = `p${n}Flow`, nk = `p${n}Name`;
     POS[fk] = { ...POS[fk],
       x:qnum(url,`f${n}x`,POS[fk].x), y:qnum(url,`f${n}y`,POS[fk].y),
@@ -311,7 +280,7 @@ export default async function handler(req, res) {
     };
   }
 
-  // Page 2 tuners
+  // Page 2 tuners (patterns + theme paragraph)
   POS.p2Patterns = { ...POS.p2Patterns,
     x:qnum(url,'p2px',POS.p2Patterns.x), y:qnum(url,'p2py',POS.p2Patterns.y),
     w:qnum(url,'p2pw',POS.p2Patterns.w),
@@ -367,7 +336,7 @@ export default async function handler(req, res) {
     };
   }
 
-  const flowLbl = qstr(url,'flow','') || data?.flowLabel || data?.summary?.flow?.label || 'Perspective';
+  const flowLbl  = qstr(url,'flow','') || data?.flowLabel || data?.summary?.flow?.label || 'Perspective';
   const fullName = pickFullName(data) || pickCoverName(data, url);
   const dateLbl  = fmtDateLbl(data?.dateLbl || data?.summary?.flow?.dateISO || data?.dateISO);
 
@@ -385,41 +354,14 @@ export default async function handler(req, res) {
     const pageCount = pdf.getPageCount();
     const getPage = (i) => (i < pageCount ? pdf.getPage(i) : null);
 
-    /* ---------------- Page 1 ---------------- */
+    /* ---------------- Page 1 (only Flow, FullName, Date) ---------------- */
     const page1 = getPage(0);
     if (page1) {
-      const two = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
-      const headline = two
-        ? `${norm((data.stateWords||[])[0]||'—')} & ${norm((data.stateWords||[])[1]||'—')}`
-        : norm(data.stateWord || '—');
-      drawTextBox(page1, HelvB, headline, { ...(two ? POS.headlinePair : POS.headlineSingle), align:'center' }, { maxLines:1, ellipsis:true });
-
-      const coverName = pickCoverName(data, url);
-      if (coverName) drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines:1, ellipsis:true });
-
-      if (two) {
-        const t = data.howPair || data.how || '';
-        if (t) drawTextBox(page1, Helv, t, POS.howPairBlend, { maxLines:3, ellipsis:true });
-      } else {
-        if (data.how) drawTextBox(page1, Helv, data.how, POS.howSingle, { maxLines:3, ellipsis:true });
-      }
-
-      if (dateLbl) drawTextBox(page1, Helv, dateLbl, POS.p1Date, { maxLines:1, ellipsis:true });
-
-      if (!noGraph && data.chartUrl) {
-        try {
-          const r = await fetch(S(data.chartUrl,''));
-          if (r.ok) {
-            const png = await pdf.embedPng(await r.arrayBuffer());
-            const { x, y, w, h } = POS.chart;
-            const ph = page1.getHeight();
-            page1.drawImage(png, { x, y: ph - y - h, width: w, height: h });
-          }
-        } catch { /* ignore chart errors */ }
-      }
-
       drawTextBox(page1, HelvB, norm(flowLbl), POS.p1Flow, { maxLines:1, ellipsis:true });
       if (fullName) drawTextBox(page1, Helv, fullName, POS.p1Name, { maxLines:1, ellipsis:true });
+      if (dateLbl)  drawTextBox(page1, Helv, dateLbl, POS.p1Date, { maxLines:1, ellipsis:true });
+
+      // Intentionally NO headline / NO how / NO big cover name / NO chart on Page 1
     }
 
     /* ---------------- Page 2 ---------------- */
@@ -470,20 +412,19 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ---------------- Page 3–4 headers ---------------- */
+    /* ---------------- Page 3–4 headers only ---------------- */
     for (const n of [3,4]) {
       const p = getPage(n-1); if (!p) continue;
       drawTextBox(p, HelvB, norm(flowLbl), POS[`p${n}Flow`], { maxLines:1, ellipsis:true });
       if (fullName) drawTextBox(p, Helv, fullName, POS[`p${n}Name`], { maxLines:1, ellipsis:true });
     }
 
-    /* ---------------- Page 5 (Dominant + chart + how) ---------------- */
+    /* ---------------- Page 5 (Dominant + how + chart) ---------------- */
     const page5 = getPage(4);
     if (page5) {
       drawTextBox(page5, HelvB, norm(flowLbl), POS.p5Flow, { maxLines:1, ellipsis:true });
       if (fullName) drawTextBox(page5, Helv, fullName, POS.p5Name, { maxLines:1, ellipsis:true });
 
-      // Dominant word/title
       const domWord = norm(
         data.stateWord ||
         (Array.isArray(data.stateWords) ? data.stateWords.join(' & ') : '') ||
@@ -491,15 +432,12 @@ export default async function handler(req, res) {
       );
       if (domWord) drawTextBox(page5, HelvB, domWord, POS.dom5Title, { maxLines:1, ellipsis:true });
 
-      // Dominant description
       const domDesc = norm(data.dominantParagraph || data.dominantDescription || '');
       if (domDesc) drawTextBox(page5, Helv, domDesc, POS.dom5Desc, { maxLines: POS.dom5Desc.maxLines, ellipsis:true });
 
-      // How this shows up (reinforce)
       const how5 = norm(data.how || '');
       if (how5) drawTextBox(page5, Helv, how5, POS.how5, { maxLines: POS.how5.maxLines, ellipsis:true });
 
-      // Chart again on page 5
       if (!noGraph && data.chartUrl) {
         try {
           const r = await fetch(S(data.chartUrl,''));
@@ -519,7 +457,6 @@ export default async function handler(req, res) {
       drawTextBox(page6, HelvB, norm(flowLbl), POS.p6Flow, { maxLines:1, ellipsis:true });
       if (fullName) drawTextBox(page6, Helv, fullName, POS.p6Name, { maxLines:1, ellipsis:true });
 
-      // Resolve block contents (with fallbacks)
       const block1Title = 'Shape & Coverage';
       const block1Body  = norm(
         data.blockShapeCoverage ||
@@ -554,7 +491,7 @@ export default async function handler(req, res) {
         if (Array.isArray(data.actions) && data.actions.length) {
           return data.actions.map(a => `• ${a}`).join('\n');
         }
-        return data.blockActions || ''; // optional external field
+        return data.blockActions || '';
       })();
 
       const drawBlock = (page, title, body, spec) => {
@@ -573,7 +510,7 @@ export default async function handler(req, res) {
       drawBlock(page6, block5Title, actionsTxt,  POS.b65);
     }
 
-    /* ---------------- Page 7–8 headers ---------------- */
+    /* ---------------- Page 7–8 headers only ---------------- */
     for (const n of [7,8]) {
       const p = getPage(n-1); if (!p) continue;
       drawTextBox(p, HelvB, norm(flowLbl), POS[`p${n}Flow`], { maxLines:1, ellipsis:true });
