@@ -17,6 +17,13 @@ const norm = (v, fb = '') =>
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
+const alignNorm = (a, fb = 'left') => {
+  const s = (a || fb || '').toLowerCase();
+  if (s === 'center' || s === 'centre' || s === 'middle') return 'center';
+  if (s === 'right' || s === 'end') return 'right';
+  return 'left';
+};
+
 // Wrap/align text into a box (y = distance from TOP edge)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
@@ -70,7 +77,7 @@ async function fetchTemplate(req) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, 'ctrl-export-service.vercel.app');
   const proto = S(h['x-forwarded-proto'], 'https');
-  // NOTE: point to your actual template filename in /public
+  // Uses your template in /public
   const url   = `${proto}://${host}/CTRL_Perspective_Assessment_Profile_template.pdf`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -110,9 +117,7 @@ const pickFullName = (data) => norm(
 
 // Format "DD/MMM/YYYY" (MMM uppercase)
 function fmtDateLbl(isoOrLbl) {
-  // If already looks like DD/XXX/YYYY just return
   if (typeof isoOrLbl === 'string' && /^\d{2}\/[A-Z]{3}\/\d{4}$/.test(isoOrLbl)) return isoOrLbl;
-
   const d = isoOrLbl ? new Date(isoOrLbl) : new Date();
   const dd = String(d.getUTCDate()).padStart(2, '0');
   const MMM = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][d.getUTCMonth()];
@@ -134,7 +139,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
 
-  // ---- Demo payloads (include demo name so you can preview placement) ----
+  // ---- Demo payload for quick placement tuning ----
   let data;
   if (isTest || isPair) {
     const common = {
@@ -171,13 +176,11 @@ export default async function handler(req, res) {
           } }
         }
       })),
-      // Page 2 content — demo
       page2Patterns: [
         { title:'Direction & shape', body:'Steady line with mixed steps. You kept to a similar zone overall; keep the little habits that held you there.' },
         { title:'Coverage & edges',  body:'You touched 2 states and saw little of Lead or Concealed. Solid range with two areas to explore when useful.' },
       ],
       themeNarrative: 'You steady yourself when feelings spike, you read the room, and you notice how your words land — together that points to clear intent and cleaner repair when needed.',
-      // Headline
       stateWord: isPair ? undefined : 'Regulated',
       stateWords: isPair ? ['Triggered','Lead'] : undefined,
       how: 'Steady presence; keep clarity alive.',
@@ -196,8 +199,9 @@ export default async function handler(req, res) {
   }
 
   /* ---- POSITIONS & TUNERS ----
-     - y is measured from TOP edge downwards
-     - You can tune via URL for quick trials
+     - y is measured from the TOP edge
+     - All headers: per-page Flow + FullName
+     - Page 1 also has the large CoverName (nameCover) area
   */
   const POS = {
     // Page 1 — Headline
@@ -208,8 +212,11 @@ export default async function handler(req, res) {
     howSingle:    { x:85, y:818, w:890, size:25, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
     howPairBlend: { x:55, y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
-    // Page 1 — Cover Name (large, near bottom)
+    // Page 1 — Cover Name (large)
     nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
+
+    // NEW: Page 1 — Full Name header (top area)
+    p1Name: { x:460, y:60, w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
 
     // Page 1 — Date label (DD/MMM/YYYY)
     p1Date: { x:90, y:120, w:400, size:16, lineGap:2, color:rgb(0.24,0.23,0.35), align:'left' },
@@ -223,7 +230,7 @@ export default async function handler(req, res) {
     // Page 2 — Themes (right)
     p2ThemePara: { x:1280, y:620, w:630, size:30, lineGap:4, align:'left', color: rgb(0.24,0.23,0.35), maxLines:14 },
 
-    // NEW: Flow labels (“Perspective/Observe/Reflective”) on pages 1–8
+    // Flow labels (“Perspective/Observe/Reflective”) on pages 1–8
     p1Flow: { x:90,  y:60,  w:400, size:20, align:'left',  color: rgb(0.12,0.11,0.2) },
     p2Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
     p3Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
@@ -233,7 +240,7 @@ export default async function handler(req, res) {
     p7Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
     p8Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
 
-    // NEW: Full-name headers on pages 2–8
+    // Full-name headers on pages 2–8
     p2Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
     p3Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
     p4Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
@@ -250,7 +257,7 @@ export default async function handler(req, res) {
     y: qnum(url,'hy', POS.howSingle.y),
     w: qnum(url,'hw', POS.howSingle.w),
     size: qnum(url,'hs', POS.howSingle.size),
-    align: qstr(url,'halign', POS.howSingle.align),
+    align: alignNorm(qstr(url,'halign', POS.howSingle.align), POS.howSingle.align),
   };
   // PAIR how tuners
   POS.howPairBlend = {
@@ -259,7 +266,7 @@ export default async function handler(req, res) {
     y: qnum(url,'hy2',POS.howPairBlend.y),
     w: qnum(url,'hw2',POS.howPairBlend.w),
     size: qnum(url,'hs2',POS.howPairBlend.size),
-    align: qstr(url,'h2align',POS.howPairBlend.align),
+    align: alignNorm(qstr(url,'h2align',POS.howPairBlend.align), POS.howPairBlend.align),
   };
   // NAME cover tuners (Page 1 big name)
   POS.nameCover = {
@@ -268,7 +275,16 @@ export default async function handler(req, res) {
     y: qnum(url,'ny',POS.nameCover.y),
     w: qnum(url,'nw',POS.nameCover.w),
     size: qnum(url,'ns',POS.nameCover.size),
-    align: qstr(url,'nalign',POS.nameCover.align),
+    align: alignNorm(qstr(url,'nalign',POS.nameCover.align), POS.nameCover.align),
+  };
+  // NEW: Page 1 FullName header tuners (n1x, n1y, n1w, n1s, n1align)
+  POS.p1Name = {
+    ...POS.p1Name,
+    x: qnum(url,'n1x',POS.p1Name.x),
+    y: qnum(url,'n1y',POS.p1Name.y),
+    w: qnum(url,'n1w',POS.p1Name.w),
+    size: qnum(url,'n1s',POS.p1Name.size),
+    align: alignNorm(qstr(url,'n1align',POS.p1Name.align), POS.p1Name.align),
   };
   // DATE on page 1
   POS.p1Date = {
@@ -277,7 +293,7 @@ export default async function handler(req, res) {
     y: qnum(url,'d1y',POS.p1Date.y),
     w: qnum(url,'d1w',POS.p1Date.w || 400),
     size: qnum(url,'d1s',POS.p1Date.size),
-    align: qstr(url,'d1align',POS.p1Date.align),
+    align: alignNorm(qstr(url,'d1align',POS.p1Date.align), POS.p1Date.align),
   };
   // Chart tuners
   POS.chart = { ...POS.chart,
@@ -293,7 +309,7 @@ export default async function handler(req, res) {
       y: qnum(url, `f${n}y`, POS[key].y),
       w: qnum(url, `f${n}w`, POS[key].w || 400),
       size: qnum(url, `f${n}s`, POS[key].size),
-      align: qstr(url, `f${n}align`, POS[key].align),
+      align: alignNorm(qstr(url, `f${n}align`, POS[key].align), POS[key].align),
     };
   }
   // Full-name tuners per page (n{n}x, n{n}y, n{n}w, n{n}s, n{n}align) for pages 2–8
@@ -305,7 +321,7 @@ export default async function handler(req, res) {
       y: qnum(url, `n${n}y`, POS[key].y),
       w: qnum(url, `n${n}w`, POS[key].w || 800),
       size: qnum(url, `n${n}s`, POS[key].size),
-      align: qstr(url, `n${n}align`, POS[key].align),
+      align: alignNorm(qstr(url, `n${n}align`, POS[key].align), POS[key].align),
     };
   }
 
@@ -384,6 +400,9 @@ export default async function handler(req, res) {
 
       // Flow label (Page 1)
       drawTextBox(page1, HelvB, norm(flowLbl), POS.p1Flow, { maxLines: 1, ellipsis: true });
+
+      // NEW: Full Name header (Page 1)
+      if (fullName) drawTextBox(page1, Helv, fullName, POS.p1Name, { maxLines: 1, ellipsis: true });
     }
 
     /* ---------------- Page 2 ---------------- */
