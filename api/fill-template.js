@@ -1,3 +1,4 @@
+// ctrl-export-service/api/fill-template.js
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -16,7 +17,7 @@ const norm = (v, fb = '') =>
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
-// Wrap/align text into a box (y = distance from TOP, not bottom)
+// Wrap/align text into a box (y = distance from TOP edge)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -65,19 +66,11 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-function getOrAddPage(pdf, index) {
-  const pages = pdf.getPages();
-  if (pages[index]) return pages[index];
-  // Add pages up to index
-  while (pdf.getPages().length <= index) pdf.addPage();
-  return pdf.getPages()[index];
-}
-
 async function fetchTemplate(req) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, 'ctrl-export-service.vercel.app');
   const proto = S(h['x-forwarded-proto'], 'https');
-  // 👇 use your template path
+  // NOTE: point to your actual template filename in /public
   const url   = `${proto}://${host}/CTRL_Perspective_Assessment_Profile_template.pdf`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -96,16 +89,15 @@ function qstr(url, key, fb) {
   return v == null || v === '' ? fb : v;
 }
 
-/* ---------- robust field pickers from payload ---------- */
-
+// Robustly choose a cover name (with legacy + URL override support)
 const pickCoverName = (data, url) => norm(
   (data?.person?.coverName) ??
   data?.coverName ??
   data?.person?.fullName ??
   data?.fullName ??
-  data?.summary?.user?.reportCoverName ??
-  data?.summary?.user?.fullName ??
-  url?.searchParams?.get('cover') ??
+  data?.summary?.user?.reportCoverName ?? // legacy
+  data?.summary?.user?.fullName ??        // legacy
+  url?.searchParams?.get('cover') ??      // manual override for quick tests
   ''
 );
 
@@ -113,65 +105,18 @@ const pickFullName = (data) => norm(
   (data?.person?.fullName) ??
   data?.fullName ??
   data?.summary?.user?.fullName ??
-  data?.summary?.user?.reportCoverName ??
   ''
 );
 
-function normFlowLabel(v) {
-  const s = S(v).toLowerCase();
-  const map = {
-    perspective: 'Perspective',
-    observe: 'Observe',
-    observer: 'Observe',
-    mirrored: 'Observe',
-    reflective: 'Reflective',
-    reflection: 'Reflective',
-  };
-  return map[s] || 'Perspective';
-}
+// Format "DD/MMM/YYYY" (MMM uppercase)
+function fmtDateLbl(isoOrLbl) {
+  // If already looks like DD/XXX/YYYY just return
+  if (typeof isoOrLbl === 'string' && /^\d{2}\/[A-Z]{3}\/\d{4}$/.test(isoOrLbl)) return isoOrLbl;
 
-const pickFlowLabel = (data) =>
-  normFlowLabel(
-    data?.flowLabel ??
-    data?.flowLbl ??
-    data?.PathName ??
-    data?.summary?.flow?.label ??
-    'Perspective'
-  );
-
-function monthMMM(m) {
-  return ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][Math.max(0, Math.min(11, m))];
-}
-function formatDateLblFromISO(iso) {
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) throw 0;
-    const dd = String(d.getUTCDate()).padStart(2,'0');
-    const MMM = monthMMM(d.getUTCMonth());
-    const yyyy = d.getUTCFullYear();
-    return `${dd}/${MMM}/${yyyy}`;
-  } catch {
-    return '';
-  }
-}
-function pickDateLbl(data) {
-  const lbl =
-    data?.dateLbl ??
-    data?.summary?.flow?.dateLbl ??
-    null;
-  if (lbl) return S(lbl);
-
-  const iso =
-    data?.dateISO ??
-    data?.summary?.flow?.dateISO ??
-    null;
-  if (iso) return formatDateLblFromISO(iso);
-
-  // last fallback: now (UTC) — still DD/MMM/YYYY
-  const now = new Date();
-  const dd = String(now.getUTCDate()).padStart(2,'0');
-  const MMM = monthMMM(now.getUTCMonth());
-  const yyyy = now.getUTCFullYear();
+  const d = isoOrLbl ? new Date(isoOrLbl) : new Date();
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const MMM = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][d.getUTCMonth()];
+  const yyyy = d.getUTCFullYear();
   return `${dd}/${MMM}/${yyyy}`;
 }
 
@@ -189,17 +134,21 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
 
-  // ---- Demo payloads (still handy for visual tuning) ----
+  // ---- Demo payloads (include demo name so you can preview placement) ----
   let data;
   if (isTest || isPair) {
     const common = {
       flowLabel: 'Perspective',
-      person:   { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
-      dateISO: new Date().toISOString(),
-      // headlines / how
-      stateWord: 'Regulated',
-      how: 'Steady presence; keep clarity alive.',
-      // chart
+      person:   { coverName: 'Toby New', fullName: 'Toby New', preferredName: 'Toby', initials: 'TN' },
+      coverName:'Toby New',
+      fullName: 'Toby New',
+      dateISO:  new Date().toISOString(),
+      directionLabel:  'Steady',
+      directionMeaning:'You started and ended in similar zones—steady overall.',
+      themeLabel:      'Emotion regulation',
+      themeMeaning:    'Settling yourself when feelings spike.',
+      tip1: 'Take one breath and name it: "I am on edge."',
+      tip2: 'Choose your gear on purpose: protect, steady, or lead—say it in one line.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: { labels: ['Concealed','Triggered','Regulated','Lead'],
@@ -222,27 +171,19 @@ export default async function handler(req, res) {
           } }
         }
       })),
-      // page 2
+      // Page 2 content — demo
       page2Patterns: [
-        { title:'How the pattern moved', body:'Mixed shifts across your five answers; the middle held steady.' },
-        { title:'Range & gaps', body:'You saw less of Concealed and Lead this time. Range of 2 states.' }
+        { title:'Direction & shape', body:'Steady line with mixed steps. You kept to a similar zone overall; keep the little habits that held you there.' },
+        { title:'Coverage & edges',  body:'You touched 2 states and saw little of Lead or Concealed. Solid range with two areas to explore when useful.' },
       ],
-      themeNarrative: 'What stood out here was Emotion regulation with Feedback handling and Awareness of impact.',
-      // page 6
-      dominantParagraph: 'You connect the most with Mika: grounded and steady under pressure.',
-      chartParagraph: 'This radar shows how often each state appeared. Your dominant is Regulated; Triggered was next, with no instances of Concealed or Lead.',
-      // page 7
-      patternParagraph: 'Shape+coverage: Mixed pattern with steady middle, coverage of 2/4 states.',
-      missingParagraph: 'Missing states: Concealed and Lead did not appear here.',
-      themeTop3Keys: ['emotion_regulation','feedback_handling','awareness_impact'],
-      themePairParagraph: 'Emotion regulation paired with Feedback handling often points to clean intent after resets.',
-      tip1: 'Take one slow breath before you speak.',
-      tip2: 'Add a brief check-in between moments.',
-      actionsTop2: ['Notice when you shift gears; name it.', 'Ask one clarifying question before you answer.']
+      themeNarrative: 'You steady yourself when feelings spike, you read the room, and you notice how your words land — together that points to clear intent and cleaner repair when needed.',
+      // Headline
+      stateWord: isPair ? undefined : 'Regulated',
+      stateWords: isPair ? ['Triggered','Lead'] : undefined,
+      how: 'Steady presence; keep clarity alive.',
+      howPair: isPair ? 'Energy arrives quickly and you can channel it into calm direction when you pause first.' : undefined,
     };
-    data = isPair
-      ? { ...common, stateWords: ['Regulated','Lead'], howPair: 'You can move from steadiness into light direction.' }
-      : common;
+    data = common;
   } else {
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
@@ -254,54 +195,55 @@ export default async function handler(req, res) {
     }
   }
 
-  /* ---------------- Coordinates / Style ----------------
-     Adjust these numbers in GitHub as needed.
-     All y values are distance from TOP (thanks to drawTextBox).
-  ------------------------------------------------------ */
+  /* ---- POSITIONS & TUNERS ----
+     - y is measured from TOP edge downwards
+     - You can tune via URL for quick trials
+  */
   const POS = {
-    // Common header (all pages)
-    header: {
-      flow:   { x: 40,  y: 36,  w: 250, size: 12, color: rgb(0.15,0.14,0.24) },
-      name:   { x: 300, y: 36,  w: 450, size: 12, color: rgb(0.15,0.14,0.24), align: 'right' },
-      date:   { x: 760, y: 36,  w: 140, size: 12, color: rgb(0.15,0.14,0.24), align: 'right' }, // page 1 only
-    },
+    // Page 1 — Headline
+    headlineSingle: { x:90, y:650, w:860, size:72, lineGap:4, color:rgb(0.12,0.11,0.2) },
+    headlinePair:   { x:90, y:650, w:860, size:56, lineGap:4, color:rgb(0.12,0.11,0.2) },
 
-    // Page 1 — big headline + how + cover name + chart + tips
-    headlineSingle: { x: 90,  y: 650, w: 860, size: 72, lineGap: 4, color: rgb(0.12,0.11,0.2), align:'center' },
-    headlinePair:   { x: 90,  y: 650, w: 860, size: 56, lineGap: 4, color: rgb(0.12,0.11,0.2), align:'center' },
-    howSingle:      { x: 85,  y: 818, w: 890, size: 25, lineGap: 6, color: rgb(0.24,0.23,0.35), align:'center' },
-    howPairBlend:   { x: 55,  y: 830, w: 950, size: 24, lineGap: 5, color: rgb(0.24,0.23,0.35), align:'center' },
-    nameCover:      { x: 600, y: 100, w: 860, size: 60, lineGap: 3, color: rgb(0.12,0.11,0.2), align:'center' },
-    tip1Body:       { x: 120, y: 1015, w: 410, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align:'center' },
-    tip2Body:       { x: 500, y: 1015, w: 460, size: 23, lineGap: 3, color: rgb(0.24,0.23,0.35), align:'center' },
-    chart:          { x: 1030, y: 620,  w: 720, h: 420 },
+    // Page 1 — “How it shows up”
+    howSingle:    { x:85, y:818, w:890, size:25, lineGap:6, color:rgb(0.24,0.23,0.35), align:'center' },
+    howPairBlend: { x:55, y:830, w:950, size:24, lineGap:5, color:rgb(0.24,0.23,0.35), align:'center' },
 
-    // Page 2 — left blocks + right theme para
-    p2Patterns:   { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:20, maxBodyLines:6 },
-    p2ThemePara:  { x:1280, y:620, w:630,  size:30, lineGap:4, color: rgb(0.24,0.23,0.35), align:'left', maxLines:14 },
+    // Page 1 — Cover Name (large, near bottom)
+    nameCover: { x:600, y:100, w:860, size:60, lineGap:3, color:rgb(0.12,0.11,0.2), align:'center' },
 
-    // Page 6 — Dominant/character + chart + explainer
-    p6: {
-      domTitle:  { x: 120, y: 180, w: 800, size: 36, lineGap: 6, color: rgb(0.12,0.11,0.2) },
-      domBlurb:  { x: 120, y: 230, w: 1000, size: 20, lineGap: 4, color: rgb(0.24,0.23,0.35) },
-      chart:     { x: 120, y: 360, w: 600,  h: 420 },
-      chartNote: { x: 760, y: 360, w: 580,  size: 18, lineGap: 4, color: rgb(0.24,0.23,0.35) },
-    },
+    // Page 1 — Date label (DD/MMM/YYYY)
+    p1Date: { x:90, y:120, w:400, size:16, lineGap:2, color:rgb(0.24,0.23,0.35), align:'left' },
 
-    // Page 7 — Five blocks (titles + bodies)
-    p7: {
-      blockTitleSize: 18,
-      blockBodySize:  18,
-      titleGap: 6,
-      blockGap: 20,
-      x: 120,
-      w: 1220,
-      startY: 220,
-      maxBodyLines: 6
-    },
+    // Page 1 — Chart
+    chart: { x:1030, y:620, w:720, h:420 },
+
+    // Page 2 — Patterns (left)
+    p2Patterns: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:20, maxBodyLines:6 },
+
+    // Page 2 — Themes (right)
+    p2ThemePara: { x:1280, y:620, w:630, size:30, lineGap:4, align:'left', color: rgb(0.24,0.23,0.35), maxLines:14 },
+
+    // NEW: Flow labels (“Perspective/Observe/Reflective”) on pages 1–8
+    p1Flow: { x:90,  y:60,  w:400, size:20, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p2Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p3Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p4Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p5Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p6Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p7Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+    p8Flow: { x:90,  y:60,  w:400, size:18, align:'left',  color: rgb(0.12,0.11,0.2) },
+
+    // NEW: Full-name headers on pages 2–8
+    p2Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p3Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p4Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p5Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p6Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p7Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
+    p8Name: { x:460, y:60,  w:800, size:18, align:'center', color: rgb(0.24,0.23,0.35) },
   };
 
-  // Quick tuners via query (optional)
+  // SINGLE-STATE how tuners
   POS.howSingle = {
     ...POS.howSingle,
     x: qnum(url,'hx', POS.howSingle.x),
@@ -310,6 +252,16 @@ export default async function handler(req, res) {
     size: qnum(url,'hs', POS.howSingle.size),
     align: qstr(url,'halign', POS.howSingle.align),
   };
+  // PAIR how tuners
+  POS.howPairBlend = {
+    ...POS.howPairBlend,
+    x: qnum(url,'hx2',POS.howPairBlend.x),
+    y: qnum(url,'hy2',POS.howPairBlend.y),
+    w: qnum(url,'hw2',POS.howPairBlend.w),
+    size: qnum(url,'hs2',POS.howPairBlend.size),
+    align: qstr(url,'h2align',POS.howPairBlend.align),
+  };
+  // NAME cover tuners (Page 1 big name)
   POS.nameCover = {
     ...POS.nameCover,
     x: qnum(url,'nx',POS.nameCover.x),
@@ -318,19 +270,64 @@ export default async function handler(req, res) {
     size: qnum(url,'ns',POS.nameCover.size),
     align: qstr(url,'nalign',POS.nameCover.align),
   };
+  // DATE on page 1
+  POS.p1Date = {
+    ...POS.p1Date,
+    x: qnum(url,'d1x',POS.p1Date.x),
+    y: qnum(url,'d1y',POS.p1Date.y),
+    w: qnum(url,'d1w',POS.p1Date.w || 400),
+    size: qnum(url,'d1s',POS.p1Date.size),
+    align: qstr(url,'d1align',POS.p1Date.align),
+  };
+  // Chart tuners
   POS.chart = { ...POS.chart,
     x: qnum(url,'cx',POS.chart.x), y: qnum(url,'cy',POS.chart.y),
     w: qnum(url,'cw',POS.chart.w), h: qnum(url,'ch',POS.chart.h),
   };
+  // Flow label tuners per page (f{n}x, f{n}y, f{n}w, f{n}s, f{n}align)
+  for (let n = 1; n <= 8; n++) {
+    const key = `p${n}Flow`;
+    POS[key] = {
+      ...POS[key],
+      x: qnum(url, `f${n}x`, POS[key].x),
+      y: qnum(url, `f${n}y`, POS[key].y),
+      w: qnum(url, `f${n}w`, POS[key].w || 400),
+      size: qnum(url, `f${n}s`, POS[key].size),
+      align: qstr(url, `f${n}align`, POS[key].align),
+    };
+  }
+  // Full-name tuners per page (n{n}x, n{n}y, n{n}w, n{n}s, n{n}align) for pages 2–8
+  for (let n = 2; n <= 8; n++) {
+    const key = `p${n}Name`;
+    POS[key] = {
+      ...POS[key],
+      x: qnum(url, `n${n}x`, POS[key].x),
+      y: qnum(url, `n${n}y`, POS[key].y),
+      w: qnum(url, `n${n}w`, POS[key].w || 800),
+      size: qnum(url, `n${n}s`, POS[key].size),
+      align: qstr(url, `n${n}align`, POS[key].align),
+    };
+  }
+
+  // Optional: allow overriding the flow label via URL during tuning
+  const flowLbl =
+    qstr(url, 'flow', '') ||
+    (data?.flowLabel) ||
+    (data?.summary?.flow?.label) ||
+    'Perspective';
+
+  const fullName = pickFullName(data) || pickCoverName(data, url);
+  const dateLbl = fmtDateLbl(data?.dateLbl || data?.summary?.flow?.dateISO || data?.dateISO);
 
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       ok:true,
       hint:'Add &preview=1 to view inline',
+      flowLbl, fullName, dateLbl,
       pos:POS,
-      data,
-      urlParams:Object.fromEntries(url.searchParams.entries())
+      urlParams:Object.fromEntries(url.searchParams.entries()),
+      pagesNote: 'y is measured from the TOP edge of the page',
     }, null, 2));
     return;
   }
@@ -338,242 +335,130 @@ export default async function handler(req, res) {
   try {
     const tplBytes = await fetchTemplate(req);
     const pdf = await PDFDocument.load(tplBytes);
-
-    // Ensure we have at least 8 pages available (template may already have them)
-    for (let i = 0; i < 8; i++) getOrAddPage(pdf, i);
-
-    const pages = pdf.getPages();
-    const page1 = pages[0];
-    const page2 = pages[1];
-    const page3 = pages[2];
-    const page4 = pages[3];
-    const page5 = pages[4];
-    const page6 = pages[5];
-    const page7 = pages[6];
-    const page8 = pages[7];
-
-    const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
+    const Helv = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    /* ---------------- Values for headers ---------------- */
-
-    const flowLabel = pickFlowLabel(data);          // Perspective / Observe / Reflective
-    const fullName  = pickFullName(data) || pickCoverName(data, url) || '';
-    const dateLbl   = pickDateLbl(data);            // DD/MMM/YYYY
-
-    function drawHeader(page, withDate = false) {
-      drawTextBox(page, HelvB, flowLabel, POS.header.flow, { maxLines: 1, ellipsis: true });
-      if (fullName) drawTextBox(page, Helv, fullName, POS.header.name, { maxLines: 1, ellipsis: true });
-      if (withDate && dateLbl) drawTextBox(page, Helv, dateLbl, POS.header.date, { maxLines: 1, ellipsis: true });
-    }
+    const pageCount = pdf.getPageCount();
+    const getPage = (i) => (i < pageCount ? pdf.getPage(i) : null);
 
     /* ---------------- Page 1 ---------------- */
-    drawHeader(page1, /*withDate=*/true);
+    const page1 = getPage(0);
+    if (page1) {
+      // Headline (single vs pair)
+      const two = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
+      const headline = two
+        ? `${norm((data.stateWords||[])[0]||'—')} & ${norm((data.stateWords||[])[1]||'—')}`
+        : norm(data.stateWord || '—');
+      drawTextBox(page1, HelvB, headline,
+        { ...(two ? POS.headlinePair : POS.headlineSingle), align:'center' },
+        { maxLines:1, ellipsis:true }
+      );
 
-    // Headline (single vs pair)
-    const two = Array.isArray(data.stateWords) && data.stateWords.filter(Boolean).length >= 2;
-    const headline = two
-      ? `${norm((data.stateWords||[])[0])} & ${norm((data.stateWords||[])[1])}`
-      : norm(data.stateWord || '—');
-    drawTextBox(page1, HelvB, headline,
-      { ...(two ? POS.headlinePair : POS.headlineSingle) },
-      { maxLines: 1, ellipsis: true }
-    );
+      // Cover Name (big, near bottom)
+      const coverName = pickCoverName(data, url);
+      if (coverName) drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines: 1, ellipsis: true });
 
-    // Cover Name (big)
-    const coverName = pickCoverName(data, url);
-    if (coverName) drawTextBox(page1, HelvB, coverName, POS.nameCover, { maxLines: 1, ellipsis: true });
+      // HOW / WHAT — single vs pair
+      if (two) {
+        const t = data.howPair || data.how || '';
+        if (t) drawTextBox(page1, Helv, t, POS.howPairBlend, { maxLines:3, ellipsis:true });
+      } else {
+        if (data.how) drawTextBox(page1, Helv, data.how, POS.howSingle, { maxLines:3, ellipsis:true });
+      }
 
-    // HOW
-    if (two) {
-      const t = data.howPair || data.how || '';
-      if (t) drawTextBox(page1, Helv, t, POS.howPairBlend, { maxLines: 3, ellipsis: true });
-    } else {
-      if (data.how) drawTextBox(page1, Helv, data.how, POS.howSingle, { maxLines: 3, ellipsis: true });
-    }
+      // Date label
+      if (dateLbl) drawTextBox(page1, Helv, dateLbl, POS.p1Date, { maxLines: 1, ellipsis: true });
 
-    // Tips
-    if (data.tip1) drawTextBox(page1, Helv, data.tip1, POS.tip1Body, { maxLines: 2, ellipsis: true });
-    if (data.tip2) drawTextBox(page1, Helv, data.tip2, POS.tip2Body, { maxLines: 2, ellipsis: true });
+      // Chart
+      if (!noGraph && data.chartUrl) {
+        try {
+          const r = await fetch(S(data.chartUrl,''));
+          if (r.ok) {
+            const png = await pdf.embedPng(await r.arrayBuffer());
+            const { x, y, w, h } = POS.chart;
+            const ph = page1.getHeight();
+            page1.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+          }
+        } catch { /* ignore chart errors */ }
+      }
 
-    // Chart on page 1 (optional)
-    if (!noGraph && data.chartUrl) {
-      try {
-        const r = await fetch(S(data.chartUrl,''));
-        if (r.ok) {
-          const png = await pdf.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.chart;
-          const ph = page1.getHeight();
-          page1.drawImage(png, { x, y: ph - y - h, width: w, height: h });
-        }
-      } catch { /* ignore chart errors */ }
+      // Flow label (Page 1)
+      drawTextBox(page1, HelvB, norm(flowLbl), POS.p1Flow, { maxLines: 1, ellipsis: true });
     }
 
     /* ---------------- Page 2 ---------------- */
-    drawHeader(page2);
+    const page2 = getPage(1);
+    if (page2) {
+      // Flow label + full name
+      drawTextBox(page2, HelvB, norm(flowLbl), POS.p2Flow, { maxLines: 1, ellipsis: true });
+      if (fullName) drawTextBox(page2, Helv, fullName, POS.p2Name, { maxLines: 1, ellipsis: true });
 
-    // Left: up to TWO blocks (pattern/coverage etc)
-    const rawBlocks = Array.isArray(data.page2Patterns)
-      ? data.page2Patterns
-      : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
-    const twoBlocks = rawBlocks
-      .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
-      .filter(b => b.title || b.body)
-      .slice(0, 2);
+      // Left: Patterns (two blocks)
+      const rawBlocks = Array.isArray(data.page2Patterns)
+        ? data.page2Patterns
+        : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
+      const twoBlocks = rawBlocks
+        .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
+        .filter(b => b.title || b.body)
+        .slice(0, 2);
 
-    let curY = POS.p2Patterns.y;
-    for (const b of twoBlocks) {
-      if (b.title) {
-        drawTextBox(
-          page2, HelvB, b.title,
-          { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.hSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: 1, ellipsis: true }
-        );
-        curY += (POS.p2Patterns.hSize + 3) + POS.p2Patterns.titleGap;
+      let curY = POS.p2Patterns.y;
+      for (const b of twoBlocks) {
+        if (b.title) {
+          drawTextBox(
+            page2, HelvB, b.title,
+            { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.hSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: 1, ellipsis: true }
+          );
+          curY += (POS.p2Patterns.hSize + 3) + POS.p2Patterns.titleGap;
+        }
+        if (b.body) {
+          const r = drawTextBox(
+            page2, Helv, b.body,
+            { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.bSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: POS.p2Patterns.maxBodyLines, ellipsis: true }
+          );
+          curY += r.height + POS.p2Patterns.blockGap;
+        }
       }
-      if (b.body) {
-        const r = drawTextBox(
-          page2, Helv, b.body,
-          { x: POS.p2Patterns.x, y: curY, w: POS.p2Patterns.w, size: POS.p2Patterns.bSize, align: POS.p2Patterns.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: POS.p2Patterns.maxBodyLines, ellipsis: true }
-        );
-        curY += r.height + POS.p2Patterns.blockGap;
-      }
-    }
 
-    // Right: theme narrative
-    const themeNarr = (()=>{
-      if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim())
-        return norm(data.themeNarrative.trim());
-      if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
+      // Right: Themes — single paragraph narrative
+      let themeNarr = '';
+      if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim()) {
+        themeNarr = norm(data.themeNarrative.trim());
+      } else if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
         const bits = data.page2Themes
           .map(t => [t?.title, t?.body].filter(Boolean).join(': '))
           .filter(Boolean);
-        return norm(bits.join('  '));
+        themeNarr = norm(bits.join('  '));
+      } else if (typeof data.themesExplainer === 'string' && data.themesExplainer.trim()) {
+        themeNarr = norm(data.themesExplainer.replace(/\n+/g, ' ').replace(/•\s*/g, '').trim());
       }
-      if (typeof data.themesExplainer === 'string' && data.themesExplainer.trim())
-        return norm(data.themesExplainer.replace(/\n+/g, ' ').replace(/•\s*/g, '').trim());
-      return '';
-    })();
-
-    if (themeNarr) {
-      drawTextBox(
-        page2,
-        Helv,
-        themeNarr,
-        { x: POS.p2ThemePara.x, y: POS.p2ThemePara.y, w: POS.p2ThemePara.w, size: POS.p2ThemePara.size, align: POS.p2ThemePara.align, color: POS.p2ThemePara.color, lineGap: POS.p2ThemePara.lineGap },
-        { maxLines: POS.p2ThemePara.maxLines, ellipsis: true }
-      );
+      if (themeNarr) {
+        drawTextBox(
+          page2, Helv, themeNarr,
+          { x: POS.p2ThemePara.x, y: POS.p2ThemePara.y, w: POS.p2ThemePara.w, size: POS.p2ThemePara.size, align: POS.p2ThemePara.align, color: POS.p2ThemePara.color, lineGap: POS.p2ThemePara.lineGap },
+          { maxLines: POS.p2ThemePara.maxLines, ellipsis: true }
+        );
+      }
     }
 
-    /* ---------------- Pages 3,4,5,8: header only ---------------- */
-    [page3, page4, page5, page8].forEach(p => drawHeader(p));
-
-    /* ---------------- Page 6 ---------------- */
-    drawHeader(page6);
-
-    // Dominant state title
-    const dominantLabel =
-      S(data.dominantLabel) ||
-      S(data.stateWord) ||
-      (Array.isArray(data.stateWords) && data.stateWords[0]) ||
-      '—';
-    drawTextBox(page6, HelvB, dominantLabel, POS.p6.domTitle, { maxLines: 1, ellipsis: true });
-
-    // Character blurb
-    const domBlurb =
-      S(data.dominantParagraph) ||
-      S(data.characterBlurb) ||
-      S(data.ctrlCard?.dominantParagraph) ||
-      '';
-    if (domBlurb) drawTextBox(page6, Helv, domBlurb, POS.p6.domBlurb, { maxLines: 6, ellipsis: true });
-
-    // Spider chart (repeat here)
-    if (!noGraph && data.chartUrl) {
-      try {
-        const r = await fetch(S(data.chartUrl,''));
-        if (r.ok) {
-          const png = await pdf.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.p6.chart;
-          const ph = page6.getHeight();
-          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
-        }
-      } catch { /* ignore chart errors */ }
+    /* ---------------- Pages 3–8: add flow label + full name headers ---------------- */
+    const pagesToHeader = [3,4,5,6,7,8]; // human-friendly page numbers
+    for (const n of pagesToHeader) {
+      const p = getPage(n-1);
+      if (!p) continue;
+      const flowKey = `p${n}Flow`;
+      const nameKey = `p${n}Name`;
+      drawTextBox(p, HelvB, norm(flowLbl), POS[flowKey], { maxLines: 1, ellipsis: true });
+      if (fullName) drawTextBox(p, Helv, fullName, POS[nameKey], { maxLines: 1, ellipsis: true });
     }
 
-    // Chart explainer
-    const chartExplain =
-      S(data.chartParagraph) ||
-      S(data.ctrlCard?.chartParagraph) ||
-      'This radar shows how often each state appeared across your five choices.';
-    if (chartExplain) drawTextBox(page6, Helv, chartExplain, POS.p6.chartNote, { maxLines: 16, ellipsis: true });
-
-    /* ---------------- Page 7 ---------------- */
-    drawHeader(page7);
-
-    // Build five blocks of content
-    const shapeCoverage =
-      S(data.patternParagraph) ||
-      S(data.block1_text) ||
-      S((data.page2Patterns?.[0]?.body)) ||
-      '';
-    const missingBlock =
-      S(data.missingParagraph) ||
-      (Array.isArray(data.missingStates)
-        ? `Missing states: ${data.missingStates.join(', ')}`
-        : data.missingKey
-          ? (data.missingKey === 'none' ? 'No states were missing in this short run.' : `Missing states: ${data.missingKey}`)
-          : '');
-    const themeTop2Para =
-      S(data.themePairParagraph) ||
-      (Array.isArray(data.themeTop3Keys) && data.themeTop3Keys.length >= 2
-        ? `Top themes: ${data.themeTop3Keys.slice(0,2).join(' + ')}`
-        : S(data.themeNarrative));
-    const tipsPara = (() => {
-      const t1 = S(data.tip1) || S(data.tips?.[0]) || '';
-      const t2 = S(data.tip2) || S(data.tips?.[1]) || '';
-      const parts = [t1, t2].filter(Boolean);
-      return parts.length ? 'Tips: • ' + parts.join('  • ') : '';
-    })();
-    const actionsPara = (() => {
-      const arr = Array.isArray(data.actionsTop2) ? data.actionsTop2
-        : [S(data.action1), S(data.action2)].filter(Boolean);
-      return arr && arr.length ? 'Actions: • ' + arr.join('  • ') : '';
-    })();
-
-    const blocksP7 = [
-      { title: 'Shape + Coverage', body: shapeCoverage },
-      { title: 'Missing State(s)', body: missingBlock },
-      { title: 'Theme Pair',       body: themeTop2Para },
-      { title: 'Top Tips',         body: tipsPara },
-      { title: 'Top Actions',      body: actionsPara },
-    ].filter(b => b.title && b.body);
-
-    let y7 = POS.p7.startY;
-    for (const b of blocksP7) {
-      // title
-      drawTextBox(page7, HelvB, b.title,
-        { x: POS.p7.x, y: y7, w: POS.p7.w, size: POS.p7.blockTitleSize, color: rgb(0.24,0.23,0.35), lineGap: 3 },
-        { maxLines: 1, ellipsis: true }
-      );
-      y7 += POS.p7.blockTitleSize + POS.p7.titleGap;
-
-      // body
-      const r = drawTextBox(page7, Helv,
-        b.body,
-        { x: POS.p7.x, y: y7, w: POS.p7.w, size: POS.p7.blockBodySize, color: rgb(0.24,0.23,0.35), lineGap: 4 },
-        { maxLines: POS.p7.maxBodyLines, ellipsis: true }
-      );
-      y7 += r.height + POS.p7.blockGap;
-      if (y7 > (page7.getHeight() - 80)) break; // prevent overflow if template is tight
-    }
-
-    /* ---------------- Save ---------------- */
-    const outName = `CTRL_${(fullName||'there').replace(/\s+/g,'_')}_${dateLbl.replace(/\//g,'')}.pdf`;
+    // Save
     const bytes = await pdf.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${outName}"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="ctrl_profile.pdf"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
