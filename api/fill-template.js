@@ -23,6 +23,7 @@ const alignFix = a => {
 
 // Wrap/align text into a box (y = distance from top, not bottom)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
+  if (!page || !text) return { height: 0, linesDrawn: 0, lastY: 0 };
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
     color = rgb(0, 0, 0), align = 'left',
@@ -107,7 +108,7 @@ const pickFullName = (data, url) => norm(
   data?.person?.fullName ??
   data?.fullName ??
   data?.summary?.user?.fullName ??
-  qstr(url, 'full', '') // optional override
+  qstr(url, 'full', '') // optional override for quick tests
 );
 
 const pickCoverName = (data, url) => norm(
@@ -139,7 +140,7 @@ export default async function handler(req, res) {
   const debug    = url.searchParams.get('debug') === '1';
   const noGraph  = url.searchParams.get('nograph') === '1';
 
-  // ---- Demo payloads ----
+  // ---- Demo payload ----
   let data;
   if (isTest) {
     data = {
@@ -267,8 +268,24 @@ export default async function handler(req, res) {
   };
 
   if (debug) {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok:true, pos:POS, data, urlParams:Object.fromEntries(url.searchParams.entries()) }, null, 2));
+    // Return current positions + page count to help diagnose templates
+    try {
+      const tplBytes = await fetchTemplate(req);
+      const tmpPdf = await PDFDocument.load(tplBytes);
+      const numPages = tmpPdf.getPageCount();
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        ok: true,
+        numPages,
+        hint: 'Indexes are 0-based. If numPages=7, valid indexes are 0..6.',
+        pos: POS,
+        data,
+        urlParams: Object.fromEntries(url.searchParams.entries())
+      }, null, 2));
+    } catch (e) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok:false, error: String(e?.message || e), pos: POS }, null, 2));
+    }
     return;
   }
 
@@ -276,15 +293,19 @@ export default async function handler(req, res) {
     const tplBytes = await fetchTemplate(req);
     const pdf = await PDFDocument.load(tplBytes);
 
-    // Pages (0-indexed)
-    const page1 = pdf.getPage(0);
-    const page2 = pdf.getPage(1);
-    const page3 = pdf.getPage(2);
-    const page4 = pdf.getPage(3);
-    const page5 = pdf.getPage(4);
-    const page6 = pdf.getPage(5);
-    const page7 = pdf.getPage(6);
-    const page8 = pdf.getPage(7);
+    const pages = pdf.getPages();
+    const numPages = pages.length;
+    const P = (i) => (i >= 0 && i < numPages ? pages[i] : null);
+
+    // Pages (guarded)
+    const page1 = P(0);
+    const page2 = P(1);
+    const page3 = P(2);
+    const page4 = P(3);
+    const page5 = P(4);
+    const page6 = P(5);
+    const page7 = P(6);
+    const page8 = P(7); // may be null if your template has only 7 pages
 
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -295,120 +316,133 @@ export default async function handler(req, res) {
     const dateLbl   = data?.summary?.flow?.dateLbl || formatDateLbl(new Date());
 
     /* ---------------- Page 1 ---------------- */
-    // Path label (top) — n1*
-    if (flowLabel) drawTextBox(page1, HelvB, flowLabel, { ...POS.n1 });
-    // Full name — f1*
-    if (fullName) drawTextBox(page1, HelvB, fullName, { ...POS.f1 }, { maxLines: 1, ellipsis: true });
-    // Date — d1*
-    if (dateLbl)  drawTextBox(page1, Helv, dateLbl, { ...POS.d1 }, { maxLines: 1, ellipsis: true });
+    if (page1) {
+      if (flowLabel) drawTextBox(page1, HelvB, flowLabel, { ...POS.n1 });
+      if (fullName)  drawTextBox(page1, HelvB, fullName, { ...POS.f1 }, { maxLines: 1, ellipsis: true });
+      if (dateLbl)   drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1 }, { maxLines: 1, ellipsis: true });
+    }
 
     /* ---------------- Page 2 ---------------- */
-    if (flowLabel) drawTextBox(page2, HelvB, flowLabel, { ...POS.n2 });
-    if (fullName)  drawTextBox(page2, Helv,  fullName,  { ...POS.f2 }, { maxLines: 1, ellipsis: true });
+    if (page2) {
+      if (flowLabel) drawTextBox(page2, HelvB, flowLabel, { ...POS.n2 });
+      if (fullName)  drawTextBox(page2, Helv,  fullName,  { ...POS.f2 }, { maxLines: 1, ellipsis: true });
+    }
 
     /* ---------------- Page 3 ---------------- */
-    if (flowLabel) drawTextBox(page3, HelvB, flowLabel, { ...POS.n3 });
-    if (fullName)  drawTextBox(page3, Helv,  fullName,  { ...POS.f3 }, { maxLines: 1, ellipsis: true });
+    if (page3) {
+      if (flowLabel) drawTextBox(page3, HelvB, flowLabel, { ...POS.n3 });
+      if (fullName)  drawTextBox(page3, Helv,  fullName,  { ...POS.f3 }, { maxLines: 1, ellipsis: true });
+    }
 
     /* ---------------- Page 4 ---------------- */
-    if (flowLabel) drawTextBox(page4, HelvB, flowLabel, { ...POS.n4 });
-    if (fullName)  drawTextBox(page4, Helv,  fullName,  { ...POS.f4 }, { maxLines: 1, ellipsis: true });
+    if (page4) {
+      if (flowLabel) drawTextBox(page4, HelvB, flowLabel, { ...POS.n4 });
+      if (fullName)  drawTextBox(page4, Helv,  fullName,  { ...POS.f4 }, { maxLines: 1, ellipsis: true });
+    }
 
     /* ---------------- Page 5 ---------------- */
-    if (flowLabel) drawTextBox(page5, HelvB, flowLabel, { ...POS.n5 });
-    if (fullName)  drawTextBox(page5, Helv,  fullName,  { ...POS.f5 }, { maxLines: 1, ellipsis: true });
+    if (page5) {
+      if (flowLabel) drawTextBox(page5, HelvB, flowLabel, { ...POS.n5 });
+      if (fullName)  drawTextBox(page5, Helv,  fullName,  { ...POS.f5 }, { maxLines: 1, ellipsis: true });
 
-    // Dominant state label
-    const domLabel = norm(data?.stateWord || '');
-    if (domLabel) drawTextBox(page5, HelvB, domLabel, { ...POS.dom5 }, { maxLines: 1, ellipsis: true });
+      // Dominant state label
+      const domLabel = norm(data?.stateWord || '');
+      if (domLabel) drawTextBox(page5, HelvB, domLabel, { ...POS.dom5 }, { maxLines: 1, ellipsis: true });
 
-    // Dominant description
-    const domDesc = norm(data?.dominantParagraph || '');
-    if (domDesc) drawTextBox(page5, Helv, domDesc,
-      { x: POS.dom5desc.x, y: POS.dom5desc.y, w: POS.dom5desc.w, size: POS.dom5desc.size, align: POS.dom5desc.align, color: POS.dom5desc.color },
-      { maxLines: POS.dom5desc.max, ellipsis: true }
-    );
-
-    // “How this shows up”
-    const howLine = norm(data?.how || '');
-    if (howLine) drawTextBox(page5, Helv, howLine,
-      { x: POS.how5.x, y: POS.how5.y, w: POS.how5.w, size: POS.how5.size, align: POS.how5.align, color: POS.how5.color },
-      { maxLines: POS.how5.max, ellipsis: true }
-    );
-
-    // Chart on Page 5
-    if (!noGraph && data?.chartUrl) {
-      try {
-        const r = await fetch(S(data.chartUrl,''));
-        if (r.ok) {
-          const png = await pdf.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.c5;
-          const ph = page5.getHeight();
-          page5.drawImage(png, { x, y: ph - y - h, width: w, height: h });
-        }
-      } catch { /* ignore chart errors */ }
-    }
-
-    // Patterns (left column) — moved here from P2
-    const rawBlocks = Array.isArray(data.page2Patterns)
-      ? data.page2Patterns
-      : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
-    const twoBlocks = rawBlocks
-      .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
-      .filter(b => b.title || b.body)
-      .slice(0, 2);
-    let curY = POS.p2p.y;
-    for (const b of twoBlocks) {
-      if (b.title) {
-        drawTextBox(
-          page5, HelvB, b.title,
-          { x: POS.p2p.x, y: curY, w: POS.p2p.w, size: POS.p2p.hSize, align: POS.p2p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: 1, ellipsis: true }
-        );
-        curY += (POS.p2p.hSize + 3) + POS.p2p.titleGap;
-      }
-      if (b.body) {
-        const r = drawTextBox(
-          page5, Helv,
-          b.body,
-          { x: POS.p2p.x, y: curY, w: POS.p2p.w, size: POS.p2p.bSize, align: POS.p2p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: POS.p2p.maxBodyLines, ellipsis: true }
-        );
-        curY += r.height + POS.p2p.blockGap;
-      }
-    }
-
-    // Themes narrative (right)
-    let themeNarr = '';
-    if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim()) {
-      themeNarr = norm(data.themeNarrative.trim());
-    } else if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
-      const bits = data.page2Themes
-        .map(t => [t?.title, t?.body].filter(Boolean).join(': '))
-        .filter(Boolean);
-      themeNarr = norm(bits.join('  '));
-    } else if (typeof data.themesExplainer === 'string' && data.themesExplainer.trim()) {
-      themeNarr = norm(data.themesExplainer.replace(/\n+/g, ' ').replace(/•\s*/g, '').trim());
-    }
-    if (themeNarr) {
-      drawTextBox(
-        page5, Helv, themeNarr,
-        { x: POS.p2t.x, y: POS.p2t.y, w: POS.p2t.w, size: POS.p2t.size, align: POS.p2t.align, color: POS.p2t.color, lineGap: POS.p2t.lineGap },
-        { maxLines: POS.p2t.maxLines, ellipsis: true }
+      // Dominant description
+      const domDesc = norm(data?.dominantParagraph || '');
+      if (domDesc) drawTextBox(page5, Helv, domDesc,
+        { x: POS.dom5desc.x, y: POS.dom5desc.y, w: POS.dom5desc.w, size: POS.dom5desc.size, align: POS.dom5desc.align, color: POS.dom5desc.color },
+        { maxLines: POS.dom5desc.max, ellipsis: true }
       );
+
+      // “How this shows up”
+      const howLine = norm(data?.how || '');
+      if (howLine) drawTextBox(page5, Helv, howLine,
+        { x: POS.how5.x, y: POS.how5.y, w: POS.how5.w, size: POS.how5.size, align: POS.how5.align, color: POS.how5.color },
+        { maxLines: POS.how5.max, ellipsis: true }
+      );
+
+      // Chart on Page 5
+      if (!noGraph && data?.chartUrl) {
+        try {
+          const r = await fetch(S(data.chartUrl,''));
+          if (r.ok) {
+            const png = await pdf.embedPng(await r.arrayBuffer());
+            const { x, y, w, h } = POS.c5;
+            const ph = page5.getHeight();
+            page5.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+          }
+        } catch { /* ignore chart errors */ }
+      }
+
+      // Patterns (left column) — moved here from P2
+      const rawBlocks = Array.isArray(data.page2Patterns)
+        ? data.page2Patterns
+        : Array.isArray(data.page2Blocks) ? data.page2Blocks : [];
+      const twoBlocks = rawBlocks
+        .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
+        .filter(b => b.title || b.body)
+        .slice(0, 2);
+      let curY = POS.p2p.y;
+      for (const b of twoBlocks) {
+        if (b.title) {
+          drawTextBox(
+            page5, HelvB, b.title,
+            { x: POS.p2p.x, y: curY, w: POS.p2p.w, size: POS.p2p.hSize, align: POS.p2p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: 1, ellipsis: true }
+          );
+          curY += (POS.p2p.hSize + 3) + POS.p2p.titleGap;
+        }
+        if (b.body) {
+          const r = drawTextBox(
+            page5, Helv,
+            b.body,
+            { x: POS.p2p.x, y: curY, w: POS.p2p.w, size: POS.p2p.bSize, align: POS.p2p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: POS.p2p.maxBodyLines, ellipsis: true }
+          );
+          curY += r.height + POS.p2p.blockGap;
+        }
+      }
+
+      // Themes narrative (right)
+      let themeNarr = '';
+      if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim()) {
+        themeNarr = norm(data.themeNarrative.trim());
+      } else if (Array.isArray(data.page2Themes) && data.page2Themes.length) {
+        const bits = data.page2Themes
+          .map(t => [t?.title, t?.body].filter(Boolean).join(': '))
+          .filter(Boolean);
+        themeNarr = norm(bits.join('  '));
+      } else if (typeof data.themesExplainer === 'string' && data.themesExplainer.trim()) {
+        themeNarr = norm(data.themesExplainer.replace(/\n+/g, ' ').replace(/•\s*/g, '').trim());
+      }
+      if (themeNarr) {
+        drawTextBox(
+          page5, Helv, themeNarr,
+          { x: POS.p2t.x, y: POS.p2t.y, w: POS.p2t.w, size: POS.p2t.size, align: POS.p2t.align, color: POS.p2t.color, lineGap: POS.p2t.lineGap },
+          { maxLines: POS.p2t.maxLines, ellipsis: true }
+        );
+      }
     }
 
     /* ---------------- Page 6 ---------------- */
-    if (flowLabel) drawTextBox(page6, HelvB, flowLabel, { ...POS.n6 });
-    if (fullName)  drawTextBox(page6, Helv,  fullName,  { ...POS.f6 }, { maxLines: 1, ellipsis: true });
+    if (page6) {
+      if (flowLabel) drawTextBox(page6, HelvB, flowLabel, { ...POS.n6 });
+      if (fullName)  drawTextBox(page6, Helv,  fullName,  { ...POS.f6 }, { maxLines: 1, ellipsis: true });
+    }
 
     /* ---------------- Page 7 ---------------- */
-    if (flowLabel) drawTextBox(page7, HelvB, flowLabel, { ...POS.n7 });
-    if (fullName)  drawTextBox(page7, Helv,  fullName,  { ...POS.f7 }, { maxLines: 1, ellipsis: true });
+    if (page7) {
+      if (flowLabel) drawTextBox(page7, HelvB, flowLabel, { ...POS.n7 });
+      if (fullName)  drawTextBox(page7, Helv,  fullName,  { ...POS.f7 }, { maxLines: 1, ellipsis: true });
+    }
 
-    /* ---------------- Page 8 ---------------- */
-    if (flowLabel) drawTextBox(page8, HelvB, flowLabel, { ...POS.n8 });
-    if (fullName)  drawTextBox(page8, Helv,  fullName,  { ...POS.f8 }, { maxLines: 1, ellipsis: true });
+    /* ---------------- Page 8 (optional) ---------------- */
+    if (page8) {
+      if (flowLabel) drawTextBox(page8, HelvB, flowLabel, { ...POS.n8 });
+      if (fullName)  drawTextBox(page8, Helv,  fullName,  { ...POS.f8 }, { maxLines: 1, ellipsis: true });
+    }
 
     // Save
     const bytes = await pdf.save();
