@@ -1,4 +1,3 @@
-// api/fill-template.js
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -17,12 +16,7 @@ const norm = (v, fb = '') =>
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
-function alignFix(v) {
-  const a = String(v || '').toLowerCase();
-  return a === 'centre' ? 'center' : (a || 'left');
-}
-
-// y = distance from TOP (we convert internally)
+// Wrap/align text into a box (y = distance from TOP of page)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -62,9 +56,8 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   let drawn = 0;
   for (const line of out) {
     let xDraw = x;
-    const al = alignFix(align);
-    if (al === 'center') xDraw = x + (w - widthOf(line)) / 2;
-    else if (al === 'right') xDraw = x + (w - widthOf(line));
+    if (align === 'center') xDraw = x + (w - widthOf(line)) / 2;
+    else if (align === 'right') xDraw = x + (w - widthOf(line));
     page.drawText(line, { x: xDraw, y: yCursor, size, font, color });
     yCursor -= lineH;
     drawn++;
@@ -72,17 +65,20 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-async function fetchTemplate(req, url) {
+async function fetchTemplate(req, urlParam) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, 'ctrl-export-service.vercel.app');
   const proto = S(h['x-forwarded-proto'], 'https');
-  const tpl   = url?.searchParams?.get('tpl') || 'CTRL_Perspective_Assessment_Profile_templateV3.pdf';
-  const full  = `${proto}://${host}/${tpl}`;
-  const r = await fetch(full);
+
+  // Default to your new V3 template unless overridden via ?tpl=
+  const file = urlParam || 'CTRL_Perspective_Assessment_Profile_templateV3.pdf';
+  const url  = `${proto}://${host}/${file}`;
+  const r = await fetch(url);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
+// URL param readers
 function qnum(url, key, fb) {
   const s = url.searchParams.get(key);
   if (s === null || s === '') return fb;
@@ -94,6 +90,7 @@ function qstr(url, key, fb) {
   return v == null || v === '' ? fb : v;
 }
 
+// Best-effort cover name
 const pickCoverName = (data, url) => norm(
   (data?.person?.coverName) ??
   data?.coverName ??
@@ -113,43 +110,63 @@ export default async function handler(req, res) {
   try { url = new URL(req?.url || '/', 'http://localhost'); }
   catch { url = new URL('/', 'http://localhost'); }
 
-  const isTest  = url.searchParams.get('test') === '1';
-  const preview = url.searchParams.get('preview') === '1';
-  const debug   = url.searchParams.get('debug') === '1';
+  const isTest   = url.searchParams.get('test') === '1';
+  const preview  = url.searchParams.get('preview') === '1';
+  const debug    = url.searchParams.get('debug') === '1';
+  const tplParam = qstr(url, 'tpl', 'CTRL_Perspective_Assessment_Profile_templateV3.pdf');
 
-  // ---- Demo payload (so you can tune coords quickly) ----
+  // Demo payload
   let data;
   if (isTest) {
     data = {
       flow: qstr(url, 'flow', 'Perspective'),
-      person: { fullName: 'Avery Example', coverName: 'Avery Example', preferredName: 'Avery' },
-      coverName: 'Avery Example',
+      person: { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
+
+      // Page 6 content — demo
       stateWord: 'Regulated',
-      how: 'You connect the most with Mika - measured, fair, steady under pressure.',
+      dominantParagraph: 'You connect most with Mika — steady and fair. When there’s heat, you keep proportion and make room for others’ voice.',
+      chartParagraph: 'Your chart shows a Regulated centre, with Triggered also present. That means you bring calm, balanced tone, and add directness when clarity is needed. It’s a constructive mix: you lower heat, then move things on.',
+
+      // A chart that already has circular gridlines; we’ll force square size later too
       chartUrl:
         'https://quickchart.io/chart?v=4&c=' +
         encodeURIComponent(JSON.stringify({
           type: 'radar',
           data: {
-            labels: ['Concealed','Triggered','Regulated','Lead'],
-            datasets:[{
-              label:'Frequency', data:[0,2,3,0], fill:true,
-              backgroundColor:'rgba(115,72,199,0.18)',
-              borderColor:'#7348C7', borderWidth:2,
-              pointRadius:[0,3,6,0], pointHoverRadius:[0,4,7,0]
+            labels: ['Concealed', 'Triggered', 'Regulated', 'Lead'],
+            datasets: [{
+              label: 'Frequency',
+              data: [0, 2, 3, 0],
+              fill: true,
+              backgroundColor: 'rgba(115, 72, 199, 0.18)',
+              borderColor: '#7348C7',
+              borderWidth: 2,
+              pointRadius: [0,3,6,0],
+              pointHoverRadius: [0,4,7,0],
+              pointBackgroundColor: ['#9D7BE0','#9D7BE0','#7348C7','#9D7BE0'],
+              pointBorderColor:    ['#9D7BE0','#9D7BE0','#7348C7','#9D7BE0'],
             }]
           },
-          options:{ plugins:{ legend:{ display:false } }, scales:{ r:{ min:0,max:5 } } }
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              r: {
+                min: 0, max: 5,
+                ticks: { display: true, stepSize: 1, backdropColor: 'rgba(0,0,0,0)' },
+                grid: { circular: true },
+                angleLines: { display: true },
+                pointLabels: { color: '#4A4458', font: { size: 12 } }
+              }
+            }
+          }
         })),
-      // Page 6 content (moved here)
-      dominantLabel: 'Regulated',
-      dominantDesc: 'You connect the most with Mika — measured, fair and steady under pressure.',
-      page6Patterns: [
-        { title: 'How the pattern moved', body: 'A clear Regulated centre runs through your responses. You prefer steadiness, balance and reflection before you act.' },
-        { title: 'Range & gaps', body: 'You touched Triggered and Regulated most; Concealed and Lead were less visible this time.' }
+
+      // Page 6 “left column blocks” & “right theme paragraph” (you can leave blank)
+      page6Blocks: [
+        { title:'Direction & shape', body:'Steady line with mixed steps. You kept to a similar zone overall; keep the little habits that held you there.' },
+        { title:'Coverage & edges',  body:'You touched 2 states and saw little of Lead. Solid range with an area to explore when useful.' },
       ],
-      themeNarrative: 'Emotion regulation with Feedback handling and Awareness of impact shaped how you responded.',
-      dateLbl: null // allow server to render date if needed elsewhere
+      themeNarrative: 'Emotion regulation shows up alongside Feedback handling and Awareness of impact — that trio makes your honesty land more cleanly.'
     };
   } else {
     const b64 = url.searchParams.get('data');
@@ -162,197 +179,201 @@ export default async function handler(req, res) {
     }
   }
 
-  const flowLabel = norm(data?.flow || 'Perspective');
-  const fullName  = norm(data?.person?.fullName || data?.fullName || pickCoverName(data, url) || '');
-  const coverName = pickCoverName(data, url);
-
-  /* ---------- DEFAULT COORDS (locked to your values) ---------- */
+  /* ----------------------- POSITIONS / TUNERS ----------------------- */
+  // Locked defaults from your latest coordinates
   const POS = {
-    // Page 1 top trio
-    f1: { x:290, y:170, w:400, s:40, align:'left' },
-    n1: { x:10,  y:573, w:500, s:30, align:'center' },
-    d1: { x:130, y:630, w:500, s:20, align:'left' },
+    // Page 1: Path (flow) + FullName + Date
+    p1_flow: { x: qnum(url,'f1x',290), y: qnum(url,'f1y',170), w: qnum(url,'f1w',400), size: qnum(url,'f1s',40), align: qstr(url,'f1align','left'), color: rgb(0.12,0.11,0.2) },
+    p1_name: { x: qnum(url,'n1x',10),  y: qnum(url,'n1y',573), w: qnum(url,'n1w',500), size: qnum(url,'n1s',30), align: qstr(url,'n1align','center'), color: rgb(0.12,0.11,0.2) },
+    p1_date: { x: qnum(url,'d1x',130), y: qnum(url,'d1y',630), w: qnum(url,'d1w',500), size: qnum(url,'d1s',20), align: qstr(url,'d1align','left'), color: rgb(0.24,0.23,0.35) },
 
-    // Pages 2..8 flow+name bars
-    f2: { x:200, y:64, w:400, s:13, align:'left' }, n2: { x:250, y:64, w:400, s:12, align:'center' },
-    f3: { x:200, y:64, w:400, s:13, align:'left' }, n3: { x:250, y:64, w:400, s:12, align:'center' },
-    f4: { x:200, y:64, w:400, s:13, align:'left' }, n4: { x:250, y:64, w:400, s:12, align:'center' },
-    f5: { x:200, y:64, w:400, s:13, align:'left' }, n5: { x:250, y:64, w:400, s:12, align:'center' },
-    f6: { x:200, y:64, w:400, s:13, align:'left' }, n6: { x:250, y:64, w:400, s:12, align:'center' },
-    f7: { x:200, y:64, w:400, s:13, align:'left' }, n7: { x:250, y:64, w:400, s:12, align:'center' },
-    f8: { x:200, y:64, w:400, s:13, align:'left' }, n8: { x:250, y:64, w:400, s:12, align:'center' },
+    // Pages 2..8: Path + Name footer-like labels
+    p2_flow: { x: qnum(url,'f2x',200), y: qnum(url,'f2y',64), w: qnum(url,'f2w',400), size: qnum(url,'f2s',13), align: qstr(url,'f2align','left'),   color: rgb(0.12,0.11,0.2) },
+    p2_name: { x: qnum(url,'n2x',250), y: qnum(url,'n2y',64), w: qnum(url,'n2w',400), size: qnum(url,'n2s',12), align: qstr(url,'n2align','center'), color: rgb(0.12,0.11,0.2) },
 
-    // Page 6 (snapshot)
-    dom6:   { x:55,  y:280, w:900, s:33, align:'left' },      // Dominant label (e.g., Regulated)
-    dom6d:  { x:40,  y:380, w:250, s:15, align:'left', max:8 }, // Character / description
-    chart6: { x:203, y:230, w:420, h:220 },                   // Radar chart
-    p6p:    { x:120, y:520, w:1260, hsize:14, bsize:20, align:'left', titleGap:6, blockGap:20, maxBody:6 }, // left blocks
-    p6t:    { x:1280,y:620, w:630,  s:30,  align:'left', max:14 }, // right narrative
-  };
+    p3_flow: { x: qnum(url,'f3x',200), y: qnum(url,'f3y',64), w: qnum(url,'f3w',400), size: qnum(url,'f3s',13), align: qstr(url,'f3align','left'),   color: rgb(0.12,0.11,0.2) },
+    p3_name: { x: qnum(url,'n3x',250), y: qnum(url,'n3y',64), w: qnum(url,'n3w',400), size: qnum(url,'n3s',12), align: qstr(url,'n3align','center'), color: rgb(0.12,0.11,0.2) },
 
-  // Allow tuning via URL (kept simple)
-  for (let i=1;i<=8;i++){
-    ['f','n'].forEach(k=>{
-      const base = POS[`${k}${i}`];
-      POS[`${k}${i}`] = {
-        x: qnum(url, `${k}${i}x`, base.x),
-        y: qnum(url, `${k}${i}y`, base.y),
-        w: qnum(url, `${k}${i}w`, base.w),
-        s: qnum(url, `${k}${i}s`, base.s),
-        align: qstr(url, `${k}${i}align`, base.align),
-      };
-    });
-  }
-  POS.d1 = {
-    x: qnum(url,'d1x',POS.d1.x), y: qnum(url,'d1y',POS.d1.y),
-    w: qnum(url,'d1w',POS.d1.w), s: qnum(url,'d1s',POS.d1.s),
-    align: qstr(url,'d1align',POS.d1.align),
-  };
-  POS.dom6 = {
-    x:qnum(url,'dom6x',POS.dom6.x), y:qnum(url,'dom6y',POS.dom6.y),
-    w:qnum(url,'dom6w',POS.dom6.w), s:qnum(url,'dom6s',POS.dom6.s),
-    align:qstr(url,'dom6align',POS.dom6.align),
-  };
-  POS.dom6d = {
-    x:qnum(url,'dom6descx',POS.dom6d.x), y:qnum(url,'dom6descy',POS.dom6d.y),
-    w:qnum(url,'dom6descw',POS.dom6d.w), s:qnum(url,'dom6descs',POS.dom6d.s),
-    align:qstr(url,'dom6descalign',POS.dom6d.align),
-    max:qnum(url,'dom6descmax',POS.dom6d.max),
-  };
-  POS.chart6 = {
-    x:qnum(url,'c6x',POS.chart6.x), y:qnum(url,'c6y',POS.chart6.y),
-    w:qnum(url,'c6w',POS.chart6.w), h:qnum(url,'c6h',POS.chart6.h),
-  };
-  POS.p6p = {
-    x:qnum(url,'p6px',POS.p6p.x), y:qnum(url,'p6py',POS.p6p.y), w:qnum(url,'p6pw',POS.p6p.w),
-    hsize:qnum(url,'p6phsize',POS.p6p.hsize), bsize:qnum(url,'p6pbsize',POS.p6p.bsize),
-    align:qstr(url,'p6palign',POS.p6p.align), titleGap:qnum(url,'p6ptitlegap',POS.p6p.titleGap),
-    blockGap:qnum(url,'p6pblockgap',POS.p6p.blockGap), maxBody:qnum(url,'p6pmax',POS.p6p.maxBody),
-  };
-  POS.p6t = {
-    x:qnum(url,'p6tx',POS.p6t.x), y:qnum(url,'p6ty',POS.p6t.y), w:qnum(url,'p6tw',POS.p6t.w),
-    s:qnum(url,'p6ts',POS.p6t.s), align:qstr(url,'p6talign',POS.p6t.align), max:qnum(url,'p6tmax',POS.p6t.max),
+    p4_flow: { x: qnum(url,'f4x',200), y: qnum(url,'f4y',64), w: qnum(url,'f4w',400), size: qnum(url,'f4s',13), align: qstr(url,'f4align','left'),   color: rgb(0.12,0.11,0.2) },
+    p4_name: { x: qnum(url,'n4x',250), y: qnum(url,'n4y',64), w: qnum(url,'n4w',400), size: qnum(url,'n4s',12), align: qstr(url,'n4align','center'), color: rgb(0.12,0.11,0.2) },
+
+    p5_flow: { x: qnum(url,'f5x',200), y: qnum(url,'f5y',64), w: qnum(url,'f5w',400), size: qnum(url,'f5s',13), align: qstr(url,'f5align','left'),   color: rgb(0.12,0.11,0.2) },
+    p5_name: { x: qnum(url,'n5x',250), y: qnum(url,'n5y',64), w: qnum(url,'n5w',400), size: qnum(url,'n5s',12), align: qstr(url,'n5align','center'), color: rgb(0.12,0.11,0.2) },
+
+    p6_flow: { x: qnum(url,'f6x',200), y: qnum(url,'f6y',64), w: qnum(url,'f6w',400), size: qnum(url,'f6s',13), align: qstr(url,'f6align','left'),   color: rgb(0.12,0.11,0.2) },
+    p6_name: { x: qnum(url,'n6x',250), y: qnum(url,'n6y',64), w: qnum(url,'n6w',400), size: qnum(url,'n6s',12), align: qstr(url,'n6align','center'), color: rgb(0.12,0.11,0.2) },
+
+    p7_flow: { x: qnum(url,'f7x',200), y: qnum(url,'f7y',64), w: qnum(url,'f7w',400), size: qnum(url,'f7s',13), align: qstr(url,'f7align','left'),   color: rgb(0.12,0.11,0.2) },
+    p7_name: { x: qnum(url,'n7x',250), y: qnum(url,'n7y',64), w: qnum(url,'n7w',400), size: qnum(url,'n7s',12), align: qstr(url,'n7align','center'), color: rgb(0.12,0.11,0.2) },
+
+    p8_flow: { x: qnum(url,'f8x',200), y: qnum(url,'f8y',64), w: qnum(url,'f8w',400), size: qnum(url,'f8s',13), align: qstr(url,'f8align','left'),   color: rgb(0.12,0.11,0.2) },
+    p8_name: { x: qnum(url,'n8x',250), y: qnum(url,'n8y',64), w: qnum(url,'n8w',400), size: qnum(url,'n8s',12), align: qstr(url,'n8align','center'), color: rgb(0.12,0.11,0.2) },
+
+    // Page 6 — Dominant title, description, radar, and blocks/themes
+    dom6:      { x: qnum(url,'dom6x',55),  y: qnum(url,'dom6y',280), w: qnum(url,'dom6w',900), size: qnum(url,'dom6s',33), align: qstr(url,'dom6align','left'), color: rgb(0.12,0.11,0.2) },
+    dom6desc:  { x: qnum(url,'dom6descx',40), y: qnum(url,'dom6descy',380), w: qnum(url,'dom6descw',250), size: qnum(url,'dom6descs',15), align: qstr(url,'dom6descalign','left'), color: rgb(0.24,0.23,0.35), maxLines: qnum(url,'dom6descmax',8) },
+
+    // “How this shows up” on Page 6 — now fed by data.chartParagraph
+    how6:      { x: qnum(url,'how6x',420), y: qnum(url,'how6y',360), w: qnum(url,'how6w',300), size: qnum(url,'how6s',22), align: qstr(url,'how6align','left'), color: rgb(0.24,0.23,0.35), maxLines: qnum(url,'how6max',4) },
+
+    // Radar chart on Page 6 (we’ll auto-square inside this box)
+    c6: { x: qnum(url,'c6x',203), y: qnum(url,'c6y',230), w: qnum(url,'c6w',420), h: qnum(url,'c6h',220), square: qnum(url,'c6square',1) === 1 },
+
+    // Page 6 — left column blocks (2 blocks)
+    p6Blocks: { x: qnum(url,'p6px',120), y: qnum(url,'p6py',520), w: qnum(url,'p6pw',1260), hSize: qnum(url,'p6phsize',14), bSize: qnum(url,'p6pbsize',20), align: qstr(url,'p6palign','left'), titleGap: qnum(url,'p6ptitlegap',6), blockGap: qnum(url,'p6pblockgap',20), maxBodyLines: qnum(url,'p6pmax',6), color: rgb(0.24,0.23,0.35) },
+
+    // Page 6 — right theme narrative
+    p6Theme:  { x: qnum(url,'p6tx',1280), y: qnum(url,'p6ty',620), w: qnum(url,'p6tw',630), size: qnum(url,'p6ts',30), align: qstr(url,'p6talign','left'), maxLines: qnum(url,'p6tmax',14), color: rgb(0.24,0.23,0.35) },
   };
 
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok:true, pos:POS, data, url: Object.fromEntries(url.searchParams.entries()) }, null, 2));
+    res.end(JSON.stringify({ ok: true, tplParam, pos: POS, data, urlParams: Object.fromEntries(url.searchParams.entries()) }, null, 2));
     return;
   }
 
   try {
-    const tplBytes = await fetchTemplate(req, url);
+    const tplBytes = await fetchTemplate(req, tplParam);
     const pdf = await PDFDocument.load(tplBytes);
-    const Helv = await pdf.embedFont(StandardFonts.Helvetica);
+
+    // Ensure we have at least 8 pages
+    const totalPages = pdf.getPageCount();
+    if (totalPages < 8) throw new Error(`Template must have at least 8 pages, found ${totalPages}`);
+
+    const pages = [...Array(8)].map((_, i) => pdf.getPage(i));
+    const [p1,p2,p3,p4,p5,p6,p7,p8] = pages;
+
+    const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    const pageCount = pdf.getPageCount();
-    const pages = Array.from({length: pageCount}, (_,i)=>pdf.getPage(i));
+    // Basic values
+    const flow      = norm(data.flow || 'Perspective');
+    const fullName  = norm(data.person?.fullName || pickCoverName(data, url) || '');
+    const coverName = pickCoverName(data, url);
 
-    // Helper to stamp FLOW then NAME (fixed order)
-    const stampFlowAndName = (page, idx) => {
-      const f = POS[`f${idx}`], n = POS[`n${idx}`];
-      if (f) drawTextBox(page, HelvB, flowLabel, { x:f.x, y:f.y, w:f.w, size:f.s, align:f.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
-      if (n) drawTextBox(page, Helv,   fullName,  { x:n.x, y:n.y, w:n.w, size:n.s, align:n.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
-    };
+    // --- Page 1: Path (flow), Name, Date (AMS format is pre-rendered in template; here we just place your label text) ---
+    if (flow) drawTextBox(p1, HelvB, flow, POS.p1_flow, { maxLines: 1, ellipsis: true });
+    if (coverName) drawTextBox(p1, HelvB, coverName, POS.p1_name, { maxLines: 1, ellipsis: true });
 
-    // ---------- Page 1 ----------
-    if (pages[0]) {
-      const p1 = pages[0];
-      stampFlowAndName(p1, 1);
-      // Date on page 1 if you want it shown
-      const d = POS.d1;
-      const dateLbl = norm(data?.dateLbl || '');
-      if (dateLbl) drawTextBox(p1, Helv, dateLbl, { x:d.x, y:d.y, w:d.w, size:d.s, align:d.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
+    // Date string: if provided in payload use that; otherwise leave empty (template shows static label)
+    const dateLbl = norm(data.dateLabel || '');
+    if (dateLbl) drawTextBox(p1, Helv, dateLbl, POS.p1_date, { maxLines: 1, ellipsis: true });
+
+    // --- Pages 2..8: footer labels (flow + full name) ---
+    const footerPairs = [
+      [p2, POS.p2_flow, POS.p2_name],
+      [p3, POS.p3_flow, POS.p3_name],
+      [p4, POS.p4_flow, POS.p4_name],
+      [p5, POS.p5_flow, POS.p5_name],
+      [p6, POS.p6_flow, POS.p6_name],
+      [p7, POS.p7_flow, POS.p7_name],
+      [p8, POS.p8_flow, POS.p8_name],
+    ];
+    for (const [page, flowPos, namePos] of footerPairs) {
+      if (flow) drawTextBox(page, Helv, flow, flowPos, { maxLines: 1, ellipsis: true });
+      if (fullName) drawTextBox(page, Helv, fullName, namePos, { maxLines: 1, ellipsis: true });
     }
 
-    // ---------- Pages 2..5 ----------
-    for (let i=2;i<=5;i++){
-      const page = pages[i-1];
-      if (!page) continue;
-      stampFlowAndName(page, i);
-    }
+    // -------------------- Page 6 CONTENT --------------------
 
-    // ---------- Page 6 (snapshot) ----------
-    if (pages[5]) {
-      const p6 = pages[5];
-      stampFlowAndName(p6, 6);
+    // 6A) Dominant state title
+    const domTitle = norm(data.stateWord || (Array.isArray(data.stateWords) ? data.stateWords[0] : '') || '');
+    if (domTitle) drawTextBox(p6, HelvB, domTitle, POS.dom6, { maxLines: 1, ellipsis: true });
 
-      // Dominant label
-      const dom = norm(data?.dominantLabel || data?.stateWord || '');
-      if (dom) drawTextBox(p6, HelvB, dom, { x:POS.dom6.x, y:POS.dom6.y, w:POS.dom6.w, size:POS.dom6.s, align:POS.dom6.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
-
-      // Character blurb (dominant description) — limited lines
-      const domDesc = norm(data?.dominantDesc || data?.dominantCharacterBlurb || '');
-      if (domDesc) drawTextBox(p6, Helv, domDesc, { x:POS.dom6d.x, y:POS.dom6d.y, w:POS.dom6d.w, size:POS.dom6d.s, align:POS.dom6d.align, color:rgb(0.24,0.23,0.35) }, { maxLines:POS.dom6d.max, ellipsis:true });
-
-      // Radar chart
-      const c = POS.chart6;
-      const chartUrl = S(data?.chartUrl, '');
-      if (chartUrl) {
-        try {
-          const r = await fetch(chartUrl);
-          if (r.ok) {
-            const png = await pdf.embedPng(await r.arrayBuffer());
-            const ph = p6.getHeight();
-            p6.drawImage(png, { x:c.x, y: ph - c.y - c.h, width: c.w, height: c.h });
-          }
-        } catch {/* ignore */}
-      }
-
-      // Left column: exactly two blocks from page6Patterns (fallback to page2Patterns)
-      const rawBlocks = Array.isArray(data?.page6Patterns) && data.page6Patterns.length
-        ? data.page6Patterns
-        : (Array.isArray(data?.page2Patterns) ? data.page2Patterns : []);
-      const blocks = rawBlocks
-        .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
-        .filter(b => b.title || b.body)
-        .slice(0, 2);
-
-      let curY = POS.p6p.y;
-      for (const b of blocks) {
-        if (b.title) {
-          drawTextBox(
-            p6, HelvB, b.title,
-            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.hsize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-            { maxLines: 1, ellipsis: true }
-          );
-          curY += (POS.p6p.hsize + 3) + POS.p6p.titleGap;
-        }
-        if (b.body) {
-          const r = drawTextBox(
-            p6, Helv, b.body,
-            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.bsize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-            { maxLines: POS.p6p.maxBody, ellipsis: true }
-          );
-          curY += r.height + POS.p6p.blockGap;
-        }
-      }
-
-      // Right paragraph: themes narrative
-      const tn = norm(
-        (typeof data?.themeNarrative === 'string' ? data.themeNarrative : '') ||
-        ''
+    // 6B) Dominant description — from payload.dominantParagraph
+    const domDesc = norm(data.dominantParagraph || '');
+    if (domDesc) {
+      drawTextBox(p6, Helv, domDesc,
+        { x: POS.dom6desc.x, y: POS.dom6desc.y, w: POS.dom6desc.w, size: POS.dom6desc.size, align: POS.dom6desc.align, color: POS.dom6desc.color },
+        { maxLines: POS.dom6desc.maxLines, ellipsis: true }
       );
-      if (tn) {
-        drawTextBox(
-          p6, Helv, tn,
-          { x: POS.p6t.x, y: POS.p6t.y, w: POS.p6t.w, size: POS.p6t.s, align: POS.p6t.align, color: rgb(0.24,0.23,0.35), lineGap:4 },
-          { maxLines: POS.p6t.max, ellipsis: true }
+    }
+
+    // 6C) “How this shows up” — now fed by payload.chartParagraph (NOT the old 'how')
+    const chartPara = norm(data.chartParagraph || '');
+    if (chartPara) {
+      drawTextBox(p6, Helv, chartPara,
+        { x: POS.how6.x, y: POS.how6.y, w: POS.how6.w, size: POS.how6.size, align: POS.how6.align, color: POS.how6.color },
+        { maxLines: POS.how6.maxLines, ellipsis: true }
+      );
+    }
+
+    // 6D) Radar chart — fetch, enforce square output, draw centered in c6 box
+    let chartUrl = S(data.chartUrl, '');
+    if (chartUrl) {
+      // If width/height not provided, append square size + transparent background
+      const hasW = /[?&]width=\d+/i.test(chartUrl);
+      const hasH = /[?&]height=\d+/i.test(chartUrl);
+      const hasBG = /[?&]backgroundColor=/i.test(chartUrl);
+      if (!hasW || !hasH) {
+        chartUrl += (chartUrl.includes('?') ? '&' : '?') + 'width=640&height=640';
+      }
+      if (!hasBG) {
+        chartUrl += (chartUrl.includes('?') ? '&' : '?') + 'backgroundColor=transparent';
+      }
+
+      try {
+        const r = await fetch(chartUrl);
+        if (r.ok) {
+          const png = await pdf.embedPng(await r.arrayBuffer());
+          const ph = p6.getHeight();
+
+          const box = POS.c6;
+          const side = box.square ? Math.min(box.w, box.h) : null;
+          const drawW = box.square ? side : box.w;
+          const drawH = box.square ? side : box.h;
+
+          // center inside the box
+          const x = box.x + (box.w - drawW) / 2;
+          const y = ph - box.y - drawH; // convert top-origin
+          p6.drawImage(png, { x, y, width: drawW, height: drawH });
+        }
+      } catch { /* ignore chart errors */ }
+    }
+
+    // 6E) Left column pattern blocks (up to 2)
+    const p6Blocks = Array.isArray(data.page6Blocks) ? data.page6Blocks
+                    : Array.isArray(data.page2Patterns) ? data.page2Patterns : [];
+    const blocks = p6Blocks
+      .map(b => ({ title: norm(b?.title || ''), body: norm(b?.body || '') }))
+      .filter(b => b.title || b.body)
+      .slice(0, 2);
+
+    let curY = POS.p6Blocks.y;
+    for (const b of blocks) {
+      if (b.title) {
+        drawTextBox(p6, HelvB, b.title,
+          { x: POS.p6Blocks.x, y: curY, w: POS.p6Blocks.w, size: POS.p6Blocks.hSize, align: POS.p6Blocks.align, color: POS.p6Blocks.color, lineGap: 3 },
+          { maxLines: 1, ellipsis: true }
         );
+        curY += (POS.p6Blocks.hSize + 3) + POS.p6Blocks.titleGap;
+      }
+      if (b.body) {
+        const r = drawTextBox(p6, Helv, b.body,
+          { x: POS.p6Blocks.x, y: curY, w: POS.p6Blocks.w, size: POS.p6Blocks.bSize, align: POS.p6Blocks.align, color: POS.p6Blocks.color, lineGap: 3 },
+          { maxLines: POS.p6Blocks.maxBodyLines, ellipsis: true }
+        );
+        curY += r.height + POS.p6Blocks.blockGap;
       }
     }
 
-    // ---------- Page 7 & 8 headers ----------
-    if (pages[6]) stampFlowAndName(pages[6], 7);
-    if (pages[7]) stampFlowAndName(pages[7], 8);
+    // 6F) Right theme narrative
+    let themeNarr = '';
+    if (typeof data.themeNarrative === 'string' && data.themeNarrative.trim()) {
+      themeNarr = norm(data.themeNarrative.trim());
+    }
+    if (themeNarr) {
+      drawTextBox(p6, Helv, themeNarr,
+        { x: POS.p6Theme.x, y: POS.p6Theme.y, w: POS.p6Theme.w, size: POS.p6Theme.size, align: POS.p6Theme.align, color: POS.p6Theme.color, lineGap: 4 },
+        { maxLines: POS.p6Theme.maxLines, ellipsis: true }
+      );
+    }
 
     // Save
     const bytes = await pdf.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    const name = url.searchParams.get('name') || 'ctrl_profile.pdf';
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${name}"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${S(url.searchParams.get('name'),'ctrl_profile.pdf')}"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
