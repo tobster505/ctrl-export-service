@@ -68,20 +68,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-async function fetchTemplate(req, url) {
-  // default to V3 template; allow override via ?tpl=
-  const tplName =
-    url.searchParams.get("tpl") ||
-    "CTRL_Perspective_Assessment_Profile_templateV3.pdf";
-  const h = (req && req.headers) || {};
-  const host = S(h.host, "ctrl-export-service.vercel.app");
-  const proto = S(h["x-forwarded-proto"], "https");
-  const tplUrl = `${proto}://${host}/${tplName}`;
-  const r = await fetch(tplUrl, { cache: "no-store" });
-  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
-  return new Uint8Array(await r.arrayBuffer());
-}
-
 const qnum = (url, key, fb) => {
   const s = url.searchParams.get(key);
   if (s === null || s === "") return fb;
@@ -96,10 +82,24 @@ const qstr = (url, key, fb) => {
 const labelFromFlow = (raw) => {
   const v = (raw || "").toString().toLowerCase();
   if (v.startsWith("pers")) return "Perspective";
-  if (v.startsWith("obs"))  return "Observe";
-  if (v.startsWith("refl")) return "Reflective";
+  if (v.startsWith("obs"))  return "Perspective"; // keep single label family (change if you add other templates)
+  if (v.startsWith("refl")) return "Perspective";
   return "Perspective";
 };
+
+async function fetchTemplate(req, url) {
+  // default to the new V3 template, allow override via ?tpl=
+  const tplName =
+    url.searchParams.get("tpl") ||
+    "CTRL_Perspective_Assessment_Profile_templateV3.pdf";
+  const h = (req && req.headers) || {};
+  const host = S(h.host, "ctrl-export-service.vercel.app");
+  const proto = S(h["x-forwarded-proto"], "https");
+  const tplUrl = `${proto}://${host}/${tplName}`;
+  const r = await fetch(tplUrl, { cache: "no-store" });
+  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
 
 /* ───────────── handler ───────────── */
 
@@ -163,8 +163,8 @@ export default async function handler(req, res) {
             },
           })
         ),
-      // Page-5 left and right content
-      page5Patterns: [
+      // Page 6 narrative content (moved from old p5)
+      page6Patterns: [
         { title: "Direction & shape", body: "Steady line with mixed steps." },
         { title: "Coverage & edges", body: "You touched 2 states; little of Lead/Concealed." },
       ],
@@ -186,89 +186,92 @@ export default async function handler(req, res) {
   const fullName = norm(data?.person?.fullName || data?.fullName || "");
   const dateLbl  = norm(data?.dateLbl || "");
 
-  /* ───────────── positions (defaults + URL tuners) ───────────── */
+  /* ───────────── locked positions + URL tuners ───────────── */
 
   const POS = {
-    // Page 1
-    f1: { x: 140, y: 573, w: 600, size: 32, align: "left" },  // Flow/Path
-    n1: { x: 205, y: 165, w: 400, size: 40, align: "center" }, // Full name
-    d1: { x: 120, y: 630, w: 500, size: 25, align: "left" },   // Date (DD/MMM/YYYY)
+    // Page 1 (locked to your spec)
+    f1: { x: 290, y: 170, w: 400, size: 40, align: "left" },
+    n1: { x: 10,  y: 573, w: 500, size: 30, align: "center" },
+    d1: { x: 130, y: 630, w: 500, size: 20, align: "left" },
 
-    // Pages 2..7 – flow/name ribbons (defaults; override via URL)
-    f2: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n2: { x: 35, y: 64, w: 400, size: 13, align: "center" },
-    f3: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n3: { x: 35, y: 64, w: 400, size: 13, align: "center" },
-    f4: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n4: { x: 35, y: 64, w: 400, size: 13, align: "center" },
-    f5: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n5: { x: 35, y: 64, w: 400, size: 13, align: "center" },
-    f6: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n6: { x: 35, y: 64, w: 400, size: 13, align: "center" },
-    f7: { x: 400, y: 64, w: 800, size: 12, align: "left" }, n7: { x: 35, y: 64, w: 400, size: 13, align: "center" },
+    // Pages 2..8 ribbons (locked defaults)
+    f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f4: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n4: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f5: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n5: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+    f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
 
-    // Page 5 snapshot specifics
-    dom5:     { x: 120, y: 250, w: 900, size: 36, align: "left" },     // Dominant state word
-    dom5desc: { x: 120, y: 300, w: 900, size: 22, align: "left", max: 6 }, // Dominant description
-    how5:     { x: 120, y: 360, w: 900, size: 22, align: "left", max: 4 }, // “How this shows up”
-    chart5:   { x: 1100, y: 300, w: 650, h: 420 },                         // Spider chart
+    // Page 6 snapshot (moved from old page 5)
+    dom6:     { x: 120, y: 250, w: 900, size: 36, align: "left" },           // Dominant state word
+    dom6desc: { x: 120, y: 300, w: 900, size: 22, align: "left", max: 6 },   // Dominant description
+    how6:     { x: 120, y: 360, w: 900, size: 22, align: "left", max: 4 },   // “How this shows up…”
+    chart6:   { x: 1100, y: 300, w: 650, h: 420 },                           // Spider chart
 
-    // Page 5 – left blocks (shape/coverage + range/gaps)
-    p5p: { x: 120, y: 520, w: 1260, hSize: 14, bSize: 20, align: "left", titleGap: 6, blockGap: 20, maxBodyLines: 6 },
-    // Page 5 – right themes narrative
-    p5t: { x: 1280, y: 620, w: 630, size: 30, align: "left", lineGap: 4, maxLines: 14, color: rgb(0.24, 0.23, 0.35) },
+    // Page 6 – left blocks (shape/coverage + range/gaps)
+    p6p: { x: 120, y: 520, w: 1260, hSize: 14, bSize: 20, align: "left", titleGap: 6, blockGap: 20, maxBodyLines: 6 },
+    // Page 6 – themes narrative
+    p6t: { x: 1280, y: 620, w: 630, size: 30, align: "left", lineGap: 4, maxLines: 14, color: rgb(0.24, 0.23, 0.35) },
   };
 
-  // Apply URL tuners for f1/n1/d1 and f2..f7/n2..n7 + page-5 items
-  function tunePrefix(prefix, obj) {
+  // apply URL tuners
+  function tune(prefix, obj) {
     obj.x     = qnum(url, `${prefix}x`,     obj.x);
     obj.y     = qnum(url, `${prefix}y`,     obj.y);
     obj.w     = qnum(url, `${prefix}w`,     obj.w);
     obj.size  = qnum(url, `${prefix}s`,     obj.size);
     obj.align = qstr(url, `${prefix}align`, obj.align);
-    return obj;
   }
-  ["f1","n1","d1","f2","n2","f3","n3","f4","n4","f5","n5","f6","n6","f7","n7"].forEach(k => tunePrefix(k, POS[k]));
-  // page-5 snapshot
-  ["dom5","dom5desc","how5"].forEach(k => {
-    POS[k].x     = qnum(url, `${k}x`,     POS[k].x);
-    POS[k].y     = qnum(url, `${k}y`,     POS[k].y);
-    POS[k].w     = qnum(url, `${k}w`,     POS[k].w);
-    POS[k].size  = qnum(url, `${k}s`,     POS[k].size);
-    POS[k].align = qstr(url, `${k}align`, POS[k].align);
-    const mk = `${k}max`;
-    if (POS[k].max != null) POS[k].max = qnum(url, mk, POS[k].max);
-  });
-  POS.chart5 = {
-    x: qnum(url, "c5x", POS.chart5.x),
-    y: qnum(url, "c5y", POS.chart5.y),
-    w: qnum(url, "c5w", POS.chart5.w),
-    h: qnum(url, "c5h", POS.chart5.h),
-  };
-  // page-5 blocks (keep legacy p2p*/p2t* as aliases)
-  const P5 = POS.p5p;
-  P5.x = qnum(url, "p5px", qnum(url, "p2px", P5.x));
-  P5.y = qnum(url, "p5py", qnum(url, "p2py", P5.y));
-  P5.w = qnum(url, "p5pw", qnum(url, "p2pw", P5.w));
-  P5.hSize      = qnum(url, "p5phsize", qnum(url, "p2phsize", P5.hSize));
-  P5.bSize      = qnum(url, "p5pbsize", qnum(url, "p2pbsize", P5.bSize));
-  P5.align      = qstr(url, "p5palign", qstr(url, "p2palign", P5.align));
-  P5.titleGap   = qnum(url, "p5ptitlegap", qnum(url, "p2ptitlegap", P5.titleGap));
-  P5.blockGap   = qnum(url, "p5pblockgap", qnum(url, "p2pblockgap", P5.blockGap));
-  P5.maxBodyLines = qnum(url, "p5pmax", qnum(url, "p2pmax", P5.maxBodyLines));
+  ["f1","n1","d1","f2","n2","f3","n3","f4","n4","f5","n5","f6","n6","f7","n7","f8","n8"].forEach(k => tune(k, POS[k]));
 
-  const T5 = POS.p5t;
-  T5.x = qnum(url, "p5tx", qnum(url, "p2tx", T5.x));
-  T5.y = qnum(url, "p5ty", qnum(url, "p2ty", T5.y));
-  T5.w = qnum(url, "p5tw", qnum(url, "p2tw", T5.w));
-  T5.size  = qnum(url, "p5ts", qnum(url, "p2ts", T5.size));
-  T5.align = qstr(url, "p5talign", qstr(url, "p2talign", T5.align));
-  T5.maxLines = qnum(url, "p5tmax", qnum(url, "p2tmax", T5.maxLines));
+  // page 6 specific tuners (+ legacy aliases from old page-5 keys)
+  function tune6Block(key, aliases = []) {
+    const obj = POS[key];
+    const keys = [key, ...aliases];
+    // scalar fields
+    for (const base of keys) {
+      obj.x     = qnum(url, `${base}x`,     obj.x);
+      obj.y     = qnum(url, `${base}y`,     obj.y);
+      obj.w     = qnum(url, `${base}w`,     obj.w);
+      obj.size  = qnum(url, `${base}s`,     obj.size);
+      obj.align = qstr(url, `${base}align`, obj.align);
+      if (obj.max != null) obj.max = qnum(url, `${base}max`, obj.max);
+    }
+  }
+  tune6Block("dom6", ["dom5"]); // allow dom5* to map to dom6*
+  tune6Block("dom6desc", []);
+  tune6Block("how6", []);
+  // chart
+  POS.chart6 = {
+    x: qnum(url, "c6x", POS.chart6.x),
+    y: qnum(url, "c6y", POS.chart6.y),
+    w: qnum(url, "c6w", POS.chart6.w),
+    h: qnum(url, "c6h", POS.chart6.h),
+  };
+  // page 6 blocks (also accept legacy p2* mapping)
+  const P6 = POS.p6p;
+  P6.x = qnum(url, "p6px", qnum(url, "p2px", P6.x));
+  P6.y = qnum(url, "p6py", qnum(url, "p2py", P6.y));
+  P6.w = qnum(url, "p6pw", qnum(url, "p2pw", P6.w));
+  P6.hSize      = qnum(url, "p6phsize", qnum(url, "p2phsize", P6.hSize));
+  P6.bSize      = qnum(url, "p6pbsize", qnum(url, "p2pbsize", P6.bSize));
+  P6.align      = qstr(url, "p6palign", qstr(url, "p2palign", P6.align));
+  P6.titleGap   = qnum(url, "p6ptitlegap", qnum(url, "p2ptitlegap", P6.titleGap));
+  P6.blockGap   = qnum(url, "p6pblockgap", qnum(url, "p2pblockgap", P6.blockGap));
+  P6.maxBodyLines = qnum(url, "p6pmax", qnum(url, "p2pmax", P6.maxBodyLines));
+
+  const T6 = POS.p6t;
+  T6.x = qnum(url, "p6tx", qnum(url, "p2tx", T6.x));
+  T6.y = qnum(url, "p6ty", qnum(url, "p2ty", T6.y));
+  T6.w = qnum(url, "p6tw", qnum(url, "p2tw", T6.w));
+  T6.size  = qnum(url, "p6ts", qnum(url, "p2ts", T6.size));
+  T6.align = qstr(url, "p6talign", qstr(url, "p2talign", T6.align));
+  T6.maxLines = qnum(url, "p6tmax", qnum(url, "p2tmax", T6.maxLines));
 
   if (debug) {
     res.setHeader("Content-Type", "application/json");
-    res.end(
-      JSON.stringify(
-        { ok: true, pos: POS, data, urlParams: Object.fromEntries(url.searchParams.entries()) },
-        null,
-        2
-      )
-    );
+    res.end(JSON.stringify({ ok:true, pos:POS, data, urlParams:Object.fromEntries(url.searchParams.entries()) }, null, 2));
     return;
   }
 
@@ -281,40 +284,40 @@ export default async function handler(req, res) {
     const pageCount = pdf.getPageCount();
     const get = (i) => (i < pageCount ? pdf.getPage(i) : null);
 
-    /* ── Page 1 header (index 0) ── */
+    /* ── Page 1 header ── */
     const p1 = get(0);
     if (p1) {
-      drawTextBox(p1, HelvB, flowLbl, POS.f1, { maxLines: 1, ellipsis: true });
+      drawTextBox(p1, HelvB, labelFromFlow(flowLbl), POS.f1, { maxLines: 1, ellipsis: true });
       if (fullName) drawTextBox(p1, HelvB, fullName, POS.n1, { maxLines: 1, ellipsis: true });
       if (dateLbl)  drawTextBox(p1, Helv,  dateLbl,  POS.d1, { maxLines: 1, ellipsis: true });
     }
 
-    /* ── Pages 2..7 ribbons ── */
+    /* ── Pages 2..8 ribbons ── */
     const ribbons = [
       { page: get(1), f: POS.f2, n: POS.n2 },
       { page: get(2), f: POS.f3, n: POS.n3 },
       { page: get(3), f: POS.f4, n: POS.n4 },
-      { page: get(4), f: POS.f5, n: POS.n5 },
-      { page: get(5), f: POS.f6, n: POS.n6 },
+      { page: get(4), f: POS.f5, n: POS.n5 }, // Page 5: header only (content moved)
+      { page: get(5), f: POS.f6, n: POS.n6 }, // Page 6: header + snapshot content
       { page: get(6), f: POS.f7, n: POS.n7 },
+      { page: get(7), f: POS.f8, n: POS.n8 },
     ];
     for (const r of ribbons) {
       if (!r.page) continue;
-      drawTextBox(r.page, HelvB, flowLbl, r.f, { maxLines: 1, ellipsis: true });
+      drawTextBox(r.page, HelvB, labelFromFlow(flowLbl), r.f, { maxLines: 1, ellipsis: true });
       if (fullName) drawTextBox(r.page, Helv, fullName, r.n, { maxLines: 1, ellipsis: true });
     }
 
-    /* ── Page 5 snapshot (index 4) ── */
-    const p5 = get(4);
-    if (p5) {
-      // Dominant + description + how
+    /* ── Page 6 snapshot (index 5) ── */
+    const p6 = get(5);
+    if (p6) {
       const stateWord = norm(data?.stateWord || "");
       const domDesc   = norm(data?.domDesc   || data?.dominantParagraph || "");
       const how       = norm(data?.how       || "");
 
-      if (stateWord) drawTextBox(p5, HelvB, stateWord, POS.dom5, { maxLines: 1, ellipsis: true });
-      if (domDesc)   drawTextBox(p5, Helv,   domDesc,   POS.dom5desc, { maxLines: POS.dom5desc.max, ellipsis: true });
-      if (how)       drawTextBox(p5, Helv,   how,       POS.how5,     { maxLines: POS.how5.max, ellipsis: true });
+      if (stateWord) drawTextBox(p6, HelvB, stateWord, POS.dom6, { maxLines: 1, ellipsis: true });
+      if (domDesc)   drawTextBox(p6, Helv,   domDesc,   POS.dom6desc, { maxLines: POS.dom6desc.max, ellipsis: true });
+      if (how)       drawTextBox(p6, Helv,   how,       POS.how6,     { maxLines: POS.how6.max, ellipsis: true });
 
       // Chart
       if (!noGraph && data?.chartUrl) {
@@ -322,15 +325,17 @@ export default async function handler(req, res) {
           const r = await fetch(S(data.chartUrl, ""));
           if (r.ok) {
             const png = await pdf.embedPng(await r.arrayBuffer());
-            const { x, y, w, h } = POS.chart5;
-            const ph = p5.getHeight();
-            p5.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+            const { x, y, w, h } = POS.chart6;
+            const ph = p6.getHeight();
+            p6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
           }
-        } catch { /* ignore graph errors */ }
+        } catch { /* ignore chart errors */ }
       }
 
       // Left two blocks
-      const rawBlocks = Array.isArray(data.page5Patterns)
+      const rawBlocks = Array.isArray(data.page6Patterns)
+        ? data.page6Patterns
+        : Array.isArray(data.page5Patterns)
         ? data.page5Patterns
         : Array.isArray(data.page2Patterns)
         ? data.page2Patterns
@@ -340,66 +345,36 @@ export default async function handler(req, res) {
         .filter((b) => b.title || b.body)
         .slice(0, 2);
 
-      let curY = POS.p5p.y;
+      let curY = POS.p6p.y;
       for (const b of blocks) {
         if (b.title) {
           drawTextBox(
-            p5,
-            HelvB,
-            b.title,
-            {
-              x: POS.p5p.x,
-              y: curY,
-              w: POS.p5p.w,
-              size: POS.p5p.hSize,
-              align: POS.p5p.align,
-              color: rgb(0.24, 0.23, 0.35),
-              lineGap: 3,
-            },
+            p6, HelvB, b.title,
+            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.hSize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap: 3 },
             { maxLines: 1, ellipsis: true }
           );
-          curY += POS.p5p.hSize + 3 + POS.p5p.titleGap;
+          curY += POS.p6p.hSize + 3 + POS.p6p.titleGap;
         }
         if (b.body) {
           const r = drawTextBox(
-            p5,
-            Helv,
-            b.body,
-            {
-              x: POS.p5p.x,
-              y: curY,
-              w: POS.p5p.w,
-              size: POS.p5p.bSize,
-              align: POS.p5p.align,
-              color: rgb(0.24, 0.23, 0.35),
-              lineGap: 3,
-            },
-            { maxLines: POS.p5p.maxBodyLines, ellipsis: true }
+            p6, Helv, b.body,
+            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.bSize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap: 3 },
+            { maxLines: POS.p6p.maxBodyLines, ellipsis: true }
           );
-          curY += r.height + POS.p5p.blockGap;
+          curY += r.height + POS.p6p.blockGap;
         }
       }
 
-      // Right themes narrative
+      // Themes narrative
       let themeNarr = "";
       if (typeof data.themeNarrative === "string" && data.themeNarrative.trim()) {
         themeNarr = norm(data.themeNarrative.trim());
       }
       if (themeNarr) {
         drawTextBox(
-          p5,
-          Helv,
-          themeNarr,
-          {
-            x: POS.p5t.x,
-            y: POS.p5t.y,
-            w: POS.p5t.w,
-            size: POS.p5t.size,
-            align: POS.p5t.align,
-            color: POS.p5t.color,
-            lineGap: POS.p5t.lineGap,
-          },
-          { maxLines: POS.p5t.maxLines, ellipsis: true }
+          p6, Helv, themeNarr,
+          { x: POS.p6t.x, y: POS.p6t.y, w: POS.p6t.w, size: POS.p6t.size, align: POS.p6t.align, color: POS.p6t.color, lineGap: POS.p6t.lineGap },
+          { maxLines: POS.p6t.maxLines, ellipsis: true }
         );
       }
     }
@@ -411,10 +386,7 @@ export default async function handler(req, res) {
       `ctrl_profile_${String(Date.now()).slice(-6)}.pdf`;
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `${preview ? "inline" : "attachment"}; filename="${name}"`
-    );
+    res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${name}"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
