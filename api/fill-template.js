@@ -125,18 +125,23 @@ export default async function handler(req, res) {
   try { url = new URL(req?.url || '/', 'http://localhost'); }
   catch { url = new URL('/', 'http://localhost'); }
 
-  const isTest  = url.searchParams.get('test') === '1';
   const preview = url.searchParams.get('preview') === '1';
-  const debug   = url.searchParams.get('debug') === '1';
+  const flowURL = normPathLabel(url.searchParams.get('flow') || 'Perspective');
 
-  // --- Demo payload for quick layout testing ---
+  // Decide data source: prefer real data even if test=1 is present
+  const hasData = !!url.searchParams.get('data');
+  const useDemo = url.searchParams.get('test') === '1' && !hasData;
+
   let data;
-  if (isTest) {
+  if (useDemo) {
+    // DEMO payload (manual layout testing only)
     data = {
       person: { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
-      stateWord: 'Regulated',
-      dominantDesc: 'You connect the most with Mika — grounded, fair and steady under pressure.',
-      how6: 'Your profile blends Triggered and Regulated, with Regulated stronger. You lower heat, then add just enough pressure to move things on.',
+      flow: 'Perspective',
+      dateLbl: '',
+      dom6Label: 'Regulated',
+      dom6Desc: 'You connect the most with Mika — grounded, fair and steady under pressure.',
+      how6Text: 'Your profile blends Triggered and Regulated, with Regulated stronger. You lower heat, then add just enough pressure to move things on.',
       chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
         type: 'radar',
         data: { labels: ['Concealed','Triggered','Regulated','Lead'],
@@ -159,36 +164,29 @@ export default async function handler(req, res) {
           } }
         }
       })),
-      // Page 7 demo content
-      p7Blocks: [
+      page7Blocks: [
         { title:'Shape & coverage', body:'Mixed movement with two states—reliable range without big swings.' },
         { title:'Missing state', body:'Lead appeared least in this run; experiment with light invitations to draw others in.' },
         { title:'Themes', body:'Emotion regulation + Awareness of impact: steady tone with attention to how words land.' },
       ],
       p7ThemeNarr: 'You combine even-handedness with presence. When pressure rises, you calm, then guide.',
-      tips2: ['Name the gear you are in (“steadying”) aloud.', 'Add a one-line intent before you act.'],
-      actions2: ['Schedule a 10-min post-meeting debrief to check impact.', 'Try a micro-pause before each hard response.'],
-      dateLbl: '03/SEP/2025',
-      flow: 'Perspective',
-      name: 'ctrl_profile_demo.pdf'
+      tipsTop2: ['Name the gear you are in (“steadying”) aloud.', 'Add a one-line intent before you act.'],
+      actionsTop2: ['Schedule a 10-min post-meeting debrief to check impact.', 'Try a micro-pause before each hard response.']
     };
-  } else {
-    const b64 = url.searchParams.get('data');
-    if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
+  } else if (hasData) {
     try {
-      const raw = Buffer.from(S(b64,''), 'base64').toString('utf8');
+      const raw = Buffer.from(String(url.searchParams.get('data') || ''), 'base64').toString('utf8');
       data = JSON.parse(raw);
     } catch (e) {
       res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
     }
+  } else {
+    res.statusCode = 400; res.end('Missing ?data'); return;
   }
-
-  // Flow final (prefer payload.flow, fallback to URL ?flow)
-  const flow = normPathLabel(data?.flow || url.searchParams.get('flow') || 'Perspective');
 
   /* --------------------- DEFAULT (LOCKED) POSITIONS --------------------- */
   const POS = {
-    // Page 1: Path/Name/Date (kept from earlier setup; tunable via f1*/n1*/d1*)
+    // Page 1: Path/Name/Date (tunable via f1*/n1*/d1*)
     f1: { x: 290, y: 170, w: 400, size: 40, align: 'left' },           // PathName
     n1: { x: 10,  y: 573, w: 500, size: 30, align: 'center' },         // FullName
     d1: { x: 130, y: 630, w: 500, size: 20, align: 'left' },           // Date (DD/MMM/YYYY)
@@ -321,12 +319,6 @@ export default async function handler(req, res) {
   };
   POS.p7Acts.maxLines = qnum(url,'p7actsmax',POS.p7Acts.maxLines);
 
-  if (debug) {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok:true, pos:POS, data, urlParams:Object.fromEntries(url.searchParams.entries()) }, null, 2));
-    return;
-  }
-
   try {
     const tplBytes = await fetchTemplate(req, url);
     const pdf = await PDFDocument.load(tplBytes);
@@ -340,22 +332,22 @@ export default async function handler(req, res) {
 
     /* -------------------- PAGE 1: Path / Name / Date -------------------- */
     const coverName = pickCoverName(data, url);
-    const fullName = data?.person?.fullName || coverName || '';
-    const pathName = flow;
+    const fullName = norm(data?.person?.fullName || coverName || '');
+    const pathName = norm(
+      (typeof data?.flow === 'string' && data.flow) ||
+      (typeof data?.pathName === 'string' && data.pathName) ||
+      flowURL
+    );
 
-    // Date: prefer data.dateLbl, then ?dateLbl or ?date, else today
-    const dateFromData = norm(data?.dateLbl || '');
-    const dateFromUrl  = norm(url.searchParams.get('dateLbl') || url.searchParams.get('date') || '');
-    let dateLbl = dateFromData || dateFromUrl;
-    if (!dateLbl) {
-      const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-      const now = new Date();
-      dateLbl = `${String(now.getDate()).padStart(2,'0')}/${MMM[now.getMonth()]}/${now.getFullYear()}`;
-    }
+    // prefer data-provided date label; else today
+    const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    const now = new Date();
+    const lblFromNow = `${String(now.getDate()).padStart(2,'0')}/${MMM[now.getMonth()]}/${now.getFullYear()}`;
+    const lbl = norm(data?.dateLbl) || lblFromNow;
 
     drawTextBox(page1, HelvB, pathName, { x: POS.f1.x, y: POS.f1.y, w: POS.f1.w, size: POS.f1.size, align: POS.f1.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, HelvB, fullName, { x: POS.n1.x, y: POS.n1.y, w: POS.n1.w, size: POS.n1.size, align: POS.n1.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, Helv,  dateLbl,  { x: POS.d1.x, y: POS.d1.y, w: POS.d1.w, size: POS.d1.size, align: POS.d1.align, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, Helv, lbl, { x: POS.d1.x, y: POS.d1.y, w: POS.d1.w, size: POS.d1.size, align: POS.d1.align, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
     /* -------------------- FOOTERS: pages 2..8 (small) ------------------- */
     const drawFooter = (page, fSpec, nSpec) => {
@@ -372,22 +364,23 @@ export default async function handler(req, res) {
     drawFooter(p8, POS.footer.f8, POS.footer.n8);
 
     /* -------------------------- PAGE 6 content -------------------------- */
-    // Flexible keys (primary Botpress names first, then fallbacks)
     const domLabel = norm(
+      data?.dom6Label ||
       data?.stateWord ||
-      data?.dom6Label ||                                      // fallback
       (Array.isArray(data?.stateWords) && data.stateWords[0]) ||
       ''
     );
     const domDesc  = norm(
+      data?.dom6Desc ||
       data?.dominantDesc ||
-      data?.dom6Desc ||                                       // fallback
       ''
     );
     const how6Text = norm(
+      data?.how6Text ||
       data?.how6 ||
-      data?.how6Text ||                                       // fallback
-      data?.howChart || data?.how || ''
+      data?.howChart ||
+      data?.how ||
+      ''
     );
 
     if (domLabel) drawTextBox(page6, HelvB, domLabel, { x: POS.dom6.x, y: POS.dom6.y, w: POS.dom6.w, size: POS.dom6.size, align: POS.dom6.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
@@ -409,8 +402,8 @@ export default async function handler(req, res) {
 
     /* -------------------------- PAGE 7 content -------------------------- */
     // Left: 3 blocks (shape+coverage, missing state, themes)
-    const blocksSrc = Array.isArray(data?.p7Blocks) ? data.p7Blocks
-                    : Array.isArray(data?.page7Blocks) ? data.page7Blocks // fallback
+    const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
+                    : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
     const blocks = blocksSrc
       .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
@@ -437,10 +430,12 @@ export default async function handler(req, res) {
       }
     }
 
-    // Theme paragraph (page 7)
+    // Theme paragraph (page 7 right/above)
     const themeNarr7 = norm(
       (typeof data?.p7ThemeNarr === 'string' && data.p7ThemeNarr) ||
-      (typeof data?.themeNarrative === 'string' && data.themeNarrative) || ''
+      (typeof data?.themePairParagraph === 'string' && data.themePairParagraph) ||
+      (typeof data?.themeNarrative === 'string' && data.themeNarrative) ||
+      ''
     );
     if (themeNarr7) {
       drawTextBox(
@@ -452,8 +447,8 @@ export default async function handler(req, res) {
 
     // Tips (top 2)
     const tipsArr = Array.isArray(data?.tips2) ? data.tips2
-                  : Array.isArray(data?.tipsTop2) ? data.tipsTop2 // fallback
-                  : [];
+                   : Array.isArray(data?.tipsTop2) ? data.tipsTop2
+                   : [];
     const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join('\n') : '';
     if (tips2) {
       drawTextBox(
@@ -465,8 +460,9 @@ export default async function handler(req, res) {
 
     // Actions (top 2)
     const actsArr = Array.isArray(data?.actions2) ? data.actions2
-                  : Array.isArray(data?.actionsTop2) ? data.actionsTop2 // fallback
-                  : [];
+                   : Array.isArray(data?.actionsTop2) ? data.actionsTop2
+                   : Array.isArray(data?.actionsKeepTop2) ? data.actionsKeepTop2
+                   : [];
     const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join('\n') : '';
     if (acts2) {
       drawTextBox(
@@ -478,12 +474,9 @@ export default async function handler(req, res) {
 
     // Save
     const bytes = await pdf.save();
-    const fileName =
-      norm(url.searchParams.get('name') || data?.name || 'ctrl_profile.pdf') || 'ctrl_profile.pdf';
-
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${fileName}"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="ctrl_profile.pdf"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
