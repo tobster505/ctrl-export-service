@@ -1,9 +1,9 @@
-// api/fill-template.js
+// ctrl-export-service/api/fill-template.js
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-/* ------------------------- helpers ------------------------- */
+/* ------------------------- small helpers ------------------------- */
 
 const S = (v, fb = '') => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => {
@@ -15,31 +15,25 @@ const norm = (v, fb = '') =>
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
-const alignFix = (a, fb = 'left') => {
-  const v = String(a || fb).toLowerCase();
-  return v === 'centre' ? 'center' : (['left','center','right'].includes(v) ? v : fb);
-};
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
-// y = distance from TOP of page (not bottom)
+// Wrap/align text into a box (y = distance from TOP, not bottom)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
     color = rgb(0, 0, 0), align = 'left',
   } = spec;
 
-  const maxLines = opts.maxLines ?? 1;
+  const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
   const clean = norm(text);
-  if (!clean) return { height: 0, linesDrawn: 0, lastY: 0 };
-
+  const lines = clean.split('\n');
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
-  const pieces = clean.split('\n');
   const wrapped = [];
 
-  for (const raw of pieces) {
+  for (const raw of lines) {
     let t = raw.trim();
     while (t.length > maxChars) {
       let cut = t.lastIndexOf(' ', maxChars);
@@ -49,6 +43,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     }
     if (t) wrapped.push(t);
   }
+
   const out = wrapped.length > maxLines
     ? wrapped.slice(0, maxLines).map((s, i, a) => (i === a.length - 1 && ellipsis ? s.replace(/\.*$/, '…') : s))
     : wrapped;
@@ -71,223 +66,207 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-function readSpec(url, prefix, dflt) {
-  const get = (k, fb) => url.searchParams.get(`${prefix}${k}`) ?? fb;
-  return {
-    x: N(get('x', dflt.x), dflt.x),
-    y: N(get('y', dflt.y), dflt.y),
-    w: N(get('w', dflt.w), dflt.w),
-    size: N(get('s', dflt.size), dflt.size),
-    align: alignFix(get('align', dflt.align), dflt.align),
-    color: dflt.color || rgb(0,0,0),
-    lineGap: dflt.lineGap ?? 3,
-  };
-}
+// Robust cover name picker (legacy-safe)
+const pickCoverName = (data, url) => norm(
+  (data?.person?.coverName) ??
+  data?.coverName ??
+  data?.person?.fullName ??
+  data?.fullName ??
+  data?.summary?.user?.reportCoverName ?? // legacy
+  data?.summary?.user?.fullName ??        // legacy
+  url?.searchParams?.get('cover') ??      // manual override
+  ''
+);
 
-const pickFlowLabel = (data, url) => {
-  const q = (url?.searchParams?.get('flow') || '').trim();
-  const v = q || data?.flowLabel || data?.summary?.flow?.label || 'Perspective';
-  const map = { perspective:'Perspective', observe:'Observe', reflective:'Reflective', reflection:'Reflective' };
-  return map[String(v).toLowerCase()] || v;
-};
-const pickFullName = (data, url) =>
-  norm(data?.person?.fullName ?? data?.fullName ?? data?.summary?.user?.fullName ?? url?.searchParams?.get('name') ?? '');
-const pickDateLbl = (data, url) => {
-  const q = (url?.searchParams?.get('date') || '').trim();
-  if (q) return q;
-  const from = data?.dateLbl || data?.summary?.flow?.dateLbl;
-  if (from) return from;
-  const now = new Date();
-  try {
-    const parts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Amsterdam', day:'2-digit', month:'2-digit', year:'numeric'
-    }).formatToParts(now);
-    const dd = parts.find(p => p.type === 'day').value;
-    const mm = Number(parts.find(p => p.type === 'month').value);
-    const yyyy = parts.find(p => p.type === 'year').value;
-    const MMM = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][Math.max(0, mm-1)];
-    return `${dd}/${MMM}/${yyyy}`;
-  } catch {
-    const dd = String(now.getUTCDate()).padStart(2,'0');
-    const MMM = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][now.getUTCMonth()];
-    const yyyy = now.getUTCFullYear();
-    return `${dd}/${MMM}/${yyyy}`;
-  }
-};
+// Template fetcher — now respects ?tpl= and defaults to V2
+async function fetchTemplate(req, url) {
+  const tplParam = url.searchParams.get('tpl');
+  const templateName = tplParam && tplParam.trim()
+    ? tplParam.trim()
+    : 'CTRL_Perspective_Assessment_Profile_templateV2.pdf'; // <-- default to V2
 
-/* ------------------------- template fetcher ------------------------- */
-
-async function fetchTemplate(req, urlObj) {
-  const url = urlObj instanceof URL ? urlObj : new URL(req?.url || '/', 'http://localhost');
-  const tplFile = url.searchParams.get('tpl') || 'CTRL_Perspective_Assessment_Profile_template.pdf';
   const h = (req && req.headers) || {};
-  const host  = String(h.host || 'ctrl-export-service.vercel.app');
-  const proto = String(h['x-forwarded-proto'] || 'https');
-  const full = new URL(`${proto}://${host}/${tplFile}`);
-  full.searchParams.set('v', Date.now().toString()); // cache-bust
-  const r = await fetch(full.toString(), { cache: 'no-store' });
-  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText} @ ${full.pathname}`);
-  return new Uint8Array(await r.arrayBuffer());
+  const host  = S(h.host, 'ctrl-export-service.vercel.app');
+  const proto = S(h['x-forwarded-proto'], 'https');
+
+  // IMPORTANT: use the exact filename under /public
+  const templateUrl = `${proto}://${host}/${encodeURI(templateName)}`;
+
+  const r = await fetch(templateUrl, { headers: { 'Cache-Control': 'no-cache' } });
+  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText} (${templateUrl})`);
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  return { bytes, templateName, templateUrl };
 }
 
-/* ----------------------------- handler ----------------------------- */
+// Quick query readers for tuner coords
+const qnum = (url, key, fb) => {
+  const s = url.searchParams.get(key);
+  if (s === null || s === '') return fb;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fb;
+};
+const qstr = (url, key, fb) => {
+  const v = url.searchParams.get(key);
+  return v == null || v === '' ? fb : v;
+};
 
 export default async function handler(req, res) {
+  // Parse URL safely
   let url;
   try { url = new URL(req?.url || '/', 'http://localhost'); }
   catch { url = new URL('/', 'http://localhost'); }
 
-  const isTest  = url.searchParams.get('test') === '1';
-  const preview = url.searchParams.get('preview') === '1';
-  const debug   = url.searchParams.get('debug') === '1';
+  const isTest   = url.searchParams.get('test') === '1';
+  const preview  = url.searchParams.get('preview') === '1';
+  const debug    = url.searchParams.get('debug') === '1';
 
-  let data;
+  // Minimal demo payload for test previewing
+  let data = null;
   if (isTest) {
     data = {
-      flowLabel: pickFlowLabel({}, url),
-      person: { fullName: 'Avery Example' },
-      dateLbl: pickDateLbl({}, url),
+      person: { coverName: 'Avery Example', fullName: 'Avery Example' },
+      flow: qstr(url, 'flow', 'Perspective'),
+      dateLbl: qstr(url, 'date', '02/SEP/2025'),
+      stateWord: 'Regulated',
+      how: 'Steady presence; keep clarity alive.',
     };
   } else {
+    // Expect ?data=<base64>
     const b64 = url.searchParams.get('data');
     if (!b64) { res.statusCode = 400; res.end('Missing ?data'); return; }
-    try { data = JSON.parse(Buffer.from(S(b64,''), 'base64').toString('utf8')); }
-    catch (e) { res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return; }
+    try {
+      const raw = Buffer.from(S(b64,''), 'base64').toString('utf8');
+      data = JSON.parse(raw);
+    } catch (e) {
+      res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
+    }
   }
 
-  const flowLabel = pickFlowLabel(data, url);
-  const fullName  = pickFullName(data, url);
-  const dateLbl   = pickDateLbl(data, url);
+  // Resolve the template (default V2 or ?tpl= override)
+  let tpl;
+  try {
+    tpl = await fetchTemplate(req, url);
+  } catch (e) {
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'text/plain');
+    res.end('Template load error: ' + (e?.message || e));
+    return;
+  }
 
-  /* ---- coordinate defaults (YOUR EXACT SET) ---- */
-  const DEFAULTS = {
-    // Page 1
-    f1: { x:140, y:573, w:600, size:32, align:'left'   }, // PathName
-    n1: { x:205, y:165, w:400, size:40, align:'center' }, // FullName
-    d1: { x:120, y:630, w:500, size:25, align:'left'   }, // Date
-
-    // Page 2
-    f2: { x:400, y:64, w:800, size:12, align:'left'    },
-    n2: { x:35,  y:64, w:400, size:13, align:'center'  },
-
-    // Page 3
-    f3: { x:400, y:64, w:800, size:12, align:'left'    },
-    n3: { x:35,  y:64, w:400, size:13, align:'center'  },
-
-    // Page 4
-    f4: { x:400, y:64, w:800, size:12, align:'left'    },
-    n4: { x:35,  y:64, w:400, size:13, align:'center'  },
-
-    // Page 5
-    f5: { x:400, y:64, w:800, size:12, align:'left'    },
-    n5: { x:35,  y:64, w:400, size:13, align:'center'  },
-
-    // Page 6
-    f6: { x:400, y:64, w:800, size:12, align:'left'    },
-    n6: { x:35,  y:64, w:400, size:13, align:'center'  },
-
-    // Page 7
-    f7: { x:400, y:64, w:800, size:12, align:'left'    },
-    n7: { x:35,  y:64, w:400, size:13, align:'center'  },
-  };
-
-  // Read tuners (so you can keep tweaking via URL)
-  const POS = {
-    f1: readSpec(url, 'f1', DEFAULTS.f1),
-    n1: readSpec(url, 'n1', DEFAULTS.n1),
-    d1: readSpec(url, 'd1', DEFAULTS.d1),
-    f2: readSpec(url, 'f2', DEFAULTS.f2),
-    n2: readSpec(url, 'n2', DEFAULTS.n2),
-    f3: readSpec(url, 'f3', DEFAULTS.f3),
-    n3: readSpec(url, 'n3', DEFAULTS.n3),
-    f4: readSpec(url, 'f4', DEFAULTS.f4),
-    n4: readSpec(url, 'n4', DEFAULTS.n4),
-    f5: readSpec(url, 'f5', DEFAULTS.f5),
-    n5: readSpec(url, 'n5', DEFAULTS.n5),
-    f6: readSpec(url, 'f6', DEFAULTS.f6),
-    n6: readSpec(url, 'n6', DEFAULTS.n6),
-    f7: readSpec(url, 'f7', DEFAULTS.f7),
-    n7: readSpec(url, 'n7', DEFAULTS.n7),
-  };
-
-  // Allow remapping which physical template page each logical page targets
-  const MAP = {
-    p1: N(url.searchParams.get('p1'), 1),
-    p2: N(url.searchParams.get('p2'), 2),
-    p3: N(url.searchParams.get('p3'), 3),
-    p4: N(url.searchParams.get('p4'), 4),
-    p5: N(url.searchParams.get('p5'), 5),
-    p6: N(url.searchParams.get('p6'), 6),
-    p7: N(url.searchParams.get('p7'), 7),
-  };
-
+  // Optional JSON debug (to confirm which template is in play)
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({
       ok: true,
-      usingTemplate: url.searchParams.get('tpl') || 'CTRL_Perspective_Assessment_Profile_template.pdf',
-      map: MAP,
-      pos: POS,
-      values: { flowLabel, fullName, dateLbl },
-      hint: 'Use ?tpl=filename.pdf to force a specific template, &p1..p7 to remap pages.',
+      usingTemplate: tpl.templateName,
+      templateUrl: tpl.templateUrl,
+      urlParams: Object.fromEntries(url.searchParams.entries()),
+      sampleName: pickCoverName(data, url),
+      sampleFlow: data?.flow || 'Perspective',
+      sampleDateLbl: data?.dateLbl || ''
     }, null, 2));
     return;
   }
 
   try {
-    const tplBytes = await fetchTemplate(req, url);
-    const pdf = await PDFDocument.load(tplBytes);
-    const pageCount = pdf.getPageCount();
-    const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
-    const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
+    // Load the template PDF
+    const pdf = await PDFDocument.load(tpl.bytes);
 
-    const getPage = (n1based) => {
-      const idx0 = n1based - 1;
-      if (idx0 < 0 || idx0 >= pageCount) return null;
-      return pdf.getPage(idx0);
+    // Safely get pages even if the design changes
+    const pages = pdf.getPages();
+    const get = (idx) => {
+      if (idx < 0 || idx >= pages.length) throw new Error('Page index out of range for current template.');
+      return pages[idx];
     };
 
+    // Coords (TUNERS) — bare minimum for “back to basics”
+    // Page 1 top path name & full name & date
+    const POS = {
+      // Page 1: path name (label)
+      p1_flow: {
+        x: qnum(url, 'f1x', 140),
+        y: qnum(url, 'f1y', 573),
+        w: qnum(url, 'f1w', 600),
+        size: qnum(url, 'f1s', 32),
+        align: qstr(url, 'f1align', 'left'),
+        color: rgb(0.12, 0.11, 0.2),
+      },
+      // Page 1: full name
+      p1_name: {
+        x: qnum(url, 'n1x', 205),
+        y: qnum(url, 'n1y', 165),
+        w: qnum(url, 'n1w', 400),
+        size: qnum(url, 'n1s', 40),
+        align: qstr(url, 'n1align', 'center'),
+        color: rgb(0.12, 0.11, 0.2),
+      },
+      // Page 1: date
+      p1_date: {
+        x: qnum(url, 'd1x', 120),
+        y: qnum(url, 'd1y', 630),
+        w: qnum(url, 'd1w', 500),
+        size: qnum(url, 'd1s', 25),
+        align: qstr(url, 'd1align', 'left'),
+        color: rgb(0.24, 0.23, 0.35),
+      },
+
+      // Repeaters for pages 2..7 (flow + name) — keep simple for now
+      p2_flow: { x: qnum(url,'f2x',400), y:qnum(url,'f2y',64), w:qnum(url,'f2w',800), size:qnum(url,'f2s',12), align:qstr(url,'f2align','left'), color: rgb(0.12,0.11,0.2) },
+      p2_name: { x: qnum(url,'n2x',35),  y:qnum(url,'n2y',64),  w:qnum(url,'n2w',400), size:qnum(url,'n2s',13), align:qstr(url,'n2align','center'), color: rgb(0.12,0.11,0.2) },
+
+      p3_flow: { x: qnum(url,'f3x',400), y:qnum(url,'f3y',64), w:qnum(url,'f3w',800), size:qnum(url,'f3s',12), align:qstr(url,'f3align','left'), color: rgb(0.12,0.11,0.2) },
+      p3_name: { x: qnum(url,'n3x',35),  y:qnum(url,'n3y',64),  w:qnum(url,'n3w',400), size:qnum(url,'n3s',13), align:qstr(url,'n3align','center'), color: rgb(0.12,0.11,0.2) },
+
+      p4_flow: { x: qnum(url,'f4x',400), y:qnum(url,'f4y',64), w:qnum(url,'f4w',800), size:qnum(url,'f4s',12), align:qstr(url,'f4align','left'), color: rgb(0.12,0.11,0.2) },
+      p4_name: { x: qnum(url,'n4x',35),  y:qnum(url,'n4y',64),  w:qnum(url,'n4w',400), size:qnum(url,'n4s',13), align:qstr(url,'n4align','center'), color: rgb(0.12,0.11,0.2) },
+
+      p5_flow: { x: qnum(url,'f5x',400), y:qnum(url,'f5y',64), w:qnum(url,'f5w',800), size:qnum(url,'f5s',12), align:qstr(url,'f5align','left'), color: rgb(0.12,0.11,0.2) },
+      p5_name: { x: qnum(url,'n5x',35),  y:qnum(url,'n5y',64),  w:qnum(url,'n5w',400), size:qnum(url,'n5s',13), align:qstr(url,'n5align','center'), color: rgb(0.12,0.11,0.2) },
+
+      p6_flow: { x: qnum(url,'f6x',400), y:qnum(url,'f6y',64), w:qnum(url,'f6w',800), size:qnum(url,'f6s',12), align:qstr(url,'f6align','left'), color: rgb(0.12,0.11,0.2) },
+      p6_name: { x: qnum(url,'n6x',35),  y:qnum(url,'n6y',64),  w:qnum(url,'n6w',400), size:qnum(url,'n6s',13), align:qstr(url,'n6align','center'), color: rgb(0.12,0.11,0.2) },
+
+      p7_flow: { x: qnum(url,'f7x',400), y:qnum(url,'f7y',64), w:qnum(url,'f7w',800), size:qnum(url,'f7s',12), align:qstr(url,'f7align','left'), color: rgb(0.12,0.11,0.2) },
+      p7_name: { x: qnum(url,'n7x',35),  y:qnum(url,'n7y',64),  w:qnum(url,'n7w',400), size:qnum(url,'n7s',13), align:qstr(url,'n7align','center'), color: rgb(0.12,0.11,0.2) },
+    };
+
+    // Fonts
+    const Helv = await pdf.embedFont(StandardFonts.Helvetica);
+    const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+    const flowLabel = norm(data?.flow || 'Perspective');
+    const fullName  = pickCoverName(data, url) || norm(data?.person?.fullName || '');
+    const dateLbl   = norm(data?.dateLbl || '');
+
+    // PAGE MAPPING (assume V2 is at least 7 pages; adjust if needed)
+    const P1 = get(0), P2 = get(1), P3 = get(2), P4 = get(3), P5 = get(4), P6 = get(5), P7 = get(6);
+
     // Page 1
-    const p1 = getPage(MAP.p1); if (p1) {
-      drawTextBox(p1, HelvB, flowLabel, POS.f1, { maxLines: 1, ellipsis: true });
-      drawTextBox(p1, HelvB, fullName,  POS.n1, { maxLines: 1, ellipsis: true });
-      drawTextBox(p1, Helv,  dateLbl,   POS.d1, { maxLines: 1, ellipsis: true });
-    }
-    // Page 2
-    const p2 = getPage(MAP.p2); if (p2) {
-      drawTextBox(p2, HelvB, flowLabel, POS.f2, { maxLines: 1, ellipsis: true });
-      drawTextBox(p2, Helv,  fullName,  POS.n2, { maxLines: 1, ellipsis: true });
-    }
-    // Page 3
-    const p3 = getPage(MAP.p3); if (p3) {
-      drawTextBox(p3, HelvB, flowLabel, POS.f3, { maxLines: 1, ellipsis: true });
-      drawTextBox(p3, Helv,  fullName,  POS.n3, { maxLines: 1, ellipsis: true });
-    }
-    // Page 4
-    const p4 = getPage(MAP.p4); if (p4) {
-      drawTextBox(p4, HelvB, flowLabel, POS.f4, { maxLines: 1, ellipsis: true });
-      drawTextBox(p4, Helv,  fullName,  POS.n4, { maxLines: 1, ellipsis: true });
-    }
-    // Page 5
-    const p5 = getPage(MAP.p5); if (p5) {
-      drawTextBox(p5, HelvB, flowLabel, POS.f5, { maxLines: 1, ellipsis: true });
-      drawTextBox(p5, Helv,  fullName,  POS.n5, { maxLines: 1, ellipsis: true });
-    }
-    // Page 6
-    const p6 = getPage(MAP.p6); if (p6) {
-      drawTextBox(p6, HelvB, flowLabel, POS.f6, { maxLines: 1, ellipsis: true });
-      drawTextBox(p6, Helv,  fullName,  POS.n6, { maxLines: 1, ellipsis: true });
-    }
-    // Page 7
-    const p7 = getPage(MAP.p7); if (p7) {
-      drawTextBox(p7, HelvB, flowLabel, POS.f7, { maxLines: 1, ellipsis: true });
-      drawTextBox(p7, Helv,  fullName,  POS.n7, { maxLines: 1, ellipsis: true });
+    if (flowLabel) drawTextBox(P1, HelvB, flowLabel, POS.p1_flow, { maxLines: 1, ellipsis: true });
+    if (fullName)  drawTextBox(P1, HelvB, fullName,  POS.p1_name, { maxLines: 1, ellipsis: true });
+    if (dateLbl)   drawTextBox(P1, Helv,  dateLbl,   POS.p1_date, { maxLines: 1, ellipsis: true });
+
+    // Pages 2..7 — simple header/footer chips (flow + name)
+    const pairs = [
+      [P2, POS.p2_flow, POS.p2_name],
+      [P3, POS.p3_flow, POS.p3_name],
+      [P4, POS.p4_flow, POS.p4_name],
+      [P5, POS.p5_flow, POS.p5_name],
+      [P6, POS.p6_flow, POS.p6_name],
+      [P7, POS.p7_flow, POS.p7_name],
+    ];
+    for (const [pg, pf, pn] of pairs) {
+      if (flowLabel) drawTextBox(pg, HelvB, flowLabel, pf, { maxLines: 1, ellipsis: true });
+      if (fullName)  drawTextBox(pg, Helv,  fullName,  pn, { maxLines: 1, ellipsis: true });
     }
 
+    // Output PDF
     const bytes = await pdf.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="CTRL_Perspective_profile.pdf"`);
+    res.setHeader('Cache-Control', 'no-store'); // prevent stale caching of API response
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="ctrl_profile.pdf"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
