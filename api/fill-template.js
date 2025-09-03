@@ -128,7 +128,6 @@ export default async function handler(req, res) {
   const isTest  = url.searchParams.get('test') === '1';
   const preview = url.searchParams.get('preview') === '1';
   const debug   = url.searchParams.get('debug') === '1';
-  const flow    = normPathLabel(url.searchParams.get('flow') || 'Perspective');
 
   // --- Demo payload for quick layout testing ---
   let data;
@@ -168,7 +167,10 @@ export default async function handler(req, res) {
       ],
       p7ThemeNarr: 'You combine even-handedness with presence. When pressure rises, you calm, then guide.',
       tips2: ['Name the gear you are in (“steadying”) aloud.', 'Add a one-line intent before you act.'],
-      actions2: ['Schedule a 10-min post-meeting debrief to check impact.', 'Try a micro-pause before each hard response.']
+      actions2: ['Schedule a 10-min post-meeting debrief to check impact.', 'Try a micro-pause before each hard response.'],
+      dateLbl: '03/SEP/2025',
+      flow: 'Perspective',
+      name: 'ctrl_profile_demo.pdf'
     };
   } else {
     const b64 = url.searchParams.get('data');
@@ -180,6 +182,9 @@ export default async function handler(req, res) {
       res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
     }
   }
+
+  // Flow final (prefer payload.flow, fallback to URL ?flow)
+  const flow = normPathLabel(data?.flow || url.searchParams.get('flow') || 'Perspective');
 
   /* --------------------- DEFAULT (LOCKED) POSITIONS --------------------- */
   const POS = {
@@ -338,14 +343,19 @@ export default async function handler(req, res) {
     const fullName = data?.person?.fullName || coverName || '';
     const pathName = flow;
 
+    // Date: prefer data.dateLbl, then ?dateLbl or ?date, else today
+    const dateFromData = norm(data?.dateLbl || '');
+    const dateFromUrl  = norm(url.searchParams.get('dateLbl') || url.searchParams.get('date') || '');
+    let dateLbl = dateFromData || dateFromUrl;
+    if (!dateLbl) {
+      const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+      const now = new Date();
+      dateLbl = `${String(now.getDate()).padStart(2,'0')}/${MMM[now.getMonth()]}/${now.getFullYear()}`;
+    }
+
     drawTextBox(page1, HelvB, pathName, { x: POS.f1.x, y: POS.f1.y, w: POS.f1.w, size: POS.f1.size, align: POS.f1.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, HelvB, fullName, { x: POS.n1.x, y: POS.n1.y, w: POS.n1.w, size: POS.n1.size, align: POS.n1.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-
-    // Date in DD/MMM/YYYY (AMS not required here; we print current date)
-    const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-    const now = new Date();
-    const lbl = `${String(now.getDate()).padStart(2,'0')}/${MMM[now.getMonth()]}/${now.getFullYear()}`;
-    drawTextBox(page1, Helv, lbl, { x: POS.d1.x, y: POS.d1.y, w: POS.d1.w, size: POS.d1.size, align: POS.d1.align, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, Helv,  dateLbl,  { x: POS.d1.x, y: POS.d1.y, w: POS.d1.w, size: POS.d1.size, align: POS.d1.align, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
     /* -------------------- FOOTERS: pages 2..8 (small) ------------------- */
     const drawFooter = (page, fSpec, nSpec) => {
@@ -362,9 +372,23 @@ export default async function handler(req, res) {
     drawFooter(p8, POS.footer.f8, POS.footer.n8);
 
     /* -------------------------- PAGE 6 content -------------------------- */
-    const domLabel = norm(data?.stateWord || (Array.isArray(data?.stateWords) && data.stateWords[0]) || '');
-    const domDesc  = norm(data?.dominantDesc || '');
-    const how6Text = norm(data?.how6 || data?.howChart || data?.how || '');
+    // Flexible keys (primary Botpress names first, then fallbacks)
+    const domLabel = norm(
+      data?.stateWord ||
+      data?.dom6Label ||                                      // fallback
+      (Array.isArray(data?.stateWords) && data.stateWords[0]) ||
+      ''
+    );
+    const domDesc  = norm(
+      data?.dominantDesc ||
+      data?.dom6Desc ||                                       // fallback
+      ''
+    );
+    const how6Text = norm(
+      data?.how6 ||
+      data?.how6Text ||                                       // fallback
+      data?.howChart || data?.how || ''
+    );
 
     if (domLabel) drawTextBox(page6, HelvB, domLabel, { x: POS.dom6.x, y: POS.dom6.y, w: POS.dom6.w, size: POS.dom6.size, align: POS.dom6.align, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { x: POS.dom6desc.x, y: POS.dom6desc.y, w: POS.dom6desc.w, size: POS.dom6desc.size, align: POS.dom6desc.align, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
@@ -384,11 +408,14 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 7 content -------------------------- */
-    // Left: 3 blocks (shape+coverage, missing state, themes) from data.p7Blocks
-    const blocks = Array.isArray(data?.p7Blocks)
-      ? data.p7Blocks.map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
-                     .filter(b => b.title || b.body).slice(0, 3)
-      : [];
+    // Left: 3 blocks (shape+coverage, missing state, themes)
+    const blocksSrc = Array.isArray(data?.p7Blocks) ? data.p7Blocks
+                    : Array.isArray(data?.page7Blocks) ? data.page7Blocks // fallback
+                    : [];
+    const blocks = blocksSrc
+      .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
+      .filter(b => b.title || b.body)
+      .slice(0, 3);
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
@@ -410,7 +437,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Theme paragraph (page 7 right/above)
+    // Theme paragraph (page 7)
     const themeNarr7 = norm(
       (typeof data?.p7ThemeNarr === 'string' && data.p7ThemeNarr) ||
       (typeof data?.themeNarrative === 'string' && data.themeNarrative) || ''
@@ -424,7 +451,10 @@ export default async function handler(req, res) {
     }
 
     // Tips (top 2)
-    const tips2 = Array.isArray(data?.tips2) ? data.tips2.map(t => `• ${norm(t)}`).join('\n') : '';
+    const tipsArr = Array.isArray(data?.tips2) ? data.tips2
+                  : Array.isArray(data?.tipsTop2) ? data.tipsTop2 // fallback
+                  : [];
+    const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join('\n') : '';
     if (tips2) {
       drawTextBox(
         page7, Helv, tips2,
@@ -434,7 +464,10 @@ export default async function handler(req, res) {
     }
 
     // Actions (top 2)
-    const acts2 = Array.isArray(data?.actions2) ? data.actions2.map(t => `• ${norm(t)}`).join('\n') : '';
+    const actsArr = Array.isArray(data?.actions2) ? data.actions2
+                  : Array.isArray(data?.actionsTop2) ? data.actionsTop2 // fallback
+                  : [];
+    const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join('\n') : '';
     if (acts2) {
       drawTextBox(
         page7, Helv, acts2,
@@ -445,9 +478,12 @@ export default async function handler(req, res) {
 
     // Save
     const bytes = await pdf.save();
+    const fileName =
+      norm(url.searchParams.get('name') || data?.name || 'ctrl_profile.pdf') || 'ctrl_profile.pdf';
+
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="ctrl_profile.pdf"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${fileName}"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
