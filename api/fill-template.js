@@ -1,10 +1,15 @@
+// api/fill-template.js
 export const config = { runtime: 'nodejs' };
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-/* ------------------------- small helpers ------------------------- */
+/* ------------------------- helpers ------------------------- */
 
 const S = (v, fb = '') => (v == null ? String(fb) : String(v));
+const N = (v, fb = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fb;
+};
 const norm = (v, fb = '') =>
   S(v, fb)
     .replace(/[\u2018\u2019]/g, "'")
@@ -12,7 +17,12 @@ const norm = (v, fb = '') =>
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ''); // strip odd control chars
 
-// Wrap/align text into a box (y = distance from top, not bottom)
+function alignFix(v) {
+  const a = String(v || '').toLowerCase();
+  return a === 'centre' ? 'center' : (a || 'left');
+}
+
+// y = distance from TOP (we convert internally)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -52,8 +62,9 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   let drawn = 0;
   for (const line of out) {
     let xDraw = x;
-    if (align === 'center') xDraw = x + (w - widthOf(line)) / 2;
-    else if (align === 'right') xDraw = x + (w - widthOf(line));
+    const al = alignFix(align);
+    if (al === 'center') xDraw = x + (w - widthOf(line)) / 2;
+    else if (al === 'right') xDraw = x + (w - widthOf(line));
     page.drawText(line, { x: xDraw, y: yCursor, size, font, color });
     yCursor -= lineH;
     drawn++;
@@ -65,15 +76,13 @@ async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, 'ctrl-export-service.vercel.app');
   const proto = S(h['x-forwarded-proto'], 'https');
-  // NEW: allow ?tpl=… override, default to V3
-  const tplName = url?.searchParams?.get('tpl') || 'CTRL_Perspective_Assessment_Profile_templateV3.pdf';
-  const full = `${proto}://${host}/${tplName}`;
+  const tpl   = url?.searchParams?.get('tpl') || 'CTRL_Perspective_Assessment_Profile_templateV3.pdf';
+  const full  = `${proto}://${host}/${tpl}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// Tuners: missing params fall back to defaults (not zero)
 function qnum(url, key, fb) {
   const s = url.searchParams.get(key);
   if (s === null || s === '') return fb;
@@ -85,15 +94,14 @@ function qstr(url, key, fb) {
   return v == null || v === '' ? fb : v;
 }
 
-// Robustly choose a cover name (with legacy + URL override support)
 const pickCoverName = (data, url) => norm(
   (data?.person?.coverName) ??
   data?.coverName ??
   data?.person?.fullName ??
   data?.fullName ??
-  data?.summary?.user?.reportCoverName ?? // legacy
-  data?.summary?.user?.fullName ??        // legacy
-  url?.searchParams?.get('cover') ??      // manual override for quick tests
+  data?.summary?.user?.reportCoverName ??
+  data?.summary?.user?.fullName ??
+  url?.searchParams?.get('cover') ??
   ''
 );
 
@@ -105,48 +113,43 @@ export default async function handler(req, res) {
   try { url = new URL(req?.url || '/', 'http://localhost'); }
   catch { url = new URL('/', 'http://localhost'); }
 
-  const isTest   = url.searchParams.get('test') === '1';
-  const preview  = url.searchParams.get('preview') === '1';
-  const debug    = url.searchParams.get('debug') === '1';
-  const flow     = (url.searchParams.get('flow') || '').trim() || 'Perspective';
+  const isTest  = url.searchParams.get('test') === '1';
+  const preview = url.searchParams.get('preview') === '1';
+  const debug   = url.searchParams.get('debug') === '1';
 
-  // ---- Demo payload (test=1) ----
+  // ---- Demo payload (so you can tune coords quickly) ----
   let data;
   if (isTest) {
     data = {
-      person:   { coverName: 'Avery Example', fullName: 'Avery Example', preferredName: 'Avery', initials: 'AE' },
+      flow: qstr(url, 'flow', 'Perspective'),
+      person: { fullName: 'Avery Example', coverName: 'Avery Example', preferredName: 'Avery' },
+      coverName: 'Avery Example',
       stateWord: 'Regulated',
-      dominantParagraph: 'You connect the most with Mika - measured, fair, steady under pressure.',
-      chartUrl: 'https://quickchart.io/chart?v=4&c=' + encodeURIComponent(JSON.stringify({
-        type: 'radar',
-        data: { labels: ['Concealed','Triggered','Regulated','Lead'],
-          datasets:[{
-            label:'Frequency', data:[0,2,3,0], fill:true,
-            backgroundColor:'rgba(115,72,199,0.18)',
-            borderColor:'#7348C7', borderWidth:2,
-            pointRadius:[0,3,6,0], pointHoverRadius:[0,4,7,0],
-            pointBackgroundColor:['#9D7BE0','#9D7BE0','#7348C7','#9D7BE0'],
-            pointBorderColor:    ['#9D7BE0','#9D7BE0','#7348C7','#9D7BE0'],
-          }]
-        },
-        options:{
-          plugins:{ legend:{ display:false } },
-          scales:{ r:{
-            min:0,max:5,
-            ticks:{ display:true, stepSize:1, backdropColor:'rgba(0,0,0,0)' },
-            grid:{ circular:true }, angleLines:{ display:true },
-            pointLabels:{ color:'#4A4458', font:{ size:12 } }
-          } }
-        }
-      })),
-      // Page-6 text sources
-      chartParagraph: 'A clear Regulated centre runs through your responses. You prefer steadiness, balance and reflection before you act. You take time to consider what is happening, which helps you respond fairly and with proportion. …',
-      page6Blocks: [
-        { title:'How the pattern moved', body:'(will be replaced by chartParagraph in code)' },
-        { title:'Range & gaps', body:'You touched Triggered and Regulated most; Concealed and Lead were less visible this time.' },
+      how: 'You connect the most with Mika - measured, fair, steady under pressure.',
+      chartUrl:
+        'https://quickchart.io/chart?v=4&c=' +
+        encodeURIComponent(JSON.stringify({
+          type: 'radar',
+          data: {
+            labels: ['Concealed','Triggered','Regulated','Lead'],
+            datasets:[{
+              label:'Frequency', data:[0,2,3,0], fill:true,
+              backgroundColor:'rgba(115,72,199,0.18)',
+              borderColor:'#7348C7', borderWidth:2,
+              pointRadius:[0,3,6,0], pointHoverRadius:[0,4,7,0]
+            }]
+          },
+          options:{ plugins:{ legend:{ display:false } }, scales:{ r:{ min:0,max:5 } } }
+        })),
+      // Page 6 content (moved here)
+      dominantLabel: 'Regulated',
+      dominantDesc: 'You connect the most with Mika — measured, fair and steady under pressure.',
+      page6Patterns: [
+        { title: 'How the pattern moved', body: 'A clear Regulated centre runs through your responses. You prefer steadiness, balance and reflection before you act.' },
+        { title: 'Range & gaps', body: 'You touched Triggered and Regulated most; Concealed and Lead were less visible this time.' }
       ],
-      page6ThemeNarrative: 'Emotion regulation with Feedback handling and Awareness of impact shaped how you responded.',
-      flowLabel: flow
+      themeNarrative: 'Emotion regulation with Feedback handling and Awareness of impact shaped how you responded.',
+      dateLbl: null // allow server to render date if needed elsewhere
     };
   } else {
     const b64 = url.searchParams.get('data');
@@ -157,207 +160,199 @@ export default async function handler(req, res) {
     } catch (e) {
       res.statusCode = 400; res.end('Invalid ?data: ' + (e?.message || e)); return;
     }
-    data.flowLabel = data.flowLabel || flow;
   }
 
-  /* ---- COORDS ---- */
+  const flowLabel = norm(data?.flow || 'Perspective');
+  const fullName  = norm(data?.person?.fullName || data?.fullName || pickCoverName(data, url) || '');
+  const coverName = pickCoverName(data, url);
+
+  /* ---------- DEFAULT COORDS (locked to your values) ---------- */
   const POS = {
-    // PAGE 1 header items
-    f1: { x:290, y:170, w:400, size:40, align:'left' },   // Full name
-    n1: { x:10,  y:573, w:500, size:30, align:'center' }, // Path name
-    d1: { x:130, y:630, w:500, size:20, align:'left' },   // Date (DD/MMM/YYYY)
+    // Page 1 top trio
+    f1: { x:290, y:170, w:400, s:40, align:'left' },
+    n1: { x:10,  y:573, w:500, s:30, align:'center' },
+    d1: { x:130, y:630, w:500, s:20, align:'left' },
 
-    // Footer-ish title line (name/path) on pages 2..8
-    f2: { x:200, y:64, w:400, size:13, align:'left' },
-    n2: { x:250, y:64, w:400, size:12, align:'center' },
-    f3: { x:200, y:64, w:400, size:13, align:'left' },
-    n3: { x:250, y:64, w:400, size:12, align:'center' },
-    f4: { x:200, y:64, w:400, size:13, align:'left' },
-    n4: { x:250, y:64, w:400, size:12, align:'center' },
-    f5: { x:200, y:64, w:400, size:13, align:'left' },
-    n5: { x:250, y:64, w:400, size:12, align:'center' },
-    f6: { x:200, y:64, w:400, size:13, align:'left' },
-    n6: { x:250, y:64, w:400, size:12, align:'center' },
-    f7: { x:200, y:64, w:400, size:13, align:'left' },
-    n7: { x:250, y:64, w:400, size:12, align:'center' },
-    f8: { x:200, y:64, w:400, size:13, align:'left' },
-    n8: { x:250, y:64, w:400, size:12, align:'center' },
+    // Pages 2..8 flow+name bars
+    f2: { x:200, y:64, w:400, s:13, align:'left' }, n2: { x:250, y:64, w:400, s:12, align:'center' },
+    f3: { x:200, y:64, w:400, s:13, align:'left' }, n3: { x:250, y:64, w:400, s:12, align:'center' },
+    f4: { x:200, y:64, w:400, s:13, align:'left' }, n4: { x:250, y:64, w:400, s:12, align:'center' },
+    f5: { x:200, y:64, w:400, s:13, align:'left' }, n5: { x:250, y:64, w:400, s:12, align:'center' },
+    f6: { x:200, y:64, w:400, s:13, align:'left' }, n6: { x:250, y:64, w:400, s:12, align:'center' },
+    f7: { x:200, y:64, w:400, s:13, align:'left' }, n7: { x:250, y:64, w:400, s:12, align:'center' },
+    f8: { x:200, y:64, w:400, s:13, align:'left' }, n8: { x:250, y:64, w:400, s:12, align:'center' },
 
-    // PAGE 6 specific
-    dom6:     { x:55,  y:280, w:900, size:33, align:'left' },  // Dominant state word
-    dom6desc: { x:40,  y:380, w:250, size:15, align:'left', max:8 }, // Character blurb
-    // how6 REMOVED (no longer drawn)
-    chart6:   { x:203, y:230, w:420, h:220 },             // Spider chart
-
-    // Page 6 left blocks (“How this shows up is…”) — we keep two blocks
-    p6p: { x:120, y:520, w:1260, hSize:14, bSize:20, align:'left', titleGap:6, blockGap:20, maxBodyLines:6 },
-    // Page 6 right narrative (themes)
-    p6t: { x:1280, y:620, w:630, size:30, lineGap:4, align:'left', maxLines:14 },
+    // Page 6 (snapshot)
+    dom6:   { x:55,  y:280, w:900, s:33, align:'left' },      // Dominant label (e.g., Regulated)
+    dom6d:  { x:40,  y:380, w:250, s:15, align:'left', max:8 }, // Character / description
+    chart6: { x:203, y:230, w:420, h:220 },                   // Radar chart
+    p6p:    { x:120, y:520, w:1260, hsize:14, bsize:20, align:'left', titleGap:6, blockGap:20, maxBody:6 }, // left blocks
+    p6t:    { x:1280,y:620, w:630,  s:30,  align:'left', max:14 }, // right narrative
   };
 
-  // Allow URL tuning for everything above
-  const apply = (base, prefix) => ({
-    ...base,
-    x: qnum(url, `${prefix}x`, base.x),
-    y: qnum(url, `${prefix}y`, base.y),
-    w: qnum(url, `${prefix}w`, base.w),
-    size: qnum(url, `${prefix}s`, base.size),
-    align: qstr(url, `${prefix}align`, base.align),
-  });
-  const applyBlock = (base, prefix) => ({
-    ...base,
-    x: qnum(url, `${prefix}x`, base.x),
-    y: qnum(url, `${prefix}y`, base.y),
-    w: qnum(url, `${prefix}w`, base.w),
-    hSize: qnum(url, `${prefix}hsize`, base.hSize),
-    bSize: qnum(url, `${prefix}bsize`, base.bSize),
-    align: qstr(url, `${prefix}align`, base.align),
-    titleGap: qnum(url, `${prefix}titlegap`, base.titleGap),
-    blockGap: qnum(url, `${prefix}blockgap`, base.blockGap),
-    maxBodyLines: qnum(url, `${prefix}max`, base.maxBodyLines),
-  });
-  const applyChart = (base, prefix) => ({
-    ...base,
-    x: qnum(url, `${prefix}x`, base.x),
-    y: qnum(url, `${prefix}y`, base.y),
-    w: qnum(url, `${prefix}w`, base.w),
-    h: qnum(url, `${prefix}h`, base.h),
-  });
-
-  POS.f1 = apply(POS.f1,'f1'); POS.n1 = apply(POS.n1,'n1'); POS.d1 = apply(POS.d1,'d1');
-  for (let i=2;i<=8;i++){ POS[`f${i}`]=apply(POS[`f${i}`],`f${i}`); POS[`n${i}`]=apply(POS[`n${i}`],`n${i}`); }
-  POS.dom6 = apply(POS.dom6,'dom6');
-  POS.dom6desc = {
-    ...POS.dom6desc,
-    x: qnum(url,'dom6descx', POS.dom6desc.x),
-    y: qnum(url,'dom6descy', POS.dom6desc.y),
-    w: qnum(url,'dom6descw', POS.dom6desc.w),
-    size: qnum(url,'dom6descs', POS.dom6desc.size),
-    align: qstr(url,'dom6descalign', POS.dom6desc.align),
-    max: qnum(url,'dom6descmax', POS.dom6desc.max),
+  // Allow tuning via URL (kept simple)
+  for (let i=1;i<=8;i++){
+    ['f','n'].forEach(k=>{
+      const base = POS[`${k}${i}`];
+      POS[`${k}${i}`] = {
+        x: qnum(url, `${k}${i}x`, base.x),
+        y: qnum(url, `${k}${i}y`, base.y),
+        w: qnum(url, `${k}${i}w`, base.w),
+        s: qnum(url, `${k}${i}s`, base.s),
+        align: qstr(url, `${k}${i}align`, base.align),
+      };
+    });
+  }
+  POS.d1 = {
+    x: qnum(url,'d1x',POS.d1.x), y: qnum(url,'d1y',POS.d1.y),
+    w: qnum(url,'d1w',POS.d1.w), s: qnum(url,'d1s',POS.d1.s),
+    align: qstr(url,'d1align',POS.d1.align),
   };
-  POS.chart6 = applyChart(POS.chart6,'c6');
-  POS.p6p = applyBlock(POS.p6p,'p6p');
+  POS.dom6 = {
+    x:qnum(url,'dom6x',POS.dom6.x), y:qnum(url,'dom6y',POS.dom6.y),
+    w:qnum(url,'dom6w',POS.dom6.w), s:qnum(url,'dom6s',POS.dom6.s),
+    align:qstr(url,'dom6align',POS.dom6.align),
+  };
+  POS.dom6d = {
+    x:qnum(url,'dom6descx',POS.dom6d.x), y:qnum(url,'dom6descy',POS.dom6d.y),
+    w:qnum(url,'dom6descw',POS.dom6d.w), s:qnum(url,'dom6descs',POS.dom6d.s),
+    align:qstr(url,'dom6descalign',POS.dom6d.align),
+    max:qnum(url,'dom6descmax',POS.dom6d.max),
+  };
+  POS.chart6 = {
+    x:qnum(url,'c6x',POS.chart6.x), y:qnum(url,'c6y',POS.chart6.y),
+    w:qnum(url,'c6w',POS.chart6.w), h:qnum(url,'c6h',POS.chart6.h),
+  };
+  POS.p6p = {
+    x:qnum(url,'p6px',POS.p6p.x), y:qnum(url,'p6py',POS.p6p.y), w:qnum(url,'p6pw',POS.p6p.w),
+    hsize:qnum(url,'p6phsize',POS.p6p.hsize), bsize:qnum(url,'p6pbsize',POS.p6p.bsize),
+    align:qstr(url,'p6palign',POS.p6p.align), titleGap:qnum(url,'p6ptitlegap',POS.p6p.titleGap),
+    blockGap:qnum(url,'p6pblockgap',POS.p6p.blockGap), maxBody:qnum(url,'p6pmax',POS.p6p.maxBody),
+  };
   POS.p6t = {
-    ...POS.p6t,
-    x: qnum(url,'p6tx',POS.p6t.x), y: qnum(url,'p6ty',POS.p6t.y), w: qnum(url,'p6tw',POS.p6t.w),
-    size: qnum(url,'p6ts',POS.p6t.size), align: qstr(url,'p6talign',POS.p6t.align),
-    maxLines: qnum(url,'p6tmax',POS.p6t.maxLines), lineGap: POS.p6t.lineGap
+    x:qnum(url,'p6tx',POS.p6t.x), y:qnum(url,'p6ty',POS.p6t.y), w:qnum(url,'p6tw',POS.p6t.w),
+    s:qnum(url,'p6ts',POS.p6t.s), align:qstr(url,'p6talign',POS.p6t.align), max:qnum(url,'p6tmax',POS.p6t.max),
   };
 
   if (debug) {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok:true, pos:POS, data, urlParams:Object.fromEntries(url.searchParams.entries()) }, null, 2));
+    res.end(JSON.stringify({ ok:true, pos:POS, data, url: Object.fromEntries(url.searchParams.entries()) }, null, 2));
     return;
   }
 
   try {
     const tplBytes = await fetchTemplate(req, url);
     const pdf = await PDFDocument.load(tplBytes);
-
-    // Pages (template expected ≥ 8)
-    const pages = pdf.getPages(); // 0-based
-    const page1 = pages[0];
-    const page2 = pages[1];
-    const page3 = pages[2];
-    const page4 = pages[3];
-    const page5 = pages[4];
-    const page6 = pages[5];
-    const page7 = pages[6];
-    const page8 = pages[7];
-
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    const fullName = norm(data?.person?.fullName || data?.fullName || pickCoverName(data, url) || '');
-    const coverName = pickCoverName(data, url);
-    const pathName = norm(data?.flowLabel || 'Perspective');
-    const today = new Date();
-    const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][today.getMonth()];
-    const dateLbl = `${String(today.getDate()).padStart(2,"0")}/${MMM}/${today.getFullYear()}`;
+    const pageCount = pdf.getPageCount();
+    const pages = Array.from({length: pageCount}, (_,i)=>pdf.getPage(i));
 
-    /* ---------------- Page 1 ---------------- */
-    if (pathName) drawTextBox(page1, HelvB, pathName, POS.n1, { maxLines: 1, ellipsis: true });
-    if (fullName) drawTextBox(page1, HelvB, fullName, POS.f1, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, Helv, dateLbl, POS.d1, { maxLines: 1, ellipsis: true });
-
-    /* ---------------- Footer name/path on 2..8 ---------------- */
-    const drawNP = (pg, fpos, npos) => {
-      if (fullName) drawTextBox(pg, Helv, fullName, fpos, { maxLines:1, ellipsis:true });
-      if (pathName) drawTextBox(pg, Helv, pathName, npos, { maxLines:1, ellipsis:true });
+    // Helper to stamp FLOW then NAME (fixed order)
+    const stampFlowAndName = (page, idx) => {
+      const f = POS[`f${idx}`], n = POS[`n${idx}`];
+      if (f) drawTextBox(page, HelvB, flowLabel, { x:f.x, y:f.y, w:f.w, size:f.s, align:f.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
+      if (n) drawTextBox(page, Helv,   fullName,  { x:n.x, y:n.y, w:n.w, size:n.s, align:n.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
     };
-    drawNP(page2, POS.f2, POS.n2); drawNP(page3, POS.f3, POS.n3); drawNP(page4, POS.f4, POS.n4);
-    drawNP(page5, POS.f5, POS.n5); drawNP(page6, POS.f6, POS.n6); drawNP(page7, POS.f7, POS.n7); drawNP(page8, POS.f8, POS.n8);
 
-    /* ---------------- Page 6 ---------------- */
+    // ---------- Page 1 ----------
+    if (pages[0]) {
+      const p1 = pages[0];
+      stampFlowAndName(p1, 1);
+      // Date on page 1 if you want it shown
+      const d = POS.d1;
+      const dateLbl = norm(data?.dateLbl || '');
+      if (dateLbl) drawTextBox(p1, Helv, dateLbl, { x:d.x, y:d.y, w:d.w, size:d.s, align:d.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
+    }
 
-    // Dominant state word
-    if (data.stateWord) drawTextBox(page6, HelvB, norm(data.stateWord), POS.dom6, { maxLines: 1, ellipsis: true });
+    // ---------- Pages 2..5 ----------
+    for (let i=2;i<=5;i++){
+      const page = pages[i-1];
+      if (!page) continue;
+      stampFlowAndName(page, i);
+    }
 
-    // Character blurb (dominant description) — left card
-    const domDesc = norm(data.dominantParagraph || '');
-    if (domDesc) drawTextBox(
-      page6, Helv, domDesc,
-      { x: POS.dom6desc.x, y: POS.dom6desc.y, w: POS.dom6desc.w, size: POS.dom6desc.size, align: POS.dom6desc.align, color: rgb(0.24,0.23,0.35) },
-      { maxLines: POS.dom6desc.max, ellipsis: true }
-    );
+    // ---------- Page 6 (snapshot) ----------
+    if (pages[5]) {
+      const p6 = pages[5];
+      stampFlowAndName(p6, 6);
 
-    // Chart image
-    if (data.chartUrl) {
-      try {
-        const r = await fetch(S(data.chartUrl,''));
-        if (r.ok) {
-          const png = await pdf.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.chart6;
-          const ph = page6.getHeight();
-          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+      // Dominant label
+      const dom = norm(data?.dominantLabel || data?.stateWord || '');
+      if (dom) drawTextBox(p6, HelvB, dom, { x:POS.dom6.x, y:POS.dom6.y, w:POS.dom6.w, size:POS.dom6.s, align:POS.dom6.align, color:rgb(0.12,0.11,0.2) }, { maxLines:1, ellipsis:true });
+
+      // Character blurb (dominant description) — limited lines
+      const domDesc = norm(data?.dominantDesc || data?.dominantCharacterBlurb || '');
+      if (domDesc) drawTextBox(p6, Helv, domDesc, { x:POS.dom6d.x, y:POS.dom6d.y, w:POS.dom6d.w, size:POS.dom6d.s, align:POS.dom6d.align, color:rgb(0.24,0.23,0.35) }, { maxLines:POS.dom6d.max, ellipsis:true });
+
+      // Radar chart
+      const c = POS.chart6;
+      const chartUrl = S(data?.chartUrl, '');
+      if (chartUrl) {
+        try {
+          const r = await fetch(chartUrl);
+          if (r.ok) {
+            const png = await pdf.embedPng(await r.arrayBuffer());
+            const ph = p6.getHeight();
+            p6.drawImage(png, { x:c.x, y: ph - c.y - c.h, width: c.w, height: c.h });
+          }
+        } catch {/* ignore */}
+      }
+
+      // Left column: exactly two blocks from page6Patterns (fallback to page2Patterns)
+      const rawBlocks = Array.isArray(data?.page6Patterns) && data.page6Patterns.length
+        ? data.page6Patterns
+        : (Array.isArray(data?.page2Patterns) ? data.page2Patterns : []);
+      const blocks = rawBlocks
+        .map(b => ({ title: norm(b?.title||''), body: norm(b?.body||'') }))
+        .filter(b => b.title || b.body)
+        .slice(0, 2);
+
+      let curY = POS.p6p.y;
+      for (const b of blocks) {
+        if (b.title) {
+          drawTextBox(
+            p6, HelvB, b.title,
+            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.hsize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: 1, ellipsis: true }
+          );
+          curY += (POS.p6p.hsize + 3) + POS.p6p.titleGap;
         }
-      } catch { /* ignore chart errors */ }
-    }
-
-    // “How this shows up is…” LEFT two blocks
-    const blocks = Array.isArray(data.page6Blocks) ? data.page6Blocks.slice(0, 2) : [];
-    // Force Block 1 body to the chart paragraph (new rule)
-    const chartPara = norm(data.chartParagraph || '');
-    if (blocks[0]) blocks[0].body = chartPara || blocks[0].body;
-    else if (chartPara) blocks.push({ title:'How the pattern moved', body: chartPara });
-
-    let curY = POS.p6p.y;
-    for (const b of blocks) {
-      const title = norm(b?.title || '');
-      const body  = norm(b?.body || '');
-      if (title) {
-        drawTextBox(page6, HelvB, title,
-          { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.hSize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: 1, ellipsis: true }
-        );
-        curY += (POS.p6p.hSize + 3) + POS.p6p.titleGap;
+        if (b.body) {
+          const r = drawTextBox(
+            p6, Helv, b.body,
+            { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.bsize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
+            { maxLines: POS.p6p.maxBody, ellipsis: true }
+          );
+          curY += r.height + POS.p6p.blockGap;
+        }
       }
-      if (body) {
-        const r = drawTextBox(page6, Helv, body,
-          { x: POS.p6p.x, y: curY, w: POS.p6p.w, size: POS.p6p.bSize, align: POS.p6p.align, color: rgb(0.24,0.23,0.35), lineGap:3 },
-          { maxLines: POS.p6p.maxBodyLines, ellipsis: true }
-        );
-        curY += r.height + POS.p6p.blockGap;
-      }
-    }
 
-    // RIGHT paragraph (themes narrative on page 6)
-    const themeNarr = norm(data.page6ThemeNarrative || data.themeNarrative || '');
-    if (themeNarr) {
-      drawTextBox(
-        page6, Helv, themeNarr,
-        { x: POS.p6t.x, y: POS.p6t.y, w: POS.p6t.w, size: POS.p6t.size, align: POS.p6t.align, color: rgb(0.24,0.23,0.35), lineGap: POS.p6t.lineGap },
-        { maxLines: POS.p6t.maxLines, ellipsis: true }
+      // Right paragraph: themes narrative
+      const tn = norm(
+        (typeof data?.themeNarrative === 'string' ? data.themeNarrative : '') ||
+        ''
       );
+      if (tn) {
+        drawTextBox(
+          p6, Helv, tn,
+          { x: POS.p6t.x, y: POS.p6t.y, w: POS.p6t.w, size: POS.p6t.s, align: POS.p6t.align, color: rgb(0.24,0.23,0.35), lineGap:4 },
+          { maxLines: POS.p6t.max, ellipsis: true }
+        );
+      }
     }
+
+    // ---------- Page 7 & 8 headers ----------
+    if (pages[6]) stampFlowAndName(pages[6], 7);
+    if (pages[7]) stampFlowAndName(pages[7], 8);
 
     // Save
     const bytes = await pdf.save();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/pdf');
-    const outName = url.searchParams.get('name') || 'ctrl_profile.pdf';
-    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${outName}"`);
+    const name = url.searchParams.get('name') || 'ctrl_profile.pdf';
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${name}"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
