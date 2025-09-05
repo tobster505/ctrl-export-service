@@ -76,7 +76,7 @@ async function fetchTemplate(req, url) {
   const tplParam = url?.searchParams?.get("tpl");
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_templateV3.pdf";
+    : "CTRL_Perspective_Assessment_Profile_templateV5.pdf";
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
