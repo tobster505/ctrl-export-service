@@ -76,7 +76,7 @@ async function fetchTemplate(req, url) {
   const tplParam = url?.searchParams?.get("tpl");
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_templateV5.pdf";
+    : "CTRL_Perspective_Assessment_Profile_templateV3.pdf";
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -170,7 +170,8 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        // NEW: page 9 footer defaults (same as page 6)
+        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
       // Page 6
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
@@ -195,7 +196,8 @@ export default async function handler(req, res) {
     POS.n1 = tuneBox(POS.n1, "n1");
     POS.d1 = tuneBox(POS.d1, "d1");
 
-    for (let i=2;i<=8;i++){
+    // extend tuners to page 9
+    for (let i=2;i<=9;i++){
       const f=`f${i}`, n=`n${i}`;
       POS.footer[f] = tuneBox(POS.footer[f], f);
       POS.footer[n] = tuneBox(POS.footer[n], n);
@@ -255,19 +257,28 @@ export default async function handler(req, res) {
     drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
-    /* -------------------- FOOTERS: pages 2..8 --------------------------- */
+    /* -------------------- FOOTERS: pages 2..9 --------------------------- */
     const drawFooter = (page, fSpec, nSpec) => {
       drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
       drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
     };
-    const p2 = pdf.getPage(1), p3 = pdf.getPage(2), p4 = pdf.getPage(3), p5 = pdf.getPage(4), p8 = pdf.getPage(7);
-    drawFooter(p2, POS.footer.f2, POS.footer.n2);
-    drawFooter(p3, POS.footer.f3, POS.footer.n3);
-    drawFooter(p4, POS.footer.f4, POS.footer.n4);
-    drawFooter(p5, POS.footer.f5, POS.footer.n5);
-    drawFooter(page6, POS.footer.f6, POS.footer.n6);
-    drawFooter(page7, POS.footer.f7, POS.footer.n7);
-    drawFooter(p8, POS.footer.f8, POS.footer.n8);
+
+    const pageCount = pdf.getPageCount();
+    const p2 = pageCount >= 2 ? pdf.getPage(1) : null;
+    const p3 = pageCount >= 3 ? pdf.getPage(2) : null;
+    const p4 = pageCount >= 4 ? pdf.getPage(3) : null;
+    const p5 = pageCount >= 5 ? pdf.getPage(4) : null;
+    const p8 = pageCount >= 8 ? pdf.getPage(7) : null;
+    const p9 = pageCount >= 9 ? pdf.getPage(8) : null;
+
+    if (p2) drawFooter(p2, POS.footer.f2, POS.footer.n2);
+    if (p3) drawFooter(p3, POS.footer.f3, POS.footer.n3);
+    if (p4) drawFooter(p4, POS.footer.f4, POS.footer.n4);
+    if (p5) drawFooter(p5, POS.footer.f5, POS.footer.n5);
+    if (page6) drawFooter(page6, POS.footer.f6, POS.footer.n6);
+    if (page7) drawFooter(page7, POS.footer.f7, POS.footer.n7);
+    if (p8) drawFooter(p8, POS.footer.f8, POS.footer.n8);
+    if (p9) drawFooter(p9, POS.footer.f9, POS.footer.n9);
 
     /* -------------------------- PAGE 6 ---------------------------------- */
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
@@ -347,6 +358,7 @@ export default async function handler(req, res) {
         { maxLines: POS.p7Acts.maxLines, ellipsis: true }
       );
     }
+
     /* ------------------------------ SAVE ------------------------------ */
     const bytes = await pdf.save();
     const fname = qstr(url, "name", defaultFileName(fullName));
