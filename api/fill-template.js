@@ -22,6 +22,16 @@ const alignNorm = (a) => {
   return "left";
 };
 
+// Remove a leading "Label (Type)" header from a block body, if present
+function stripPatternHeader(s) {
+  let out = String(s || "");
+  // Case 1: label on its own first line, then text on next lines
+  out = out.replace(/^\s*[A-Za-z][^\n]*\([^)]+\)\s*\n+/, "");
+  // Case 2: label followed by dash/colon and text on the same line
+  out = out.replace(/^\s*[A-Za-z][^(]*\([^)]+\)\s*[-–—:]+\s*/, "");
+  return out.trim();
+}
+
 // Wrap/align text into a box (y = distance from TOP)
 // Supports justify (last line left-aligned by design)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
@@ -339,10 +349,21 @@ export default async function handler(req, res) {
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
-    const blocks = blocksSrc
+    let blocks = blocksSrc
       .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
       .filter(b => b.title || b.body)
       .slice(0, 3);
+
+    // Strip a leading "Label (Type)" header from the body if present (default on)
+    const stripPat = url.searchParams.get("stripPatternLabel") !== "0";
+    if (stripPat) {
+      blocks = blocks.map(b => {
+        if (/^\s*[A-Za-z][^\n]*\([^)]+\)/.test(b.body)) {
+          return { ...b, body: stripPatternHeader(b.body) };
+        }
+        return b;
+      });
+    }
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
