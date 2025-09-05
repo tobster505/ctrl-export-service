@@ -15,10 +15,44 @@ const norm = (v, fb = "") =>
 
 const alignNorm = (a) => {
   const v = String(a || "").toLowerCase();
-  return v === "centre" ? "center" : (["left", "right", "center"].includes(v) ? v : "left");
+  if (v === "centre") return "center";
+  return ["left", "right", "center", "justify"].includes(v) ? v : "left";
 };
 
-// Wrap/align text into a box (y = distance from TOP)
+/**
+ * Word-wrapping by available pixel width.
+ * Returns an array of lines, where each line is an array of words.
+ */
+function wrapWordsToWidth(text, font, size, maxWidth) {
+  const baseSpaceW = font.widthOfTextAtSize(" ", size);
+  const out = [];
+
+  const paras = norm(text).split("\n");
+  for (const para of paras) {
+    const words = para.trim().length ? para.trim().split(/\s+/) : [""];
+    let line = [];
+    let lineW = 0;
+
+    for (const w of words) {
+      const ww = font.widthOfTextAtSize(w, size);
+      const addW = line.length ? baseSpaceW + ww : ww; // add a space if not first word
+      if (line.length && lineW + addW > maxWidth) {
+        // push current line, start new
+        out.push(line);
+        line = [w];
+        lineW = ww;
+      } else {
+        line.push(w);
+        lineW += addW;
+      }
+    }
+    out.push(line);
+  }
+
+  return out;
+}
+
+// Draw/align/justify text into a box (y = distance from TOP)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -31,41 +65,77 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
-  const lines = clean.split("\n");
-  const avgCharW = size * 0.55;
-  const maxChars = Math.max(8, Math.floor(w / avgCharW));
-  const wrapped = [];
-
-  for (const raw of lines) {
-    let t = raw.trim();
-    while (t.length > maxChars) {
-      let cut = t.lastIndexOf(" ", maxChars);
-      if (cut <= 0) cut = maxChars;
-      wrapped.push(t.slice(0, cut).trim());
-      t = t.slice(cut).trim();
-    }
-    if (t) wrapped.push(t);
-  }
-
-  const out = wrapped.length > maxLines
-    ? wrapped.slice(0, maxLines).map((s, i, a) => (i === a.length - 1 && ellipsis ? s.replace(/\.*$/, "…") : s))
-    : wrapped;
-
   const pageH = page.getHeight();
   const yTop = pageH - y;
-  const widthOf = (s) => font.widthOfTextAtSize(s, size);
+  const baseSpaceW = font.widthOfTextAtSize(" ", size);
   const lineH = size + lineGap;
+
+  // word-wrap by pixel width
+  const wrappedWordLines = wrapWordsToWidth(clean, font, size, w);
+
+  // apply maxLines + ellipsis on the wrapped lines
+  let lines = wrappedWordLines;
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    if (ellipsis && lines.length) {
+      // add … to last line if room (non-justify rendering of last line for safety)
+      const last = lines[lines.length - 1];
+      const txt = last.join(" ");
+      const ell = "…";
+      const ellW = font.widthOfTextAtSize(ell, size);
+      let avail = w - font.widthOfTextAtSize(txt, size);
+      if (avail >= ellW) last.push(ell);
+      else {
+        // trim words until it fits with ellipsis
+        while (last.length && font.widthOfTextAtSize(last.join(" ") + ell, size) > w) {
+          last.pop();
+        }
+        if (last.length) last.push(ell);
+      }
+    }
+  }
 
   let yCursor = yTop;
   let drawn = 0;
-  for (const line of out) {
-    let xDraw = x;
-    if (align === "center") xDraw = x + (w - widthOf(line)) / 2;
-    else if (align === "right") xDraw = x + (w - widthOf(line));
-    page.drawText(line, { x: xDraw, y: yCursor, size, font, color });
+
+  for (let i = 0; i < lines.length; i++) {
+    const words = lines[i];
+    const isLastLine = i === lines.length - 1;
+    const joined = words.join(" ");
+    const textW = font.widthOfTextAtSize(joined, size);
+
+    if (align === "center") {
+      const xDraw = x + (w - textW) / 2;
+      page.drawText(joined, { x: xDraw, y: yCursor, size, font, color });
+    } else if (align === "right") {
+      const xDraw = x + (w - textW);
+      page.drawText(joined, { x: xDraw, y: yCursor, size, font, color });
+    } else if (align === "justify" && !isLastLine && words.length > 1) {
+      // distribute extra space across gaps
+      const wordsW = words.reduce((acc, wd) => acc + font.widthOfTextAtSize(wd, size), 0);
+      const gaps = words.length - 1;
+      const extra = Math.max(0, w - wordsW); // target: exactly fill 'w'
+      const gapW = extra / gaps;
+
+      // draw word by word
+      let xPos = x;
+      for (let g = 0; g < words.length; g++) {
+        const wd = words[g];
+        page.drawText(wd, { x: xPos, y: yCursor, size, font, color });
+        const wdw = font.widthOfTextAtSize(wd, size);
+        if (g < words.length - 1) {
+          xPos += wdw + gapW; // evenly distributed gaps
+        }
+      }
+    } else {
+      // left (or last line of justify)
+      page.drawText(joined, { x, y: yCursor, size, font, color });
+    }
+
     yCursor -= lineH;
     drawn++;
   }
+
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
@@ -76,7 +146,7 @@ async function fetchTemplate(req, url) {
   const tplParam = url?.searchParams?.get("tpl");
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
+    : "CTRL_Perspective_Assessment_Profile_templateV3.pdf";
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -170,7 +240,7 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        // NEW: page 9 footer defaults (same as page 6)
+        // Page 9 footer defaults (same as page 6)
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
       // Page 6
