@@ -107,7 +107,7 @@ async function fetchTemplate(req, url) {
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
   const tplParam = url?.searchParams?.get("tpl");
-  // Default to your /public file so https://<host>/CTRL_Perspective_...V6.pdf resolves
+  // default to /public file so https://<host>/CTRL_Perspective_...V6.pdf resolves
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
     : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
@@ -162,7 +162,7 @@ const defaultFileName = (fullName) => {
 
 /* ----------------------------- label helpers ----------------------------- */
 
-// drop dynamic GA headings, keep real titles like "Emotion Regulation + Feedback Handling"
+// drop dynamic GA headings if they sneak into content
 const isGAHeading = (s="") =>
   /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
 
@@ -217,7 +217,7 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        // Page 9 footer (defaults same as page 6)
+        // Page 9 footer
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
       // Page 6
@@ -227,15 +227,14 @@ export default async function handler(req, res) {
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
       // Page 7
       p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
+      // p7ThemePara intentionally unused/removed
       p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
       p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
     };
 
-    // Optional Page-7 label whiteouts (OFF by default)
-    // Turn on with &wipep7=1 and tune with:
-    //  p7w1x,p7w1y,p7w1w,p7w1h (for the “Pattern” label area)
-    //  p7w2x,p7w2y,p7w2w,p7w2h (for the “Themes” label area)
+    // Optional Page-7 label whiteouts (OFF by default). Helpful if artwork has baked-in labels.
+    //  p7w1x,p7w1y,p7w1w,p7w1h (for “Pattern” area), p7w2* (for “Themes” area)
     const wipeP7 = qnum(url, "wipep7", 0) === 1;
     const W1 = { x: qnum(url,"p7w1x",0), y: qnum(url,"p7w1y",0), w: qnum(url,"p7w1w",0), h: qnum(url,"p7w1h",0) };
     const W2 = { x: qnum(url,"p7w2x",0), y: qnum(url,"p7w2y",0), w: qnum(url,"p7w2w",0), h: qnum(url,"p7w2h",0) };
@@ -278,13 +277,7 @@ export default async function handler(req, res) {
       blockGap: qnum(url,"p7pblockgap",POS.p7Patterns.blockGap),
       maxBodyLines: qnum(url,"p7pmax",POS.p7Patterns.maxBodyLines),
     };
-    POS.p7ThemePara = {
-      ...POS.p7ThemePara,
-      x: qnum(url,"p7tx",POS.p7ThemePara.x), y: qnum(url,"p7ty",POS.p7ThemePara.y),
-      w: qnum(url,"p7tw",POS.p7ThemePara.w), size: qnum(url,"p7ts",POS.p7ThemePara.size),
-      align: alignNorm(qstr(url,"p7talign",POS.p7ThemePara.align)),
-    };
-    POS.p7ThemePara.maxLines = qnum(url,"p7tmax",POS.p7ThemePara.maxLines);
+
     POS.p7Tips = {
       ...POS.p7Tips,
       x: qnum(url,"p7tipsx",POS.p7Tips.x), y: qnum(url,"p7tipsy",POS.p7Tips.y),
@@ -292,6 +285,7 @@ export default async function handler(req, res) {
       align: alignNorm(qstr(url,"p7tipsalign",POS.p7Tips.align)),
     };
     POS.p7Tips.maxLines = qnum(url,"p7tipsmax",POS.p7Tips.maxLines);
+
     POS.p7Acts = {
       ...POS.p7Acts,
       x: qnum(url,"p7actsx",POS.p7Acts.x), y: qnum(url,"p7actsy",POS.p7Acts.y),
@@ -359,7 +353,7 @@ export default async function handler(req, res) {
         if (r.w > 0 && r.h > 0) {
           page7.drawRectangle({
             x: r.x,
-            y: ph - r.y - r.h, // convert from top-based 'y'
+            y: ph - r.y - r.h, // convert from top-based y
             width: r.w,
             height: r.h,
             color: rgb(1,1,1),
@@ -367,99 +361,40 @@ export default async function handler(req, res) {
           });
         }
       };
-      paint(W1); // e.g. “General Analysis – Pattern”
-      paint(W2); // e.g. “General Analysis – Themes”
+      paint(W1); // “Pattern” area
+      paint(W2); // “Themes” area
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // Left column source
+    // Left column source (p7p): render ONLY bodies (no titles/labels)
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
 
-    // Prefer the entry that HAS a title when bodies duplicate.
-    // Also drop any GA label titles (“General Analysis – …”).
-    const byBody = new Map(); // key -> {title, body, order}
+    // Build map by body; strip any GA headings from body; ignore titles entirely
+    const byBody = new Map(); // key -> { body, order }
     for (let i = 0; i < blocksSrc.length; i++) {
-      const rawTitle = norm(blocksSrc[i]?.title || "");
       const rawBody  = norm(blocksSrc[i]?.body  || "");
-
-      // skip dynamic GA headings as titles entirely
-      const title = isGAHeading(rawTitle) ? "" : rawTitle;
-      const body  = stripGAHeading(rawBody);
-
-      if (!title && !body) continue;
-
+      const body     = stripGAHeading(rawBody);
       const k = bodyKey(body);
-      if (!k) {
-        // unique (e.g., only title): use title as key so we can still show it
-        const tk = `__title__:${norm(title).toLowerCase()}`;
-        if (!byBody.has(tk)) byBody.set(tk, { title, body, order: i });
-        else {
-          // keep the first occurrence
-        }
-        continue;
-      }
-
-      if (!byBody.has(k)) {
-        byBody.set(k, { title, body, order: i });
-      } else {
-        const cur = byBody.get(k);
-        // If current has no title and incoming has title -> replace (bring back the titled one)
-        if (!cur.title && title) byBody.set(k, { title, body, order: cur.order }); // preserve original order
-        // else keep the existing (first wins)
-      }
+      if (!k) continue;
+      if (!byBody.has(k)) byBody.set(k, { body, order: i });
     }
 
-    // Take up to 3 in original order
     const blocks = Array.from(byBody.values())
       .sort((a, b) => a.order - b.order)
       .slice(0, 3);
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
-      if (b.title) {
-        drawTextBox(page7, HelvB, b.title,
-          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-          { maxLines: 1, ellipsis: true }
-        );
-        curY += (POS.p7Patterns.hSize + 3) + POS.p7Patterns.titleGap;
-      }
-      if (b.body) {
-        const r = drawTextBox(page7, Helv, b.body,
-          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-          { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
-        );
-        curY += r.height + POS.p7Patterns.blockGap;
-      }
-    }
-
-    // Theme paragraph behaviour
-    const prefer = qstr(url, "p7prefer", "blocks"); // "blocks" | "theme"
-    const dropThemeAlways = qnum(url, "dropTheme", 0) === 1;
-
-    const themeNarr7Raw = norm(
-      (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
-      (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
-    );
-    const themeClean = stripGAHeading(themeNarr7Raw);
-    const themeKey = bodyKey(themeClean);
-
-    const blockBodyKeys = new Set(
-      blocks.map(b => bodyKey(b.body)).filter(Boolean)
-    );
-
-    const themeIsDup = themeKey && blockBodyKeys.has(themeKey);
-
-    // Always KEEP blocks. Only draw theme if:
-    // - not forced off,
-    // - and (prefer === 'theme' OR it's not a duplicate).
-    if (themeClean && !dropThemeAlways && (prefer === "theme" || !themeIsDup)) {
-      drawTextBox(page7, Helv, themeClean,
-        { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
+      const r = drawTextBox(page7, Helv, b.body,
+        { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
+        { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
       );
+      curY += r.height + POS.p7Patterns.blockGap;
     }
+
+    // Theme paragraph (p7t) intentionally OMITTED
 
     // Tips (bullets)
     const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
