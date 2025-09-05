@@ -7,14 +7,12 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
-
-// Keep ASCII plus the • bullet. Normalise quotes/dashes.
 const norm = (v, fb = "") =>
   S(v, fb)
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\u2022]/g, "");
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ""); // strip odd control chars
 
 // allow left | center | right | justify
 const alignNorm = (a) => {
@@ -24,7 +22,34 @@ const alignNorm = (a) => {
   return "left";
 };
 
-// Wrap/align text into a box (y = distance from TOP) with justify support
+// remove a leading label line inside a multi-line paragraph
+// e.g. "Scattered Explorer (Start-Low Erratic)\nIt looks like you are..." -> keep from line 2
+const stripLeadingLabelLine = (txt) => {
+  const t = norm(txt).replace(/\r/g, "");
+  const lines = t.split("\n");
+  if (lines.length >= 2) {
+    const first = lines[0].trim();
+    const second = lines[1].trim();
+    // Heuristics: first line looks like a heading; second line begins the real prose.
+    const firstLooksLikeLabel = /^[A-Z].{0,100}$/.test(first) && !/[.!?]$/.test(first);
+    const secondLooksLikeBody = /^(It|You|This|Your|We)\b/.test(second);
+    if (firstLooksLikeLabel && secondLooksLikeBody) {
+      lines.shift();
+      return lines.join("\n").trim();
+    }
+  }
+  return t.trim();
+};
+
+// remove 'Tip:' / 'Action:' / leading bullets from the start of items
+const stripTipActionLabels = (s) =>
+  String(s || "")
+    .replace(/^\s*(?:•|\-|\u2022)\s*/i, "")
+    .replace(/^\s*(?:tip|tips)\s*:\s*/i, "")
+    .replace(/^\s*(?:action|actions)\s*:\s*/i, "")
+    .trim();
+
+// Wrap/align text into a box (y = distance from TOP). Supports justify.
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -91,6 +116,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
         drawn++;
         continue;
       }
+      // single-word line -> fall through to left/center/right
     }
 
     let xDraw = x;
@@ -103,40 +129,45 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-// Bulleted list renderer: bullet + indented wrapped text per item
+// Draw a bullet list with hanging indent (bullets drawn separately from text)
 function drawBulletedList(page, font, items, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
     color = rgb(0,0,0), align = "left",
-    bulletIndent = 16, // px from bullet to text
+    bulletIndent = 18, bulletGap = 4
   } = spec;
-  const itemGap = opts.itemGap ?? 6;
 
-  const ph = page.getHeight();
-  let yTopDist = y;  // distance from top for each item
+  const maxLinesPerItem = opts.maxLinesPerItem ?? 6;
+
+  const pageH = page.getHeight();
+  let yCursor = pageH - y;
   let totalH = 0;
 
   for (const raw of items) {
-    const text = norm(raw);
-    if (!text) continue;
+    const txt = stripTipActionLabels(raw);
+    if (!txt) continue;
 
-    // draw bullet at first line baseline
-    const firstBaseline = ph - yTopDist;
-    page.drawText("•", { x, y: firstBaseline, size, font, color });
+    // bullet (draw a separate dot glyph)
+    const bulletY = yCursor;
+    const bulletX = x + 2; // slight inset
+    page.drawText("•", { x: bulletX, y: bulletY, size: Math.max(1, size * 0.9), font, color });
 
-    // draw the indented text
-    const r = drawTextBox(
-      page, font, text,
-      { x: x + bulletIndent, y: yTopDist, w: w - bulletIndent, size, lineGap, color, align },
-      { maxLines: opts.maxLinesPerItem ?? 6, ellipsis: true }
+    // text with hanging indent
+    const boxX = x + bulletIndent + bulletGap;
+    const boxW = Math.max(10, w - (bulletIndent + bulletGap));
+    const r = drawTextBox(page, font, txt,
+      { x: boxX, y: pageH - yCursor, w: boxW, size, lineGap, color, align }, // align usually "left" here
+      { maxLines: maxLinesPerItem, ellipsis: true }
     );
 
-    const h = Math.max(r.height, size + lineGap);
-    yTopDist += h + itemGap;
-    totalH   += h + itemGap;
+    // advance: tallest of (bullet size vs item height)
+    const lineH = size + lineGap;
+    const used = Math.max(lineH, r.height);
+    yCursor -= used;
+    totalH  += used;
   }
 
-  return { height: totalH, lastY: ph - yTopDist };
+  return { height: totalH, lastY: yCursor };
 }
 
 async function fetchTemplate(req, url) {
@@ -144,6 +175,7 @@ async function fetchTemplate(req, url) {
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
   const tplParam = url?.searchParams?.get("tpl");
+  // Default to your /public file so https://<host>/CTRL_Perspective_...V6.pdf resolves
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
     : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
@@ -196,73 +228,6 @@ const defaultFileName = (fullName) => {
   return `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
 };
 
-/* ----------------------------- label helpers ----------------------------- */
-
-const isGAHeading = (s="") =>
-  /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
-const stripGAHeading = (s="") =>
-  String(s).replace(/^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:\s*/i, "");
-
-// Known pattern names for first-line stripping
-const PATTERN_NAMES = [
-  "Grounded Protector","Reliable Balancer","Trusted Presence",
-  "Emerging Explorer","Rising Integrator","Transforming Guide",
-  "Cautious Retreater","Fading Light","Switching Voice",
-  "Pendulum Seeker","Balancing Beacon","Testing the Waters",
-  "Resilient Returner","Scattered Explorer","Unsettled Guide",
-];
-const rxEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const patternHeadRx = new RegExp(
-  `^\\s*(?:${PATTERN_NAMES.map(rxEsc).join("|")})(?:\\s*\\([^)]*\\))?\\s*$`,
-  "i"
-);
-const THEME_LABEL_RX = /^\s*emotion\s+regulation\s*\+\s*feedback\s*handling\s*$/i;
-
-function stripLeadingLabel(text = "") {
-  const t = String(text || "").replace(/\r/g, "");
-  const lines = t.split("\n");
-  if (lines.length < 2) return t.trim();
-  const first  = lines[0].trim();
-  const second = lines[1].trim();
-
-  if (patternHeadRx.test(first) || THEME_LABEL_RX.test(first) || isGAHeading(first)) {
-    return lines.slice(1).join("\n").trim();
-  }
-  const openers = [/^it\s+looks\s+like/i, /^you\b/i, /^this\b/i];
-  if (first.length <= 80 && openers.some(rx => rx.test(second))) {
-    return lines.slice(1).join("\n").trim();
-  }
-  return t.trim();
-}
-
-// Remove leading bullets/numbers/labels like "Tip:" / "Action:"
-function stripBulletLabel(s = "") {
-  let t = String(s || "").trim();
-  t = t.replace(/^(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)\s*/i, "");
-  t = t.replace(/^\s*\d+\s*[\.\)\-:]\s*/i, "");
-  t = t.replace(/^\s*(tip|tips|action|actions|next\s*(step|action)?)\s*:\s*/i, "");
-  return t.trim();
-}
-const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
-
-// Extract in-line "Tip:" / "Action:" lines from a block body
-function extractLabeledLines(text="") {
-  const src = String(text || "").replace(/\r/g, "");
-  const lines = src.split("\n");
-  const kept = [];
-  const tips = [];
-  const actions = [];
-
-  for (const line of lines) {
-    const n = norm(line);
-    if (!n) continue;
-    if (/^\s*(tip|tips)\s*:/i.test(n)) { tips.push(stripBulletLabel(n)); continue; }
-    if (/^\s*(action|actions|next\s*(step|action)?)\s*:/i.test(n)) { actions.push(stripBulletLabel(n)); continue; }
-    kept.push(line);
-  }
-  return { body: kept.join("\n").trim(), tips, actions };
-}
-
 /* ----------------------------- handler ----------------------------- */
 
 export default async function handler(req, res) {
@@ -308,6 +273,7 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        // Page 9 footer (defaults same as page 6)
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
       // Page 6
@@ -316,28 +282,15 @@ export default async function handler(req, res) {
       how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left", max: 10 },
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
       // Page 7
-      p7Patterns:  { x: 40,  y: 180, w: 460, bSize: 20, align:"left", blockGap: 25, maxBodyLines: 6 },
-      // (p7t removed by request)
+      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
+      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
       p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
+      // bullets
+      bullets: { i: 18, gap: 4 },
     };
 
-    // Optional: two columns for tips/actions
-    if (qnum(url, "taCols", 0) === 1) {
-      POS.p7Tips.x = 40;  POS.p7Tips.y = 595; POS.p7Tips.w = 300;
-      POS.p7Acts.x = 360; POS.p7Acts.y = 595; POS.p7Acts.w = 300;
-    }
-    const BULLETS = {
-      indent: qnum(url, "bulleti", 16),
-      itemGap: qnum(url, "bulletgap", 6),
-    };
-
-    // Optional whiteouts for static labels if needed
-    const wipeP7 = qnum(url, "wipep7", 0) === 1;
-    const W1 = { x: qnum(url,"p7w1x",0), y: qnum(url,"p7w1y",0), w: qnum(url,"p7w1w",0), h: qnum(url,"p7w1h",0) };
-    const W2 = { x: qnum(url,"p7w2x",0), y: qnum(url,"p7w2y",0), w: qnum(url,"p7w2w",0), h: qnum(url,"p7w2h",0) };
-
-    // Tuners
+    // Tuners...
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
@@ -368,12 +321,20 @@ export default async function handler(req, res) {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
       w: qnum(url,"p7pw",POS.p7Patterns.w),
+      hSize: qnum(url,"p7phsize",POS.p7Patterns.hSize),
       bSize: qnum(url,"p7pbsize",POS.p7Patterns.bSize),
       align: alignNorm(qstr(url,"p7palign",POS.p7Patterns.align)),
+      titleGap: qnum(url,"p7ptitlegap",POS.p7Patterns.titleGap),
       blockGap: qnum(url,"p7pblockgap",POS.p7Patterns.blockGap),
       maxBodyLines: qnum(url,"p7pmax",POS.p7Patterns.maxBodyLines),
     };
-
+    POS.p7ThemePara = {
+      ...POS.p7ThemePara,
+      x: qnum(url,"p7tx",POS.p7ThemePara.x), y: qnum(url,"p7ty",POS.p7ThemePara.y),
+      w: qnum(url,"p7tw",POS.p7ThemePara.w), size: qnum(url,"p7ts",POS.p7ThemePara.size),
+      align: alignNorm(qstr(url,"p7talign",POS.p7ThemePara.align)),
+    };
+    POS.p7ThemePara.maxLines = qnum(url,"p7tmax",POS.p7ThemePara.maxLines);
     POS.p7Tips = {
       ...POS.p7Tips,
       x: qnum(url,"p7tipsx",POS.p7Tips.x), y: qnum(url,"p7tipsy",POS.p7Tips.y),
@@ -381,7 +342,6 @@ export default async function handler(req, res) {
       align: alignNorm(qstr(url,"p7tipsalign",POS.p7Tips.align)),
     };
     POS.p7Tips.maxLines = qnum(url,"p7tipsmax",POS.p7Tips.maxLines);
-
     POS.p7Acts = {
       ...POS.p7Acts,
       x: qnum(url,"p7actsx",POS.p7Acts.x), y: qnum(url,"p7actsy",POS.p7Acts.y),
@@ -389,6 +349,12 @@ export default async function handler(req, res) {
       align: alignNorm(qstr(url,"p7actsalign",POS.p7Acts.align)),
     };
     POS.p7Acts.maxLines = qnum(url,"p7actsmax",POS.p7Acts.maxLines);
+
+    POS.bullets = {
+      i: qnum(url, "bulleti", POS.bullets.i),
+      gap: qnum(url, "bulletgap", POS.bullets.gap),
+    };
+    const taCols = Math.max(1, qnum(url, "taCols", 1)); // future: 1 or 2
 
     /* -------------------- PAGE 1: Path / Name / Date -------------------- */
     const coverName = pickCoverName(data, url);
@@ -401,7 +367,7 @@ export default async function handler(req, res) {
     drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
-    /* -------------------- FOOTERS: pages 2..9 --------------------------- */
+    /* -------------------- FOOTERS: pages 2..9 (if exist) ----------------- */
     const drawFooter = (page, fSpec, nSpec) => {
       drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
       drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
@@ -411,7 +377,7 @@ export default async function handler(req, res) {
     drawFooter(p3, POS.footer.f3, POS.footer.n3);
     drawFooter(p4, POS.footer.f4, POS.footer.n4);
     drawFooter(p5, POS.footer.f5, POS.footer.n5);
-    drawFooter(pdf.getPage(5), POS.footer.f6, POS.footer.n6);
+    drawFooter(page6, POS.footer.f6, POS.footer.n6);
     drawFooter(page7, POS.footer.f7, POS.footer.n7);
     const p8 = pdf.getPage(7); drawFooter(p8, POS.footer.f8, POS.footer.n8);
     if (pageCount >= 9) {
@@ -420,13 +386,14 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 6 ---------------------------------- */
+    // accepts &dom6Label / &dominantDesc / &dom6Desc / &how6 / &how6Text / &chartParagraph
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
     const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
     if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35), align: POS.dom6desc.align }, { maxLines: POS.dom6desc.max, ellipsis: true });
-    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35), align: POS.how6.align     }, { maxLines: POS.how6.max,   ellipsis: true });
+    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
+    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max,   ellipsis: true });
 
     // Chart: accept chartUrl OR spiderChartUrl
     const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
@@ -442,49 +409,19 @@ export default async function handler(req, res) {
       } catch { /* ignore image failure */ }
     }
 
-    /* -------------------- (OPTIONAL) WHITEOUT STATIC P7 LABELS ---------- */
-    if (wipeP7) {
-      const ph = page7.getHeight();
-      const paint = (r) => {
-        if (r.w > 0 && r.h > 0) {
-          page7.drawRectangle({
-            x: r.x,
-            y: ph - r.y - r.h,
-            width: r.w,
-            height: r.h,
-            color: rgb(1,1,1),
-            borderColor: rgb(1,1,1),
-          });
-        }
-      };
-      paint(W1);
-      paint(W2);
-    }
-
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // 1) Left column: up to 3 short blocks (strip first-line labels; also pull any Tip:/Action: lines out)
+    // Left column (analysis blocks) — drop any labels in the body
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
-    const byBody = new Map();
-    const pulledTips = [];
-    const pulledActions = [];
-
-    for (let i = 0; i < blocksSrc.length; i++) {
-      const rawBody = norm(blocksSrc[i]?.body || "");
-      const noLead  = stripLeadingLabel(stripGAHeading(rawBody));
-      const { body, tips, actions } = extractLabeledLines(noLead);
-      pulledTips.push(...tips);
-      pulledActions.push(...actions);
-      const k = bodyKey(body);
-      if (!k) continue;
-      if (!byBody.has(k)) byBody.set(k, { body, order: i });
-    }
-
-    const blocks = Array.from(byBody.values()).sort((a,b)=>a.order-b.order).slice(0,3);
+    const blocks = blocksSrc
+      .map(b => ({ body: stripLeadingLabelLine(b?.body || "") }))
+      .filter(b => b.body)
+      .slice(0, 3);
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
+      // No title rendered by design; just the cleaned body
       const r = drawTextBox(page7, Helv, b.body,
         { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
@@ -492,55 +429,55 @@ export default async function handler(req, res) {
       curY += r.height + POS.p7Patterns.blockGap;
     }
 
-    // 2) Tips & Actions — include pulled lines + arrays, rendered as proper bullets with indent
-    const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
-    const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
-
-    // Clean array items
-    const cleanList = (arr) => {
-      const out = [];
-      const seen = new Set();
-      for (const raw of arr) {
-        const n = norm(raw);
-        if (!n) continue;
-        const t = stripBulletLabel(n);
-        const k = bodyKey(t);
-        if (!k || seen.has(k)) continue;
-        seen.add(k);
-        out.push(t);
-      }
-      return out;
-    };
-
-    // If a tip starts with "Action:" it was stripped above; bucket it correctly here as well
-    const tipsClean = [];
-    const actionsClean = [];
-
-    for (const raw of tipsArr) {
-      const n = norm(raw);
-      if (!n) continue;
-      if (/^\s*(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)?\s*action/i.test(n)) actionsClean.push(stripBulletLabel(n));
-      else tipsClean.push(stripBulletLabel(n));
-    }
-    actionsClean.push(...cleanList(actsArr));
-
-    // Add pulled lines from the blocks
-    tipsClean.push(...cleanList(pulledTips));
-    actionsClean.push(...cleanList(pulledActions));
-
-    // Render bullets with indent
-    if (tipsClean.length) {
-      drawBulletedList(
-        page7, Helv, tipsClean,
-        { x: POS.p7Tips.x, y: POS.p7Tips.y, w: POS.p7Tips.w, size: POS.p7Tips.size, lineGap: 3, color: rgb(0.24,0.23,0.35), align: POS.p7Tips.align, bulletIndent: BULLETS.indent },
-        { itemGap: BULLETS.itemGap, maxLinesPerItem: POS.p7Tips.maxLines }
+    // Theme paragraph (p7t*) — render if present (content already label-free upstream)
+    const themeNarr7 = norm(
+      (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
+      (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
+    );
+    if (themeNarr7) {
+      drawTextBox(page7, Helv, themeNarr7,
+        { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
+        { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
       );
     }
-    if (actionsClean.length) {
-      drawBulletedList(
-        page7, Helv, actionsClean,
-        { x: POS.p7Acts.x, y: POS.p7Acts.y, w: POS.p7Acts.w, size: POS.p7Acts.size, lineGap: 3, color: rgb(0.24,0.23,0.35), align: POS.p7Acts.align, bulletIndent: BULLETS.indent },
-        { itemGap: BULLETS.itemGap, maxLinesPerItem: POS.p7Acts.maxLines }
+
+    // Tips (bullets) — merge a few likely sources
+    const tipsArr =
+      (Array.isArray(data?.tips2) ? data.tips2 : [])
+        .concat([data?.dominantTip, data?.chartTip, data?.spiderChartTip, data?.tip, data?.p7Tip].filter(Boolean));
+
+    if (tipsArr.length) {
+      drawBulletedList(page7, Helv, tipsArr,
+        {
+          x: POS.p7Tips.x, y: POS.p7Tips.y, w: POS.p7Tips.w,
+          size: POS.p7Tips.size, lineGap: 3, color: rgb(0.24,0.23,0.35),
+          align: "left", bulletIndent: POS.bullets.i, bulletGap: POS.bullets.gap
+        },
+        { maxLinesPerItem: POS.p7Tips.maxLines }
+      );
+    }
+
+    // Actions (bullets) — include THEME actions + PATTERN action if provided
+    const actionsTheme = Array.isArray(data?.actions2) ? data.actions2 : [];
+    const actionPattern =
+      stripTipActionLabels(
+        data?.patternAction ||
+        data?.actionFromPattern ||
+        data?.p7PatternAction ||
+        data?.p7ActionPattern ||
+        (Array.isArray(data?.patternActions) ? data.patternActions[0] : "")
+      );
+
+    const actionsCombined = actionPattern ? [...actionsTheme, actionPattern] : actionsTheme;
+
+    if (actionsCombined.length) {
+      drawBulletedList(page7, Helv, actionsCombined,
+        {
+          x: POS.p7Acts.x, y: POS.p7Acts.y, w: POS.p7Acts.w,
+          size: POS.p7Acts.size, lineGap: 3, color: rgb(0.24,0.23,0.35),
+          align: "left", bulletIndent: POS.bullets.i, bulletGap: POS.bullets.gap
+        },
+        { maxLinesPerItem: POS.p7Acts.maxLines }
       );
     }
 
