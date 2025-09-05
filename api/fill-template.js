@@ -1,3 +1,4 @@
+// ctrl-export-service/api/fill-template.js
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -19,33 +20,7 @@ const alignNorm = (a) => {
   return ["left", "right", "center", "justify"].includes(v) ? v : "left";
 };
 
-/** Word-wrap by pixel width; returns array of lines (each = array of words). */
-function wrapWordsToWidth(text, font, size, maxWidth) {
-  const baseSpaceW = font.widthOfTextAtSize(" ", size);
-  const out = [];
-  const paras = norm(text).split("\n");
-  for (const para of paras) {
-    const words = para.trim().length ? para.trim().split(/\s+/) : [""];
-    let line = [];
-    let lineW = 0;
-    for (const w of words) {
-      const ww = font.widthOfTextAtSize(w, size);
-      const addW = line.length ? baseSpaceW + ww : ww;
-      if (line.length && lineW + addW > maxWidth) {
-        out.push(line);
-        line = [w];
-        lineW = ww;
-      } else {
-        line.push(w);
-        lineW += addW;
-      }
-    }
-    out.push(line);
-  }
-  return out;
-}
-
-// Draw/align/justify text into a box (y = distance from TOP)
+// Wrap/align text into a box (y = distance from TOP)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -58,69 +33,72 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
+  // naive wrapping by character count, then trim per word
+  const lines = clean.split("\n");
+  const avgCharW = size * 0.55;
+  const maxChars = Math.max(8, Math.floor(w / avgCharW));
+  const wrapped = [];
+
+  for (const raw of lines) {
+    let t = raw.trim();
+    while (t.length > maxChars) {
+      let cut = t.lastIndexOf(" ", maxChars);
+      if (cut <= 0) cut = maxChars;
+      wrapped.push(t.slice(0, cut).trim());
+      t = t.slice(cut).trim();
+    }
+    if (t) wrapped.push(t);
+  }
+
+  const out = wrapped.length > maxLines
+    ? wrapped.slice(0, maxLines).map((s, i, a) => (i === a.length - 1 && ellipsis ? s.replace(/\.*$/, "…") : s))
+    : wrapped;
+
   const pageH = page.getHeight();
   const yTop = pageH - y;
+  const widthOf = (s) => font.widthOfTextAtSize(s, size);
   const lineH = size + lineGap;
 
-  const wrappedWordLines = wrapWordsToWidth(clean, font, size, w);
-
-  let lines = wrappedWordLines;
-  if (lines.length > maxLines) {
-    lines = lines.slice(0, maxLines);
-    if (ellipsis && lines.length) {
-      const last = lines[lines.length - 1];
-      const ell = "…";
-      while (last.length && font.widthOfTextAtSize(last.join(" ") + ell, size) > w) last.pop();
-      if (last.length) last.push(ell);
-    }
-  }
-
   let yCursor = yTop;
-  let drawn = 0;
+  for (let i = 0; i < out.length; i++) {
+    const line = out[i];
+    const isLast = i === out.length - 1;
 
-  for (let i = 0; i < lines.length; i++) {
-    const words = lines[i];
-    const isLastLine = i === lines.length - 1;
-    const joined = words.join(" ");
-    const textW = font.widthOfTextAtSize(joined, size);
-
-    if (align === "center") {
-      const xDraw = x + (w - textW) / 2;
-      page.drawText(joined, { x: xDraw, y: yCursor, size, font, color });
-    } else if (align === "right") {
-      const xDraw = x + (w - textW);
-      page.drawText(joined, { x: xDraw, y: yCursor, size, font, color });
-    } else if (align === "justify" && !isLastLine && words.length > 1) {
-      const wordsW = words.reduce((acc, wd) => acc + font.widthOfTextAtSize(wd, size), 0);
-      const gaps = words.length - 1;
-      const extra = Math.max(0, w - wordsW);
-      const gapW = extra / gaps;
-      let xPos = x;
-      for (let g = 0; g < words.length; g++) {
-        const wd = words[g];
-        page.drawText(wd, { x: xPos, y: yCursor, size, font, color });
-        const wdw = font.widthOfTextAtSize(wd, size);
-        if (g < words.length - 1) xPos += wdw + gapW;
+    if (align === "justify" && !isLast) {
+      const words = line.split(/\s+/).filter(Boolean);
+      if (words.length > 1) {
+        const wordsW = words.reduce((acc, w) => acc + widthOf(w), 0);
+        const gaps = words.length - 1;
+        const gapW = Math.max(0, (w - wordsW) / gaps);
+        let xDraw = x;
+        for (let j = 0; j < words.length; j++) {
+          const word = words[j];
+          page.drawText(word, { x: xDraw, y: yCursor, size, font, color });
+          xDraw += widthOf(word) + (j < words.length - 1 ? gapW : 0);
+        }
+      } else {
+        // single word: fall back to left
+        page.drawText(line, { x, y: yCursor, size, font, color });
       }
     } else {
-      page.drawText(joined, { x, y: yCursor, size, font, color });
+      let xDraw = x;
+      if (align === "center") xDraw = x + (w - widthOf(line)) / 2;
+      else if (align === "right") xDraw = x + (w - widthOf(line));
+      page.drawText(line, { x: xDraw, y: yCursor, size, font, color });
     }
-
     yCursor -= lineH;
-    drawn++;
   }
-
-  return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
+  return { height: out.length * lineH, linesDrawn: out.length, lastY: yCursor };
 }
 
 async function fetchTemplate(req, url) {
+  // Default to V6 in /public. On Vercel/Next, /public files are served from the root path.
+  const defaultTpl = "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
   const h = (req && req.headers) || {};
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
   const tplParam = url?.searchParams?.get("tpl");
-  const filename = tplParam && tplParam.trim()
-    ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
+  const filename = tplParam && tplParam.trim() ? tplParam.trim() : defaultTpl;
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -173,14 +151,15 @@ const defaultFileName = (fullName) => {
 /* ----------------------------- handler ----------------------------- */
 
 export default async function handler(req, res) {
+  // Safe URL parse
   let url;
   try { url = new URL(req?.url || "/", "http://localhost"); }
   catch { url = new URL("/", "http://localhost"); }
 
   const preview = url.searchParams.get("preview") === "1";
 
-  const hasData = !!url.searchParams.get("data");
-  if (!hasData) { res.statusCode = 400; res.end("Missing ?data"); return; }
+  // Require ?data (base64 JSON)
+  if (!url.searchParams.get("data")) { res.statusCode = 400; res.end("Missing ?data"); return; }
 
   let data;
   try {
@@ -197,15 +176,20 @@ export default async function handler(req, res) {
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
     // Pages (0-index)
-    const page1 = pdf.getPage(0);
-    const page6 = pdf.getPage(5);
-    const page7 = pdf.getPage(6);
+    const page = (n) => (n >= 0 && n < pdf.getPageCount() ? pdf.getPage(n) : null);
+    const page1 = page(0);
+    const page6 = page(5);
+    const page7 = page(6);
+    const page9 = page(8); // NEW: support for page 9 footer if present
 
     /* --------------------- DEFAULT (LOCKED) POSITIONS --------------------- */
     const POS = {
+      // Page 1
       f1: { x: 290, y: 170, w: 400, size: 40, align: "left" },
       n1: { x: 10,  y: 573, w: 500, size: 30, align: "center" },
       d1: { x: 130, y: 630, w: 500, size: 20, align: "left" },
+
+      // Footers (pages 2..9)
       footer: {
         f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
@@ -214,42 +198,45 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        // Page 9 footer defaults (same as page 6)
-        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }, // NEW
       },
-      // Page 6 — Dominant + explanations + chart
+
+      // Page 6: Dominant + explanation + radar chart
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
-      // LOCKED Dominant Description (ignore URL); requested values:
-      dom6desc: { x: 23,  y: 380, w: 215, size: 12, align: "justify", max: 12 },
-      how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left", max: 10 },
+      dom6desc: { x: 23,  y: 380, w: 215, size: 12, align: "justify", max: 12 }, // default to your locked values
+      how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left",    max: 10 },
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
-      // Page 7 — analysis blocks + theme + tips + actions
-      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
-      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
-      p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
-      p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
+
+      // Page 7: three analysis blocks + theme narrative + tips + actions
+      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left",    titleGap: 8,  blockGap: 25, maxBodyLines: 6 },
+      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left",    maxLines: 10 },
+      p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left",    maxLines: 8  },
+      p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left",    maxLines: 8  },
     };
 
-    // Tuners...
+    // --- Tuners (URL overrides) ---
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
       align: alignNorm(qstr(url,`${pfx}align`,spec.align))
     });
 
+    // Page 1
     POS.f1 = tuneBox(POS.f1, "f1");
     POS.n1 = tuneBox(POS.n1, "n1");
     POS.d1 = tuneBox(POS.d1, "d1");
 
-    // Footer tuners, including page 9
-    for (let i=2;i<=9;i++){
-      const f=`f${i}`, n=`n${i}`;
-      POS.footer[f] = tuneBox(POS.footer[f], f);
-      POS.footer[n] = tuneBox(POS.footer[n], n);
+    // Footers f2..f9 / n2..n9
+    for (let i = 2; i <= 9; i++) {
+      const fKey = `f${i}`, nKey = `n${i}`;
+      POS.footer[fKey] = tuneBox(POS.footer[fKey], fKey);
+      POS.footer[nKey] = tuneBox(POS.footer[nKey], nKey);
     }
 
-    // Page 6 tuners (dom6desc is LOCKED — no tuner here)
+    // Page 6 tuners
     POS.dom6     = tuneBox(POS.dom6, "dom6");
+    POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc");
+    POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");
     POS.how6.max = qnum(url,"how6max",POS.how6.max);
     POS.chart6 = {
@@ -298,122 +285,117 @@ export default async function handler(req, res) {
     const pathName  = norm(normPathLabel(flowRaw));
     const dateLbl   = norm(data?.dateLbl || todayLbl());
 
-    drawTextBox(page1, HelvB, pathName, { ...POS.f1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    if (page1) {
+      drawTextBox(page1, HelvB, pathName, { ...POS.f1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    }
 
-    /* -------------------- FOOTERS: pages 2..9 --------------------------- */
-    const drawFooter = (page, fSpec, nSpec) => {
-      drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-      drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    /* -------------------- FOOTERS: pages 2..9 (small) ------------------- */
+    const drawFooter = (pg, fSpec, nSpec) => {
+      if (!pg) return;
+      drawTextBox(pg, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(pg, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
     };
+    drawFooter(page(1), POS.footer.f2, POS.footer.n2);
+    drawFooter(page(2), POS.footer.f3, POS.footer.n3);
+    drawFooter(page(3), POS.footer.f4, POS.footer.n4);
+    drawFooter(page(4), POS.footer.f5, POS.footer.n5);
+    drawFooter(page6,   POS.footer.f6, POS.footer.n6);
+    drawFooter(page7,   POS.footer.f7, POS.footer.n7);
+    drawFooter(page(7), POS.footer.f8, POS.footer.n8);
+    drawFooter(page9,   POS.footer.f9, POS.footer.n9); // NEW
 
-    const pageCount = pdf.getPageCount();
-    const p2 = pageCount >= 2 ? pdf.getPage(1) : null;
-    const p3 = pageCount >= 3 ? pdf.getPage(2) : null;
-    const p4 = pageCount >= 4 ? pdf.getPage(3) : null;
-    const p5 = pageCount >= 5 ? pdf.getPage(4) : null;
-    const p8 = pageCount >= 8 ? pdf.getPage(7) : null;
-    const p9 = pageCount >= 9 ? pdf.getPage(8) : null;
-
-    if (p2) drawFooter(p2, POS.footer.f2, POS.footer.n2);
-    if (p3) drawFooter(p3, POS.footer.f3, POS.footer.n3);
-    if (p4) drawFooter(p4, POS.footer.f4, POS.footer.n4);
-    if (p5) drawFooter(p5, POS.footer.f5, POS.footer.n5);
-    if (page6) drawFooter(page6, POS.footer.f6, POS.footer.n6);
-    if (page7) drawFooter(page7, POS.footer.f7, POS.footer.n7);
-    if (p8) drawFooter(p8, POS.footer.f8, POS.footer.n8);
-    if (p9) drawFooter(p9, POS.footer.f9, POS.footer.n9);
-
-    /* -------------------------- PAGE 6 ---------------------------------- */
+    /* -------------------------- PAGE 6 content -------------------------- */
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
     const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
-    if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { x: POS.dom6desc.x, y: POS.dom6desc.y, w: POS.dom6desc.w, size: POS.dom6desc.size, align: POS.dom6desc.align, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
-    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max, ellipsis: true });
+    if (page6) {
+      if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+      if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
+      if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max, ellipsis: true });
 
-    // Chart: accept chartUrl OR spiderChartUrl
-    const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
-    if (chartURL) {
-      try {
-        const r = await fetch(chartURL);
-        if (r.ok) {
-          const png = await pdf.embedPng(await r.arrayBuffer());
-          const { x, y, w, h } = POS.chart6;
-          const ph = page6.getHeight();
-          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+      // Radar chart (PNG)
+      const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
+      if (chartURL) {
+        try {
+          const r = await fetch(chartURL);
+          if (r.ok) {
+            const png = await pdf.embedPng(await r.arrayBuffer());
+            const { x, y, w, h } = POS.chart6;
+            const ph = page6.getHeight();
+            page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+          }
+        } catch { /* ignore image failure */ }
+      }
+    }
+
+    /* -------------------------- PAGE 7 content -------------------------- */
+    if (page7) {
+      const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
+                      : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
+                      : [];
+      const blocks = blocksSrc
+        .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
+        .filter(b => b.title || b.body)
+        .slice(0, 3);
+
+      let curY = POS.p7Patterns.y;
+      for (const b of blocks) {
+        if (b.title) {
+          drawTextBox(page7, HelvB, b.title,
+            { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
+            { maxLines: 1, ellipsis: true }
+          );
+          curY += (POS.p7Patterns.hSize + 3) + POS.p7Patterns.titleGap;
         }
-      } catch { /* ignore image failure */ }
-    }
-
-    /* -------------------------- PAGE 7 ---------------------------------- */
-    const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
-                    : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
-                    : [];
-    const blocks = blocksSrc
-      .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
-      .filter(b => b.title || b.body)
-      .slice(0, 3);
-
-    let curY = POS.p7Patterns.y;
-    for (const b of blocks) {
-      if (b.title) {
-        drawTextBox(page7, HelvB, b.title,
-          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-          { maxLines: 1, ellipsis: true }
-        );
-        curY += (POS.p7Patterns.hSize + 3) + POS.p7Patterns.titleGap;
+        if (b.body) {
+          const r = drawTextBox(page7, Helv, b.body,
+            { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
+            { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
+          );
+          curY += r.height + POS.p7Patterns.blockGap;
+        }
       }
-      if (b.body) {
-        const r = drawTextBox(page7, Helv, b.body,
-          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-          { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
+
+      const themeNarr7 = norm(
+        (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
+        (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
+      );
+      if (themeNarr7) {
+        drawTextBox(page7, Helv, themeNarr7,
+          { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
+          { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
         );
-        curY += r.height + POS.p7Patterns.blockGap;
       }
-    }
 
-    const themeNarr7 = norm(
-      (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
-      (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
-    );
-    if (themeNarr7) {
-      drawTextBox(page7, Helv, themeNarr7,
-        { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
-      );
-    }
+      const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
+      const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join("\n") : "";
+      if (tips2) {
+        drawTextBox(page7, Helv, tips2,
+          { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
+          { maxLines: POS.p7Tips.maxLines, ellipsis: true }
+        );
+      }
 
-    const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
-    const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-    if (tips2) {
-      drawTextBox(page7, Helv, tips2,
-        { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7Tips.maxLines, ellipsis: true }
-      );
-    }
-
-    const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
-    const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-    if (acts2) {
-      drawTextBox(page7, Helv, acts2,
-        { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7Acts.maxLines, ellipsis: true }
-      );
+      const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
+      const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join("\n") : "";
+      if (acts2) {
+        drawTextBox(page7, Helv, acts2,
+          { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
+          { maxLines: POS.p7Acts.maxLines, ellipsis: true }
+        );
+      }
     }
 
     /* ------------------------------ SAVE ------------------------------ */
     const bytes = await pdf.save();
-    const fname = qstr(url, "name", defaultFileName(fullName));
+    const fname = qstr(url, "name", defaultFileName(norm(data?.person?.fullName || "")));
 
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `${preview ? "inline" : "attachment"}; filename="${fname}"`
-    );
+    res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${fname}"`);
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
