@@ -1,4 +1,3 @@
-// /api/fill-template.js
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -7,12 +6,14 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
+
+// Keep ASCII, plus • (U+2022). Also normalise quotes/dashes.
 const norm = (v, fb = "") =>
   S(v, fb)
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ""); // strip odd control chars
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u2022]/g, ""); // keep the bullet
 
 // allow left | center | right | justify
 const alignNorm = (a) => {
@@ -89,7 +90,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
         drawn++;
         continue;
       }
-      // single-word line -> fall through to left/center/right
     }
 
     let xDraw = x;
@@ -107,7 +107,6 @@ async function fetchTemplate(req, url) {
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
   const tplParam = url?.searchParams?.get("tpl");
-  // default to /public file so https://<host>/CTRL_Perspective_...V6.pdf resolves
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
     : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
@@ -162,34 +161,28 @@ const defaultFileName = (fullName) => {
 
 /* ----------------------------- label helpers ----------------------------- */
 
+// General Analysis headings
 const isGAHeading = (s="") =>
   /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
-
 const stripGAHeading = (s="") =>
   String(s).replace(/^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:\s*/i, "");
 
-// Known pattern names for the first-line label
+// Pattern names
 const PATTERN_NAMES = [
-  "Grounded Protector", "Reliable Balancer", "Trusted Presence",
-  "Emerging Explorer", "Rising Integrator", "Transforming Guide",
-  "Cautious Retreater", "Fading Light", "Switching Voice",
-  "Pendulum Seeker", "Balancing Beacon", "Testing the Waters",
-  "Resilient Returner", "Scattered Explorer", "Unsettled Guide"
+  "Grounded Protector","Reliable Balancer","Trusted Presence",
+  "Emerging Explorer","Rising Integrator","Transforming Guide",
+  "Cautious Retreater","Fading Light","Switching Voice",
+  "Pendulum Seeker","Balancing Beacon","Testing the Waters",
+  "Resilient Returner","Scattered Explorer","Unsettled Guide",
 ];
-
-// escape for regex
 const rxEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// e.g. "Scattered Explorer (Start-Low Erratic)" or just "Scattered Explorer"
 const patternHeadRx = new RegExp(
   `^\\s*(?:${PATTERN_NAMES.map(rxEsc).join("|")})(?:\\s*\\([^)]*\\))?\\s*$`,
   "i"
 );
-
-// Also treat these as pure labels when they appear as the first line
 const THEME_LABEL_RX = /^\s*emotion\s+regulation\s*\+\s*feedback\s*handling\s*$/i;
 
-// Strip a leading label line if present
+// Strip first-line labels in page-7 bodies
 function stripLeadingLabel(text = "") {
   const t = String(text || "").replace(/\r/g, "");
   const lines = t.split("\n");
@@ -197,25 +190,77 @@ function stripLeadingLabel(text = "") {
   const first  = lines[0].trim();
   const second = lines[1].trim();
 
-  if (
-    patternHeadRx.test(first) ||
-    THEME_LABEL_RX.test(first) ||
-    isGAHeading(first)
-  ) {
+  if (patternHeadRx.test(first) || THEME_LABEL_RX.test(first) || isGAHeading(first)) {
     return lines.slice(1).join("\n").trim();
   }
-
-  // Heuristic: short first line + a natural opener on the second line
   const openers = [/^it\s+looks\s+like/i, /^you\b/i, /^this\b/i];
   if (first.length <= 80 && openers.some(rx => rx.test(second))) {
     return lines.slice(1).join("\n").trim();
   }
+  return t.trim();
+}
+
+const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
+
+/* ----------------------- tip/action bullet cleaners ---------------------- */
+
+// Remove leading emojis, bullets, numbering, and labels like "Tip:" / "Action:"
+function stripBulletLabel(s = "") {
+  let t = String(s || "").trim();
+
+  // strip some common emoji markers
+  t = t.replace(/^(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)\s*/i, "");
+
+  // strip "1) " / "1." / "1 - " etc
+  t = t.replace(/^\s*\d+\s*[\.\)\-:]\s*/i, "");
+
+  // strip labels (tip(s), action(s), next step, etc.)
+  t = t.replace(/^\s*(tip|tips|action|actions|next\s*(step|action)?)\s*:\s*/i, "");
 
   return t.trim();
 }
 
-// de-dup key for bodies
-const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
+// Normalise tip/action arrays; route mis-filed "Action:" lines into actions
+function normaliseTipsActions(data) {
+  const tipsIn = Array.isArray(data?.tips2) ? data.tips2 : [];
+  const actsIn = Array.isArray(data?.actions2) ? data.actions2 : [];
+
+  const tips = [];
+  const actions = [];
+
+  for (const raw of tipsIn) {
+    const n = norm(raw);
+    if (!n) continue;
+    const stripped = stripBulletLabel(n);
+    // If it started with Action, the previous replace removed label; detect via prefix in original
+    if (/^\s*(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)?\s*action/i.test(n)) {
+      actions.push(stripped);
+    } else {
+      tips.push(stripped);
+    }
+  }
+
+  for (const raw of actsIn) {
+    const n = norm(raw);
+    if (!n) continue;
+    actions.push(stripBulletLabel(n));
+  }
+
+  // de-dup while preserving order
+  const dedup = (arr) => {
+    const seen = new Set();
+    const out = [];
+    for (const v of arr) {
+      const k = bodyKey(v);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(v);
+    }
+    return out;
+  };
+
+  return { tips: dedup(tips), actions: dedup(actions) };
+}
 
 /* ----------------------------- handler ----------------------------- */
 
@@ -262,7 +307,6 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        // Page 9 footer
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
       // Page 6
@@ -272,14 +316,21 @@ export default async function handler(req, res) {
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
       // Page 7
       p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
-      // p7ThemePara intentionally unused/removed
+      // p7ThemePara intentionally omitted (removed at your request)
       p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
+      // Tips / Actions (can be stacked or side-by-side using taCols=1)
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
       p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
     };
 
-    // Optional Page-7 label whiteouts (OFF by default). Helpful if artwork has baked-in labels.
-    //  p7w1x,p7w1y,p7w1w,p7w1h (for “Pattern” area), p7w2* (for “Themes” area)
+    // Optional: force columns for tips/actions (defaults to your tuners)
+    if (qnum(url, "taCols", 0) === 1) {
+      // simple default 2-column layout; still override-able via tuners
+      POS.p7Tips.x = 40;  POS.p7Tips.y = 595; POS.p7Tips.w = 300;
+      POS.p7Acts.x = 360; POS.p7Acts.y = 595; POS.p7Acts.w = 300;
+    }
+
+    // Optional Page-7 label whiteouts
     const wipeP7 = qnum(url, "wipep7", 0) === 1;
     const W1 = { x: qnum(url,"p7w1x",0), y: qnum(url,"p7w1y",0), w: qnum(url,"p7w1w",0), h: qnum(url,"p7w1h",0) };
     const W2 = { x: qnum(url,"p7w2x",0), y: qnum(url,"p7w2y",0), w: qnum(url,"p7w2w",0), h: qnum(url,"p7w2h",0) };
@@ -350,7 +401,7 @@ export default async function handler(req, res) {
     drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
-    /* -------------------- FOOTERS: pages 2..9 (if exist) ----------------- */
+    /* -------------------- FOOTERS: pages 2..9 --------------------------- */
     const drawFooter = (page, fSpec, nSpec) => {
       drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
       drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
@@ -360,7 +411,8 @@ export default async function handler(req, res) {
     drawFooter(p3, POS.footer.f3, POS.footer.n3);
     drawFooter(p4, POS.footer.f4, POS.footer.n4);
     drawFooter(p5, POS.footer.f5, POS.footer.n5);
-    drawFooter(page6, POS.footer.f6, POS.footer.n6);
+    const page6Footer = POS.footer.f6 && POS.footer.n6;
+    if (page6Footer) drawFooter(pdf.getPage(5), POS.footer.f6, POS.footer.n6);
     drawFooter(page7, POS.footer.f7, POS.footer.n7);
     const p8 = pdf.getPage(7); drawFooter(p8, POS.footer.f8, POS.footer.n8);
     if (pageCount >= 9) {
@@ -406,18 +458,16 @@ export default async function handler(req, res) {
           });
         }
       };
-      paint(W1); // “Pattern” area
-      paint(W2); // “Themes” area
+      paint(W1);
+      paint(W2);
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // Left column source (p7p): render ONLY bodies (no titles/labels)
+    // Left column: up to 3 short blocks - titles removed; first-line labels stripped
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
-
-    // Build map by body; strip GA headings + FIRST-LINE LABELS; ignore titles entirely
-    const byBody = new Map(); // key -> { body, order }
+    const byBody = new Map();
     for (let i = 0; i < blocksSrc.length; i++) {
       const rawBody = norm(blocksSrc[i]?.body || "");
       const body = stripLeadingLabel(stripGAHeading(rawBody));
@@ -425,10 +475,7 @@ export default async function handler(req, res) {
       if (!k) continue;
       if (!byBody.has(k)) byBody.set(k, { body, order: i });
     }
-
-    const blocks = Array.from(byBody.values())
-      .sort((a, b) => a.order - b.order)
-      .slice(0, 3);
+    const blocks = Array.from(byBody.values()).sort((a,b)=>a.order-b.order).slice(0,3);
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
@@ -439,23 +486,19 @@ export default async function handler(req, res) {
       curY += r.height + POS.p7Patterns.blockGap;
     }
 
-    // Theme paragraph (p7t) intentionally OMITTED
+    // Tips & Actions — cleaned, correctly bucketed, with visible bullets
+    const { tips, actions } = normaliseTipsActions(data);
+    const tipsText = tips.length ? tips.map(t => `• ${t}`).join("\n") : "";
+    const actsText = actions.length ? actions.map(t => `• ${t}`).join("\n") : "";
 
-    // Tips (bullets)
-    const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
-    const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-    if (tips2) {
-      drawTextBox(page7, Helv, tips2,
+    if (tipsText) {
+      drawTextBox(page7, Helv, tipsText,
         { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7Tips.maxLines, ellipsis: true }
       );
     }
-
-    // Actions (bullets)
-    const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
-    const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-    if (acts2) {
-      drawTextBox(page7, Helv, acts2,
+    if (actsText) {
+      drawTextBox(page7, Helv, actsText,
         { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7Acts.maxLines, ellipsis: true }
       );
