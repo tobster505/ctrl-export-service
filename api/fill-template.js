@@ -22,8 +22,7 @@ const alignNorm = (a) => {
   return "left";
 };
 
-// Wrap/align text into a box (y = distance from TOP)
-// Supports justify (last line left-aligned by design)
+// Wrap/align text into a box (y = distance from TOP) with justify support
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -163,6 +162,7 @@ const defaultFileName = (fullName) => {
 
 /* ----------------------------- label helpers ----------------------------- */
 
+// drop dynamic GA headings, keep real titles like "Emotion Regulation + Feedback Handling"
 const isGAHeading = (s="") =>
   /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
 
@@ -330,7 +330,6 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 6 ---------------------------------- */
-    // accepts &dom6Label / &dominantDesc / &dom6Desc / &how6 / &how6Text / &chartParagraph
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
     const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
@@ -373,36 +372,49 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // Left column: up to 3 short blocks
+    // Left column source
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
 
-    // map + strip GA headings + de-dup by body
-    const seenBodies = new Set();
-    const blocks = [];
+    // Prefer the entry that HAS a title when bodies duplicate.
+    // Also drop any GA label titles (“General Analysis – …”).
+    const byBody = new Map(); // key -> {title, body, order}
+    for (let i = 0; i < blocksSrc.length; i++) {
+      const rawTitle = norm(blocksSrc[i]?.title || "");
+      const rawBody  = norm(blocksSrc[i]?.body  || "");
 
-    for (const b of blocksSrc) {
-      const rawTitle = norm(b?.title || "");
-      const rawBody  = norm(b?.body  || "");
-      // drop the GA label titles entirely
-      if (isGAHeading(rawTitle)) continue;
-
-      // also strip any GA preamble that was embedded into body
-      const title = rawTitle; // keep real titles like "Emotion Regulation + Feedback Handling"
+      // skip dynamic GA headings as titles entirely
+      const title = isGAHeading(rawTitle) ? "" : rawTitle;
       const body  = stripGAHeading(rawBody);
 
-      // skip empty
       if (!title && !body) continue;
 
-      // de-dup on body text (the usual culprit)
       const k = bodyKey(body);
-      if (k && seenBodies.has(k)) continue;
-      if (k) seenBodies.add(k);
+      if (!k) {
+        // unique (e.g., only title): use title as key so we can still show it
+        const tk = `__title__:${norm(title).toLowerCase()}`;
+        if (!byBody.has(tk)) byBody.set(tk, { title, body, order: i });
+        else {
+          // keep the first occurrence
+        }
+        continue;
+      }
 
-      blocks.push({ title, body });
-      if (blocks.length >= 3) break;
+      if (!byBody.has(k)) {
+        byBody.set(k, { title, body, order: i });
+      } else {
+        const cur = byBody.get(k);
+        // If current has no title and incoming has title -> replace (bring back the titled one)
+        if (!cur.title && title) byBody.set(k, { title, body, order: cur.order }); // preserve original order
+        // else keep the existing (first wins)
+      }
     }
+
+    // Take up to 3 in original order
+    const blocks = Array.from(byBody.values())
+      .sort((a, b) => a.order - b.order)
+      .slice(0, 3);
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
@@ -422,16 +434,28 @@ export default async function handler(req, res) {
       }
     }
 
-    // Theme paragraph (p7t*)
+    // Theme paragraph behaviour
+    const prefer = qstr(url, "p7prefer", "blocks"); // "blocks" | "theme"
+    const dropThemeAlways = qnum(url, "dropTheme", 0) === 1;
+
     const themeNarr7Raw = norm(
       (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
       (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
     );
-    // If the theme paragraph duplicates a block body, skip it
-    const themeKey = bodyKey(stripGAHeading(themeNarr7Raw));
-    const dupTheme = themeKey && seenBodies.has(themeKey);
-    if (themeNarr7Raw && !dupTheme) {
-      drawTextBox(page7, Helv, stripGAHeading(themeNarr7Raw),
+    const themeClean = stripGAHeading(themeNarr7Raw);
+    const themeKey = bodyKey(themeClean);
+
+    const blockBodyKeys = new Set(
+      blocks.map(b => bodyKey(b.body)).filter(Boolean)
+    );
+
+    const themeIsDup = themeKey && blockBodyKeys.has(themeKey);
+
+    // Always KEEP blocks. Only draw theme if:
+    // - not forced off,
+    // - and (prefer === 'theme' OR it's not a duplicate).
+    if (themeClean && !dropThemeAlways && (prefer === "theme" || !themeIsDup)) {
+      drawTextBox(page7, Helv, themeClean,
         { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
       );
