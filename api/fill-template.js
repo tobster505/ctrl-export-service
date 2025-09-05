@@ -32,6 +32,31 @@ function stripPatternHeader(s) {
   return out.trim();
 }
 
+// Helpers to suppress specific labels
+const normalizeLabel = (s) =>
+  norm(s).toLowerCase().replace(/[–—-]+/g, "-").replace(/\s+/g, " ").trim();
+
+const shouldDropTitle = (t) => {
+  const nt = normalizeLabel(t);
+  return nt === "general analysis - pattern" || nt === "general analysis - themes";
+};
+
+// If a paragraph begins with one of these labels, drop that first line (or inline prefix)
+function stripLeadingKnownLabels(s) {
+  const labels = new Set(["general analysis - themes", "general analysis - pattern"]);
+  const lines = String(s || "").split(/\r?\n/);
+  if (lines.length) {
+    const firstNorm = normalizeLabel(lines[0]);
+    if (labels.has(firstNorm)) lines.shift();
+  }
+  let out = lines.join("\n");
+  out = out.replace(
+    /^\s*(General\s+Analysis\s*[–—-]\s*(Themes|Pattern))\s*[:\-–—]\s*/i,
+    ""
+  );
+  return out.trim();
+}
+
 // Wrap/align text into a box (y = distance from TOP)
 // Supports justify (last line left-aligned by design)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
@@ -367,7 +392,9 @@ export default async function handler(req, res) {
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
-      if (b.title) {
+      const dropThisTitle = b.title && shouldDropTitle(b.title);
+
+      if (b.title && !dropThisTitle) {
         drawTextBox(page7, HelvB, b.title,
           { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
           { maxLines: 1, ellipsis: true }
@@ -383,12 +410,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // Theme paragraph (p7t*)
-    const themeNarr7 = norm(
+    // Theme paragraph (p7t*) — also strip any leading "General Analysis - Themes" label if present
+    let themeNarr7 = norm(
       (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
       (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
     );
     if (themeNarr7) {
+      themeNarr7 = stripLeadingKnownLabels(themeNarr7);
       drawTextBox(page7, Helv, themeNarr7,
         { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
