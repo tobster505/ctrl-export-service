@@ -22,41 +22,6 @@ const alignNorm = (a) => {
   return "left";
 };
 
-// Remove a leading "Label (Type)" header from a block body, if present
-function stripPatternHeader(s) {
-  let out = String(s || "");
-  // Case 1: label on its own first line, then text on next lines
-  out = out.replace(/^\s*[A-Za-z][^\n]*\([^)]+\)\s*\n+/, "");
-  // Case 2: label followed by dash/colon and text on the same line
-  out = out.replace(/^\s*[A-Za-z][^(]*\([^)]+\)\s*[-–—:]+\s*/, "");
-  return out.trim();
-}
-
-// Helpers to suppress specific labels
-const normalizeLabel = (s) =>
-  norm(s).toLowerCase().replace(/[–—-]+/g, "-").replace(/\s+/g, " ").trim();
-
-const shouldDropTitle = (t) => {
-  const nt = normalizeLabel(t);
-  return nt === "general analysis - pattern" || nt === "general analysis - themes";
-};
-
-// If a paragraph begins with one of these labels, drop that first line (or inline prefix)
-function stripLeadingKnownLabels(s) {
-  const labels = new Set(["general analysis - themes", "general analysis - pattern"]);
-  const lines = String(s || "").split(/\r?\n/);
-  if (lines.length) {
-    const firstNorm = normalizeLabel(lines[0]);
-    if (labels.has(firstNorm)) lines.shift();
-  }
-  let out = lines.join("\n");
-  out = out.replace(
-    /^\s*(General\s+Analysis\s*[–—-]\s*(Themes|Pattern))\s*[:\-–—]\s*/i,
-    ""
-  );
-  return out.trim();
-}
-
 // Wrap/align text into a box (y = distance from TOP)
 // Supports justify (last line left-aligned by design)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
@@ -196,6 +161,17 @@ const defaultFileName = (fullName) => {
   return `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
 };
 
+/* ----------------------------- label helpers ----------------------------- */
+
+const isGAHeading = (s="") =>
+  /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
+
+const stripGAHeading = (s="") =>
+  String(s).replace(/^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:\s*/i, "");
+
+// de-dup key for bodies
+const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
+
 /* ----------------------------- handler ----------------------------- */
 
 export default async function handler(req, res) {
@@ -255,6 +231,14 @@ export default async function handler(req, res) {
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
       p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
     };
+
+    // Optional Page-7 label whiteouts (OFF by default)
+    // Turn on with &wipep7=1 and tune with:
+    //  p7w1x,p7w1y,p7w1w,p7w1h (for the “Pattern” label area)
+    //  p7w2x,p7w2y,p7w2w,p7w2h (for the “Themes” label area)
+    const wipeP7 = qnum(url, "wipep7", 0) === 1;
+    const W1 = { x: qnum(url,"p7w1x",0), y: qnum(url,"p7w1y",0), w: qnum(url,"p7w1w",0), h: qnum(url,"p7w1h",0) };
+    const W2 = { x: qnum(url,"p7w2x",0), y: qnum(url,"p7w2y",0), w: qnum(url,"p7w2w",0), h: qnum(url,"p7w2h",0) };
 
     // Tuners...
     const tuneBox = (spec, pfx) => ({
@@ -352,8 +336,8 @@ export default async function handler(req, res) {
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
     if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
-    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max,   ellipsis: true });
+    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35), align: POS.dom6desc.align }, { maxLines: POS.dom6desc.max, ellipsis: true });
+    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35), align: POS.how6.align     }, { maxLines: POS.how6.max,   ellipsis: true });
 
     // Chart: accept chartUrl OR spiderChartUrl
     const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
@@ -369,32 +353,60 @@ export default async function handler(req, res) {
       } catch { /* ignore image failure */ }
     }
 
+    /* -------------------- (OPTIONAL) WHITEOUT STATIC P7 LABELS ---------- */
+    if (wipeP7) {
+      const ph = page7.getHeight();
+      const paint = (r) => {
+        if (r.w > 0 && r.h > 0) {
+          page7.drawRectangle({
+            x: r.x,
+            y: ph - r.y - r.h, // convert from top-based 'y'
+            width: r.w,
+            height: r.h,
+            color: rgb(1,1,1),
+            borderColor: rgb(1,1,1),
+          });
+        }
+      };
+      paint(W1); // e.g. “General Analysis – Pattern”
+      paint(W2); // e.g. “General Analysis – Themes”
+    }
+
     /* -------------------------- PAGE 7 ---------------------------------- */
     // Left column: up to 3 short blocks
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
-    let blocks = blocksSrc
-      .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
-      .filter(b => b.title || b.body)
-      .slice(0, 3);
 
-    // Strip a leading "Label (Type)" header from the body if present (default on)
-    const stripPat = url.searchParams.get("stripPatternLabel") !== "0";
-    if (stripPat) {
-      blocks = blocks.map(b => {
-        if (/^\s*[A-Za-z][^\n]*\([^)]+\)/.test(b.body)) {
-          return { ...b, body: stripPatternHeader(b.body) };
-        }
-        return b;
-      });
+    // map + strip GA headings + de-dup by body
+    const seenBodies = new Set();
+    const blocks = [];
+
+    for (const b of blocksSrc) {
+      const rawTitle = norm(b?.title || "");
+      const rawBody  = norm(b?.body  || "");
+      // drop the GA label titles entirely
+      if (isGAHeading(rawTitle)) continue;
+
+      // also strip any GA preamble that was embedded into body
+      const title = rawTitle; // keep real titles like "Emotion Regulation + Feedback Handling"
+      const body  = stripGAHeading(rawBody);
+
+      // skip empty
+      if (!title && !body) continue;
+
+      // de-dup on body text (the usual culprit)
+      const k = bodyKey(body);
+      if (k && seenBodies.has(k)) continue;
+      if (k) seenBodies.add(k);
+
+      blocks.push({ title, body });
+      if (blocks.length >= 3) break;
     }
 
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
-      const dropThisTitle = b.title && shouldDropTitle(b.title);
-
-      if (b.title && !dropThisTitle) {
+      if (b.title) {
         drawTextBox(page7, HelvB, b.title,
           { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
           { maxLines: 1, ellipsis: true }
@@ -410,14 +422,16 @@ export default async function handler(req, res) {
       }
     }
 
-    // Theme paragraph (p7t*) — also strip any leading "General Analysis - Themes" label if present
-    let themeNarr7 = norm(
+    // Theme paragraph (p7t*)
+    const themeNarr7Raw = norm(
       (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
       (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
     );
-    if (themeNarr7) {
-      themeNarr7 = stripLeadingKnownLabels(themeNarr7);
-      drawTextBox(page7, Helv, themeNarr7,
+    // If the theme paragraph duplicates a block body, skip it
+    const themeKey = bodyKey(stripGAHeading(themeNarr7Raw));
+    const dupTheme = themeKey && seenBodies.has(themeKey);
+    if (themeNarr7Raw && !dupTheme) {
+      drawTextBox(page7, Helv, stripGAHeading(themeNarr7Raw),
         { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
         { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
       );
