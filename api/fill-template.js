@@ -1,3 +1,4 @@
+// /api/fill-template.js
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -7,13 +8,13 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-// Keep ASCII, plus • (U+2022). Also normalise quotes/dashes.
+// Keep ASCII plus the • bullet. Normalise quotes/dashes.
 const norm = (v, fb = "") =>
   S(v, fb)
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\u2022]/g, ""); // keep the bullet
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u2022]/g, "");
 
 // allow left | center | right | justify
 const alignNorm = (a) => {
@@ -102,6 +103,42 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
+// Bulleted list renderer: bullet + indented wrapped text per item
+function drawBulletedList(page, font, items, spec = {}, opts = {}) {
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0,0,0), align = "left",
+    bulletIndent = 16, // px from bullet to text
+  } = spec;
+  const itemGap = opts.itemGap ?? 6;
+
+  const ph = page.getHeight();
+  let yTopDist = y;  // distance from top for each item
+  let totalH = 0;
+
+  for (const raw of items) {
+    const text = norm(raw);
+    if (!text) continue;
+
+    // draw bullet at first line baseline
+    const firstBaseline = ph - yTopDist;
+    page.drawText("•", { x, y: firstBaseline, size, font, color });
+
+    // draw the indented text
+    const r = drawTextBox(
+      page, font, text,
+      { x: x + bulletIndent, y: yTopDist, w: w - bulletIndent, size, lineGap, color, align },
+      { maxLines: opts.maxLinesPerItem ?? 6, ellipsis: true }
+    );
+
+    const h = Math.max(r.height, size + lineGap);
+    yTopDist += h + itemGap;
+    totalH   += h + itemGap;
+  }
+
+  return { height: totalH, lastY: ph - yTopDist };
+}
+
 async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, "ctrl-export-service.vercel.app");
@@ -161,13 +198,12 @@ const defaultFileName = (fullName) => {
 
 /* ----------------------------- label helpers ----------------------------- */
 
-// General Analysis headings
 const isGAHeading = (s="") =>
   /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
 const stripGAHeading = (s="") =>
   String(s).replace(/^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:\s*/i, "");
 
-// Pattern names
+// Known pattern names for first-line stripping
 const PATTERN_NAMES = [
   "Grounded Protector","Reliable Balancer","Trusted Presence",
   "Emerging Explorer","Rising Integrator","Transforming Guide",
@@ -182,7 +218,6 @@ const patternHeadRx = new RegExp(
 );
 const THEME_LABEL_RX = /^\s*emotion\s+regulation\s*\+\s*feedback\s*handling\s*$/i;
 
-// Strip first-line labels in page-7 bodies
 function stripLeadingLabel(text = "") {
   const t = String(text || "").replace(/\r/g, "");
   const lines = t.split("\n");
@@ -200,66 +235,32 @@ function stripLeadingLabel(text = "") {
   return t.trim();
 }
 
-const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
-
-/* ----------------------- tip/action bullet cleaners ---------------------- */
-
-// Remove leading emojis, bullets, numbering, and labels like "Tip:" / "Action:"
+// Remove leading bullets/numbers/labels like "Tip:" / "Action:"
 function stripBulletLabel(s = "") {
   let t = String(s || "").trim();
-
-  // strip some common emoji markers
   t = t.replace(/^(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)\s*/i, "");
-
-  // strip "1) " / "1." / "1 - " etc
   t = t.replace(/^\s*\d+\s*[\.\)\-:]\s*/i, "");
-
-  // strip labels (tip(s), action(s), next step, etc.)
   t = t.replace(/^\s*(tip|tips|action|actions|next\s*(step|action)?)\s*:\s*/i, "");
-
   return t.trim();
 }
+const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
 
-// Normalise tip/action arrays; route mis-filed "Action:" lines into actions
-function normaliseTipsActions(data) {
-  const tipsIn = Array.isArray(data?.tips2) ? data.tips2 : [];
-  const actsIn = Array.isArray(data?.actions2) ? data.actions2 : [];
-
+// Extract in-line "Tip:" / "Action:" lines from a block body
+function extractLabeledLines(text="") {
+  const src = String(text || "").replace(/\r/g, "");
+  const lines = src.split("\n");
+  const kept = [];
   const tips = [];
   const actions = [];
 
-  for (const raw of tipsIn) {
-    const n = norm(raw);
+  for (const line of lines) {
+    const n = norm(line);
     if (!n) continue;
-    const stripped = stripBulletLabel(n);
-    // If it started with Action, the previous replace removed label; detect via prefix in original
-    if (/^\s*(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)?\s*action/i.test(n)) {
-      actions.push(stripped);
-    } else {
-      tips.push(stripped);
-    }
+    if (/^\s*(tip|tips)\s*:/i.test(n)) { tips.push(stripBulletLabel(n)); continue; }
+    if (/^\s*(action|actions|next\s*(step|action)?)\s*:/i.test(n)) { actions.push(stripBulletLabel(n)); continue; }
+    kept.push(line);
   }
-
-  for (const raw of actsIn) {
-    const n = norm(raw);
-    if (!n) continue;
-    actions.push(stripBulletLabel(n));
-  }
-
-  // de-dup while preserving order
-  const dedup = (arr) => {
-    const seen = new Set();
-    const out = [];
-    for (const v of arr) {
-      const k = bodyKey(v);
-      if (!k || seen.has(k)) continue;
-      seen.add(k);
-      out.push(v);
-    }
-    return out;
-  };
-
-  return { tips: dedup(tips), actions: dedup(actions) };
+  return { body: kept.join("\n").trim(), tips, actions };
 }
 
 /* ----------------------------- handler ----------------------------- */
@@ -315,27 +316,28 @@ export default async function handler(req, res) {
       how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left", max: 10 },
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
       // Page 7
-      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
-      // p7ThemePara intentionally omitted (removed at your request)
-      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
-      // Tips / Actions (can be stacked or side-by-side using taCols=1)
+      p7Patterns:  { x: 40,  y: 180, w: 460, bSize: 20, align:"left", blockGap: 25, maxBodyLines: 6 },
+      // (p7t removed by request)
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
       p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
     };
 
-    // Optional: force columns for tips/actions (defaults to your tuners)
+    // Optional: two columns for tips/actions
     if (qnum(url, "taCols", 0) === 1) {
-      // simple default 2-column layout; still override-able via tuners
       POS.p7Tips.x = 40;  POS.p7Tips.y = 595; POS.p7Tips.w = 300;
       POS.p7Acts.x = 360; POS.p7Acts.y = 595; POS.p7Acts.w = 300;
     }
+    const BULLETS = {
+      indent: qnum(url, "bulleti", 16),
+      itemGap: qnum(url, "bulletgap", 6),
+    };
 
-    // Optional Page-7 label whiteouts
+    // Optional whiteouts for static labels if needed
     const wipeP7 = qnum(url, "wipep7", 0) === 1;
     const W1 = { x: qnum(url,"p7w1x",0), y: qnum(url,"p7w1y",0), w: qnum(url,"p7w1w",0), h: qnum(url,"p7w1h",0) };
     const W2 = { x: qnum(url,"p7w2x",0), y: qnum(url,"p7w2y",0), w: qnum(url,"p7w2w",0), h: qnum(url,"p7w2h",0) };
 
-    // Tuners...
+    // Tuners
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
@@ -366,10 +368,8 @@ export default async function handler(req, res) {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
       w: qnum(url,"p7pw",POS.p7Patterns.w),
-      hSize: qnum(url,"p7phsize",POS.p7Patterns.hSize),
       bSize: qnum(url,"p7pbsize",POS.p7Patterns.bSize),
       align: alignNorm(qstr(url,"p7palign",POS.p7Patterns.align)),
-      titleGap: qnum(url,"p7ptitlegap",POS.p7Patterns.titleGap),
       blockGap: qnum(url,"p7pblockgap",POS.p7Patterns.blockGap),
       maxBodyLines: qnum(url,"p7pmax",POS.p7Patterns.maxBodyLines),
     };
@@ -411,8 +411,7 @@ export default async function handler(req, res) {
     drawFooter(p3, POS.footer.f3, POS.footer.n3);
     drawFooter(p4, POS.footer.f4, POS.footer.n4);
     drawFooter(p5, POS.footer.f5, POS.footer.n5);
-    const page6Footer = POS.footer.f6 && POS.footer.n6;
-    if (page6Footer) drawFooter(pdf.getPage(5), POS.footer.f6, POS.footer.n6);
+    drawFooter(pdf.getPage(5), POS.footer.f6, POS.footer.n6);
     drawFooter(page7, POS.footer.f7, POS.footer.n7);
     const p8 = pdf.getPage(7); drawFooter(p8, POS.footer.f8, POS.footer.n8);
     if (pageCount >= 9) {
@@ -450,7 +449,7 @@ export default async function handler(req, res) {
         if (r.w > 0 && r.h > 0) {
           page7.drawRectangle({
             x: r.x,
-            y: ph - r.y - r.h, // convert from top-based y
+            y: ph - r.y - r.h,
             width: r.w,
             height: r.h,
             color: rgb(1,1,1),
@@ -463,18 +462,25 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // Left column: up to 3 short blocks - titles removed; first-line labels stripped
+    // 1) Left column: up to 3 short blocks (strip first-line labels; also pull any Tip:/Action: lines out)
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
     const byBody = new Map();
+    const pulledTips = [];
+    const pulledActions = [];
+
     for (let i = 0; i < blocksSrc.length; i++) {
       const rawBody = norm(blocksSrc[i]?.body || "");
-      const body = stripLeadingLabel(stripGAHeading(rawBody));
+      const noLead  = stripLeadingLabel(stripGAHeading(rawBody));
+      const { body, tips, actions } = extractLabeledLines(noLead);
+      pulledTips.push(...tips);
+      pulledActions.push(...actions);
       const k = bodyKey(body);
       if (!k) continue;
       if (!byBody.has(k)) byBody.set(k, { body, order: i });
     }
+
     const blocks = Array.from(byBody.values()).sort((a,b)=>a.order-b.order).slice(0,3);
 
     let curY = POS.p7Patterns.y;
@@ -486,21 +492,55 @@ export default async function handler(req, res) {
       curY += r.height + POS.p7Patterns.blockGap;
     }
 
-    // Tips & Actions — cleaned, correctly bucketed, with visible bullets
-    const { tips, actions } = normaliseTipsActions(data);
-    const tipsText = tips.length ? tips.map(t => `• ${t}`).join("\n") : "";
-    const actsText = actions.length ? actions.map(t => `• ${t}`).join("\n") : "";
+    // 2) Tips & Actions — include pulled lines + arrays, rendered as proper bullets with indent
+    const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
+    const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
 
-    if (tipsText) {
-      drawTextBox(page7, Helv, tipsText,
-        { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7Tips.maxLines, ellipsis: true }
+    // Clean array items
+    const cleanList = (arr) => {
+      const out = [];
+      const seen = new Set();
+      for (const raw of arr) {
+        const n = norm(raw);
+        if (!n) continue;
+        const t = stripBulletLabel(n);
+        const k = bodyKey(t);
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        out.push(t);
+      }
+      return out;
+    };
+
+    // If a tip starts with "Action:" it was stripped above; bucket it correctly here as well
+    const tipsClean = [];
+    const actionsClean = [];
+
+    for (const raw of tipsArr) {
+      const n = norm(raw);
+      if (!n) continue;
+      if (/^\s*(?:🧭|✅|✔️|⭐|👉|📌|•|\-|\u2022)?\s*action/i.test(n)) actionsClean.push(stripBulletLabel(n));
+      else tipsClean.push(stripBulletLabel(n));
+    }
+    actionsClean.push(...cleanList(actsArr));
+
+    // Add pulled lines from the blocks
+    tipsClean.push(...cleanList(pulledTips));
+    actionsClean.push(...cleanList(pulledActions));
+
+    // Render bullets with indent
+    if (tipsClean.length) {
+      drawBulletedList(
+        page7, Helv, tipsClean,
+        { x: POS.p7Tips.x, y: POS.p7Tips.y, w: POS.p7Tips.w, size: POS.p7Tips.size, lineGap: 3, color: rgb(0.24,0.23,0.35), align: POS.p7Tips.align, bulletIndent: BULLETS.indent },
+        { itemGap: BULLETS.itemGap, maxLinesPerItem: POS.p7Tips.maxLines }
       );
     }
-    if (actsText) {
-      drawTextBox(page7, Helv, actsText,
-        { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
-        { maxLines: POS.p7Acts.maxLines, ellipsis: true }
+    if (actionsClean.length) {
+      drawBulletedList(
+        page7, Helv, actionsClean,
+        { x: POS.p7Acts.x, y: POS.p7Acts.y, w: POS.p7Acts.w, size: POS.p7Acts.size, lineGap: 3, color: rgb(0.24,0.23,0.35), align: POS.p7Acts.align, bulletIndent: BULLETS.indent },
+        { itemGap: BULLETS.itemGap, maxLinesPerItem: POS.p7Acts.maxLines }
       );
     }
 
