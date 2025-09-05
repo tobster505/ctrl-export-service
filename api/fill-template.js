@@ -162,12 +162,57 @@ const defaultFileName = (fullName) => {
 
 /* ----------------------------- label helpers ----------------------------- */
 
-// drop dynamic GA headings if they sneak into content
 const isGAHeading = (s="") =>
   /^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:?$/i.test(String(s));
 
 const stripGAHeading = (s="") =>
   String(s).replace(/^\s*general\s+analysis\s*[-–—]\s*(pattern|themes)\s*:\s*/i, "");
+
+// Known pattern names for the first-line label
+const PATTERN_NAMES = [
+  "Grounded Protector", "Reliable Balancer", "Trusted Presence",
+  "Emerging Explorer", "Rising Integrator", "Transforming Guide",
+  "Cautious Retreater", "Fading Light", "Switching Voice",
+  "Pendulum Seeker", "Balancing Beacon", "Testing the Waters",
+  "Resilient Returner", "Scattered Explorer", "Unsettled Guide"
+];
+
+// escape for regex
+const rxEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// e.g. "Scattered Explorer (Start-Low Erratic)" or just "Scattered Explorer"
+const patternHeadRx = new RegExp(
+  `^\\s*(?:${PATTERN_NAMES.map(rxEsc).join("|")})(?:\\s*\\([^)]*\\))?\\s*$`,
+  "i"
+);
+
+// Also treat these as pure labels when they appear as the first line
+const THEME_LABEL_RX = /^\s*emotion\s+regulation\s*\+\s*feedback\s*handling\s*$/i;
+
+// Strip a leading label line if present
+function stripLeadingLabel(text = "") {
+  const t = String(text || "").replace(/\r/g, "");
+  const lines = t.split("\n");
+  if (lines.length < 2) return t.trim();
+  const first  = lines[0].trim();
+  const second = lines[1].trim();
+
+  if (
+    patternHeadRx.test(first) ||
+    THEME_LABEL_RX.test(first) ||
+    isGAHeading(first)
+  ) {
+    return lines.slice(1).join("\n").trim();
+  }
+
+  // Heuristic: short first line + a natural opener on the second line
+  const openers = [/^it\s+looks\s+like/i, /^you\b/i, /^this\b/i];
+  if (first.length <= 80 && openers.some(rx => rx.test(second))) {
+    return lines.slice(1).join("\n").trim();
+  }
+
+  return t.trim();
+}
 
 // de-dup key for bodies
 const bodyKey = (s="") => norm(s).replace(/\s+/g, " ").trim().toLowerCase();
@@ -371,11 +416,11 @@ export default async function handler(req, res) {
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
 
-    // Build map by body; strip any GA headings from body; ignore titles entirely
+    // Build map by body; strip GA headings + FIRST-LINE LABELS; ignore titles entirely
     const byBody = new Map(); // key -> { body, order }
     for (let i = 0; i < blocksSrc.length; i++) {
-      const rawBody  = norm(blocksSrc[i]?.body  || "");
-      const body     = stripGAHeading(rawBody);
+      const rawBody = norm(blocksSrc[i]?.body || "");
+      const body = stripLeadingLabel(stripGAHeading(rawBody));
       const k = bodyKey(body);
       if (!k) continue;
       if (!byBody.has(k)) byBody.set(k, { body, order: i });
