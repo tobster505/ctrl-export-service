@@ -19,25 +19,19 @@ const alignNorm = (a) => {
   return ["left", "right", "center", "justify"].includes(v) ? v : "left";
 };
 
-/**
- * Word-wrapping by available pixel width.
- * Returns an array of lines, where each line is an array of words.
- */
+/** Word-wrap by pixel width; returns array of lines (each = array of words). */
 function wrapWordsToWidth(text, font, size, maxWidth) {
   const baseSpaceW = font.widthOfTextAtSize(" ", size);
   const out = [];
-
   const paras = norm(text).split("\n");
   for (const para of paras) {
     const words = para.trim().length ? para.trim().split(/\s+/) : [""];
     let line = [];
     let lineW = 0;
-
     for (const w of words) {
       const ww = font.widthOfTextAtSize(w, size);
-      const addW = line.length ? baseSpaceW + ww : ww; // add a space if not first word
+      const addW = line.length ? baseSpaceW + ww : ww;
       if (line.length && lineW + addW > maxWidth) {
-        // push current line, start new
         out.push(line);
         line = [w];
         lineW = ww;
@@ -48,7 +42,6 @@ function wrapWordsToWidth(text, font, size, maxWidth) {
     }
     out.push(line);
   }
-
   return out;
 }
 
@@ -67,31 +60,18 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 
   const pageH = page.getHeight();
   const yTop = pageH - y;
-  const baseSpaceW = font.widthOfTextAtSize(" ", size);
   const lineH = size + lineGap;
 
-  // word-wrap by pixel width
   const wrappedWordLines = wrapWordsToWidth(clean, font, size, w);
 
-  // apply maxLines + ellipsis on the wrapped lines
   let lines = wrappedWordLines;
   if (lines.length > maxLines) {
     lines = lines.slice(0, maxLines);
     if (ellipsis && lines.length) {
-      // add … to last line if room (non-justify rendering of last line for safety)
       const last = lines[lines.length - 1];
-      const txt = last.join(" ");
       const ell = "…";
-      const ellW = font.widthOfTextAtSize(ell, size);
-      let avail = w - font.widthOfTextAtSize(txt, size);
-      if (avail >= ellW) last.push(ell);
-      else {
-        // trim words until it fits with ellipsis
-        while (last.length && font.widthOfTextAtSize(last.join(" ") + ell, size) > w) {
-          last.pop();
-        }
-        if (last.length) last.push(ell);
-      }
+      while (last.length && font.widthOfTextAtSize(last.join(" ") + ell, size) > w) last.pop();
+      if (last.length) last.push(ell);
     }
   }
 
@@ -111,24 +91,18 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
       const xDraw = x + (w - textW);
       page.drawText(joined, { x: xDraw, y: yCursor, size, font, color });
     } else if (align === "justify" && !isLastLine && words.length > 1) {
-      // distribute extra space across gaps
       const wordsW = words.reduce((acc, wd) => acc + font.widthOfTextAtSize(wd, size), 0);
       const gaps = words.length - 1;
-      const extra = Math.max(0, w - wordsW); // target: exactly fill 'w'
+      const extra = Math.max(0, w - wordsW);
       const gapW = extra / gaps;
-
-      // draw word by word
       let xPos = x;
       for (let g = 0; g < words.length; g++) {
         const wd = words[g];
         page.drawText(wd, { x: xPos, y: yCursor, size, font, color });
         const wdw = font.widthOfTextAtSize(wd, size);
-        if (g < words.length - 1) {
-          xPos += wdw + gapW; // evenly distributed gaps
-        }
+        if (g < words.length - 1) xPos += wdw + gapW;
       }
     } else {
-      // left (or last line of justify)
       page.drawText(joined, { x, y: yCursor, size, font, color });
     }
 
@@ -243,12 +217,13 @@ export default async function handler(req, res) {
         // Page 9 footer defaults (same as page 6)
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
-      // Page 6
+      // Page 6 — Dominant + explanations + chart
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
-      dom6desc: { x: 40,  y: 380, w: 250, size: 15, align: "left", max: 8 },
+      // LOCKED Dominant Description (ignore URL); requested values:
+      dom6desc: { x: 23,  y: 380, w: 215, size: 12, align: "justify", max: 12 },
       how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left", max: 10 },
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
-      // Page 7
+      // Page 7 — analysis blocks + theme + tips + actions
       p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
       p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
       p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
@@ -266,16 +241,15 @@ export default async function handler(req, res) {
     POS.n1 = tuneBox(POS.n1, "n1");
     POS.d1 = tuneBox(POS.d1, "d1");
 
-    // extend tuners to page 9
+    // Footer tuners, including page 9
     for (let i=2;i<=9;i++){
       const f=`f${i}`, n=`n${i}`;
       POS.footer[f] = tuneBox(POS.footer[f], f);
       POS.footer[n] = tuneBox(POS.footer[n], n);
     }
 
+    // Page 6 tuners (dom6desc is LOCKED — no tuner here)
     POS.dom6     = tuneBox(POS.dom6, "dom6");
-    POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc");
-    POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");
     POS.how6.max = qnum(url,"how6max",POS.how6.max);
     POS.chart6 = {
@@ -283,6 +257,7 @@ export default async function handler(req, res) {
       w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h)
     };
 
+    // Page 7 tuners
     POS.p7Patterns = {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
@@ -356,7 +331,7 @@ export default async function handler(req, res) {
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
     if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
+    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { x: POS.dom6desc.x, y: POS.dom6desc.y, w: POS.dom6desc.w, size: POS.dom6desc.size, align: POS.dom6desc.align, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
     if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max, ellipsis: true });
 
     // Chart: accept chartUrl OR spiderChartUrl
