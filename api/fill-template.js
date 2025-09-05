@@ -16,11 +16,23 @@ const norm = (v, fb = "") =>
 
 const alignNorm = (a) => {
   const v = String(a || "").toLowerCase();
+  // accept UK spelling + justify
   if (v === "centre") return "center";
   return ["left", "right", "center", "justify"].includes(v) ? v : "left";
 };
 
+// Remove a leading "Label (Type)" header from a block body, if present
+function stripPatternHeader(s) {
+  let out = String(s || "");
+  // label on its own first line
+  out = out.replace(/^\s*[A-Za-z][^\n]*\([^)]+\)\s*\n+/, "");
+  // or label followed by dash/colon on same line
+  out = out.replace(/^\s*[A-Za-z][^(]*\([^)]+\)\s*[-–—:]+\s*/, "");
+  return out.trim();
+}
+
 // Wrap/align text into a box (y = distance from TOP)
+// Adds 'justify' support using wordSpacing (best effort)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -33,7 +45,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
-  // naive wrapping by character count, then trim per word
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
@@ -60,45 +71,44 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const lineH = size + lineGap;
 
   let yCursor = yTop;
+  let drawn = 0;
   for (let i = 0; i < out.length; i++) {
     const line = out[i];
     const isLast = i === out.length - 1;
+    let xDraw = x;
 
+    // alignment
+    if (align === "center") xDraw = x + (w - widthOf(line)) / 2;
+    else if (align === "right") xDraw = x + (w - widthOf(line));
+
+    // justify: only for non-last lines and when width allows
+    let extras = {};
     if (align === "justify" && !isLast) {
-      const words = line.split(/\s+/).filter(Boolean);
-      if (words.length > 1) {
-        const wordsW = words.reduce((acc, w) => acc + widthOf(w), 0);
-        const gaps = words.length - 1;
-        const gapW = Math.max(0, (w - wordsW) / gaps);
-        let xDraw = x;
-        for (let j = 0; j < words.length; j++) {
-          const word = words[j];
-          page.drawText(word, { x: xDraw, y: yCursor, size, font, color });
-          xDraw += widthOf(word) + (j < words.length - 1 ? gapW : 0);
-        }
-      } else {
-        // single word: fall back to left
-        page.drawText(line, { x, y: yCursor, size, font, color });
+      const naturalW = widthOf(line);
+      const gap = w - naturalW;
+      const spaceCount = (line.match(/ /g) || []).length;
+      if (gap > 0.5 && spaceCount > 0) {
+        // distribute remaining width across spaces
+        extras = { wordSpacing: gap / spaceCount };
       }
-    } else {
-      let xDraw = x;
-      if (align === "center") xDraw = x + (w - widthOf(line)) / 2;
-      else if (align === "right") xDraw = x + (w - widthOf(line));
-      page.drawText(line, { x: xDraw, y: yCursor, size, font, color });
     }
+
+    page.drawText(line, { x: xDraw, y: yCursor, size, font, color, ...extras });
     yCursor -= lineH;
+    drawn++;
   }
-  return { height: out.length * lineH, linesDrawn: out.length, lastY: yCursor };
+  return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
 async function fetchTemplate(req, url) {
-  // Default to V6 in /public. On Vercel/Next, /public files are served from the root path.
-  const defaultTpl = "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
   const h = (req && req.headers) || {};
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
   const tplParam = url?.searchParams?.get("tpl");
-  const filename = tplParam && tplParam.trim() ? tplParam.trim() : defaultTpl;
+  // Default to your V6 template in /public
+  const filename = tplParam && tplParam.trim()
+    ? tplParam.trim()
+    : "CTRL_Perspective_Assessment_Profile_templateV6.pdf";
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -126,7 +136,7 @@ const pickCoverName = (data, url) => norm(
   ""
 );
 
-// Flow/Path label normaliser
+// Flow/Path label normaliser (keeps your mapping)
 const normPathLabel = (raw) => {
   const v = (raw || "").toString().toLowerCase();
   const map = { perspective:"Perspective", observe:"Observe", reflective:"Reflective", mirrored:"Mirrored", mirror:"Mirrored" };
@@ -140,7 +150,7 @@ const todayLbl = () => {
   return `${String(d.getDate()).padStart(2,"0")}/${MMM[d.getMonth()]}/${d.getFullYear()}`;
 };
 
-// Default filename
+// Default filename if not provided via ?name
 const defaultFileName = (fullName) => {
   const who = S(fullName || "report").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
   const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -159,7 +169,8 @@ export default async function handler(req, res) {
   const preview = url.searchParams.get("preview") === "1";
 
   // Require ?data (base64 JSON)
-  if (!url.searchParams.get("data")) { res.statusCode = 400; res.end("Missing ?data"); return; }
+  const hasData = !!url.searchParams.get("data");
+  if (!hasData) { res.statusCode = 400; res.end("Missing ?data"); return; }
 
   let data;
   try {
@@ -176,20 +187,21 @@ export default async function handler(req, res) {
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
     // Pages (0-index)
-    const page = (n) => (n >= 0 && n < pdf.getPageCount() ? pdf.getPage(n) : null);
-    const page1 = page(0);
-    const page6 = page(5);
-    const page7 = page(6);
-    const page9 = page(8); // NEW: support for page 9 footer if present
+    const page1 = pdf.getPage(0);
+    const page6 = pdf.getPage(5); // "Page 6"
+    const page7 = pdf.getPage(6); // "Page 7"
+    const pageCount = pdf.getPageCount();
+    const hasP9 = pageCount >= 9;
+    const page9 = hasP9 ? pdf.getPage(8) : null;
 
     /* --------------------- DEFAULT (LOCKED) POSITIONS --------------------- */
     const POS = {
-      // Page 1
+      // Page 1: Path/Name/Date
       f1: { x: 290, y: 170, w: 400, size: 40, align: "left" },
       n1: { x: 10,  y: 573, w: 500, size: 30, align: "center" },
       d1: { x: 130, y: 630, w: 500, size: 20, align: "left" },
 
-      // Footers (pages 2..9)
+      // Page footers: small Path/Name (pages 2..8), plus p9 like p6
       footer: {
         f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
@@ -198,27 +210,28 @@ export default async function handler(req, res) {
         f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }, // NEW
+        // page 9 defaults to the same positions as page 6 (tunable via f9*/n9*)
+        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
 
-      // Page 6: Dominant + explanation + radar chart
+      // Page 6: Dominant + explanation + spider chart
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
-      dom6desc: { x: 23,  y: 380, w: 215, size: 12, align: "justify", max: 12 }, // default to your locked values
-      how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left",    max: 10 },
+      dom6desc: { x: 40,  y: 380, w: 250, size: 15, align: "left", max: 8 },
+      how6:     { x: 40,  y: 560, w: 500, size: 20, align: "left", max: 10 },
       chart6:   { x: 203, y: 230, w: 420, h: 220 },
 
       // Page 7: three analysis blocks + theme narrative + tips + actions
-      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left",    titleGap: 8,  blockGap: 25, maxBodyLines: 6 },
-      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left",    maxLines: 10 },
-      p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left",    maxLines: 8  },
-      p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left",    maxLines: 8  },
+      p7Patterns:  { x: 40,  y: 180, w: 460, hSize: 14, bSize: 20, align:"left", titleGap: 8, blockGap: 25, maxBodyLines: 6 },
+      p7ThemePara: { x: 40,  y: 380, w: 460, size: 20, align:"left", maxLines: 10 },
+      p7Tips:      { x: 40,  y: 595, w: 630, size: 20, align:"left", maxLines: 8 },
+      p7Acts:      { x: 40,  y: 695, w: 630, size: 20, align:"left", maxLines: 8 },
     };
 
     // --- Tuners (URL overrides) ---
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
-      align: alignNorm(qstr(url,`${pfx}align`,spec.align))
+      align: alignNorm(qstr(url,`${pfx}align`,spec.align)),
     });
 
     // Page 1
@@ -229,19 +242,19 @@ export default async function handler(req, res) {
     // Footers f2..f9 / n2..n9
     for (let i = 2; i <= 9; i++) {
       const fKey = `f${i}`, nKey = `n${i}`;
-      POS.footer[fKey] = tuneBox(POS.footer[fKey], fKey);
-      POS.footer[nKey] = tuneBox(POS.footer[nKey], nKey);
+      if (POS.footer[fKey]) POS.footer[fKey] = tuneBox(POS.footer[fKey], fKey);
+      if (POS.footer[nKey]) POS.footer[nKey] = tuneBox(POS.footer[nKey], nKey);
     }
 
     // Page 6 tuners
     POS.dom6     = tuneBox(POS.dom6, "dom6");
     POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc");
     POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
-    POS.how6     = tuneBox(POS.how6,"how6");
+    POS.how6     = tuneBox(POS.how6, "how6");
     POS.how6.max = qnum(url,"how6max",POS.how6.max);
     POS.chart6 = {
       x: qnum(url,"c6x",POS.chart6.x), y: qnum(url,"c6y",POS.chart6.y),
-      w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h)
+      w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h),
     };
 
     // Page 7 tuners
@@ -285,114 +298,135 @@ export default async function handler(req, res) {
     const pathName  = norm(normPathLabel(flowRaw));
     const dateLbl   = norm(data?.dateLbl || todayLbl());
 
-    if (page1) {
-      drawTextBox(page1, HelvB, pathName, { ...POS.f1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-      drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-      drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, HelvB, pathName, { ...POS.f1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+    drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+
+    /* -------------------- FOOTERS: pages 2..8 (+ optional 9) ------------ */
+    const drawFooter = (page, fSpec, nSpec) => {
+      drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    };
+    const p2 = pdf.getPage(1), p3 = pdf.getPage(2), p4 = pdf.getPage(3), p5 = pdf.getPage(4), p8 = pdf.getPage(7);
+    drawFooter(p2, POS.footer.f2, POS.footer.n2);
+    drawFooter(p3, POS.footer.f3, POS.footer.n3);
+    drawFooter(p4, POS.footer.f4, POS.footer.n4);
+    drawFooter(p5, POS.footer.f5, POS.footer.n5);
+    drawFooter(page6, POS.footer.f6, POS.footer.n6);
+    drawFooter(page7, POS.footer.f7, POS.footer.n7);
+    drawFooter(p8, POS.footer.f8, POS.footer.n8);
+    if (hasP9 && page9) {
+      drawFooter(page9, POS.footer.f9, POS.footer.n9);
     }
 
-    /* -------------------- FOOTERS: pages 2..9 (small) ------------------- */
-    const drawFooter = (pg, fSpec, nSpec) => {
-      if (!pg) return;
-      drawTextBox(pg, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-      drawTextBox(pg, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-    };
-    drawFooter(page(1), POS.footer.f2, POS.footer.n2);
-    drawFooter(page(2), POS.footer.f3, POS.footer.n3);
-    drawFooter(page(3), POS.footer.f4, POS.footer.n4);
-    drawFooter(page(4), POS.footer.f5, POS.footer.n5);
-    drawFooter(page6,   POS.footer.f6, POS.footer.n6);
-    drawFooter(page7,   POS.footer.f7, POS.footer.n7);
-    drawFooter(page(7), POS.footer.f8, POS.footer.n8);
-    drawFooter(page9,   POS.footer.f9, POS.footer.n9); // NEW
-
     /* -------------------------- PAGE 6 content -------------------------- */
+    // Expected fields:
+    // - dom6Label (string)
+    // - dominantDesc (string)
+    // - how6 (string)   // a.k.a. chart explanation paragraph
+    // - chartUrl (PNG URL) OR spiderChartUrl
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
     const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
-    if (page6) {
-      if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-      if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
-      if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max, ellipsis: true });
+    if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
+    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max, ellipsis: true });
 
-      // Radar chart (PNG)
-      const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
-      if (chartURL) {
-        try {
-          const r = await fetch(chartURL);
-          if (r.ok) {
-            const png = await pdf.embedPng(await r.arrayBuffer());
-            const { x, y, w, h } = POS.chart6;
-            const ph = page6.getHeight();
-            page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
-          }
-        } catch { /* ignore image failure */ }
-      }
+    // Radar chart (PNG)
+    const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
+    if (chartURL) {
+      try {
+        const r = await fetch(chartURL);
+        if (r.ok) {
+          const png = await pdf.embedPng(await r.arrayBuffer());
+          const { x, y, w, h } = POS.chart6;
+          const ph = page6.getHeight();
+          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+        }
+      } catch {/* ignore */}
     }
 
     /* -------------------------- PAGE 7 content -------------------------- */
-    if (page7) {
-      const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
-                      : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
-                      : [];
-      const blocks = blocksSrc
-        .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
-        .filter(b => b.title || b.body)
-        .slice(0, 3);
+    // Left: up to 3 blocks (strict order)
+    const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
+                    : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
+                    : [];
+    let blocks = blocksSrc
+      .map(b => ({ title: norm(b?.title||""), body: norm(b?.body||"") }))
+      .filter(b => b.title || b.body)
+      .slice(0, 3);
 
-      let curY = POS.p7Patterns.y;
-      for (const b of blocks) {
-        if (b.title) {
-          drawTextBox(page7, HelvB, b.title,
-            { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-            { maxLines: 1, ellipsis: true }
-          );
-          curY += (POS.p7Patterns.hSize + 3) + POS.p7Patterns.titleGap;
+    // Strip label header from Pattern Shape body unless disabled
+    const stripPat = url.searchParams.get("stripPatternLabel") !== "0";
+    if (stripPat) {
+      blocks = blocks.map(b => {
+        if (/^\s*[A-Za-z][^\n]*\([^)]+\)/.test(b.body)) {
+          return { ...b, body: stripPatternHeader(b.body) };
         }
-        if (b.body) {
-          const r = drawTextBox(page7, Helv, b.body,
-            { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
-            { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
-          );
-          curY += r.height + POS.p7Patterns.blockGap;
-        }
+        return b;
+      });
+    }
+
+    let curY = POS.p7Patterns.y;
+    for (const b of blocks) {
+      if (b.title) {
+        drawTextBox(
+          page7, HelvB, b.title,
+          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.hSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
+          { maxLines: 1, ellipsis: true }
+        );
+        curY += (POS.p7Patterns.hSize + 3) + POS.p7Patterns.titleGap;
       }
+      if (b.body) {
+        const r = drawTextBox(
+          page7, Helv, b.body,
+          { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35), lineGap: 3 },
+          { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
+        );
+        curY += r.height + POS.p7Patterns.blockGap;
+      }
+    }
 
-      const themeNarr7 = norm(
-        (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
-        (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || ""
+    // Theme paragraph (page 7)
+    const themeNarr7 = norm(
+      (typeof data?.p7ThemeNarr === "string" && data.p7ThemeNarr) ||
+      (typeof data?.themePairParagraph === "string" && data.themePairParagraph) || // fallback
+      ""
+    );
+    if (themeNarr7) {
+      drawTextBox(
+        page7, Helv, themeNarr7,
+        { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
+        { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
       );
-      if (themeNarr7) {
-        drawTextBox(page7, Helv, themeNarr7,
-          { ...POS.p7ThemePara, color: rgb(0.24,0.23,0.35) },
-          { maxLines: POS.p7ThemePara.maxLines, ellipsis: true }
-        );
-      }
+    }
 
-      const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
-      const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-      if (tips2) {
-        drawTextBox(page7, Helv, tips2,
-          { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
-          { maxLines: POS.p7Tips.maxLines, ellipsis: true }
-        );
-      }
+    // Tips (bullets)
+    const tipsArr = Array.isArray(data?.tips2) ? data.tips2 : [];
+    const tips2 = tipsArr.length ? tipsArr.map(t => `• ${norm(t)}`).join("\n") : "";
+    if (tips2) {
+      drawTextBox(
+        page7, Helv, tips2,
+        { ...POS.p7Tips, color: rgb(0.24,0.23,0.35) },
+        { maxLines: POS.p7Tips.maxLines, ellipsis: true }
+      );
+    }
 
-      const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
-      const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join("\n") : "";
-      if (acts2) {
-        drawTextBox(page7, Helv, acts2,
-          { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
-          { maxLines: POS.p7Acts.maxLines, ellipsis: true }
-        );
-      }
+    // Actions (bullets)
+    const actsArr = Array.isArray(data?.actions2) ? data.actions2 : [];
+    const acts2 = actsArr.length ? actsArr.map(t => `• ${norm(t)}`).join("\n") : "";
+    if (acts2) {
+      drawTextBox(
+        page7, Helv, acts2,
+        { ...POS.p7Acts, color: rgb(0.24,0.23,0.35) },
+        { maxLines: POS.p7Acts.maxLines, ellipsis: true }
+      );
     }
 
     /* ------------------------------ SAVE ------------------------------ */
     const bytes = await pdf.save();
-    const fname = qstr(url, "name", defaultFileName(norm(data?.person?.fullName || "")));
-
+    const fname = qstr(url, "name", defaultFileName(fullName));
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${fname}"`);
