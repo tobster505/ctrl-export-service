@@ -48,7 +48,6 @@ const stripBulletLabel = (s) =>
     .trim();
 
 /* ----------------------- text & bullet rendering ----------------------- */
-// Wrap/align text into a box (y = distance from TOP). Supports justify.
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -115,7 +114,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
         drawn++;
         continue;
       }
-      // single-word line -> fall through
     }
 
     let xDraw = x;
@@ -128,7 +126,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-// Draw a list of bullets: real dot + indented text
 function drawBulleted(page, font, items, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -173,7 +170,7 @@ async function fetchTemplate(req, url) {
   const tplParam = url?.searchParams?.get("tpl");
   const filename = tplParam && tplParam.trim()
     ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_template_v7.pdf";
+    : "CTRL_Perspective_Assessment_Profile_template_V7.pdf";
   const full = `${proto}://${host}/${filename}`;
   const r = await fetch(full);
   if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
@@ -265,20 +262,23 @@ export default async function handler(req, res) {
         f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
-      // Page 6 (locked to your new defaults)
+
+      // ---------- Page 6 (YOUR LOCKED DEFAULTS) ----------
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
-      dom6desc: { x: 23,  y: 380, w: 285, size: 18, align: "left", max: 12 },
-      how6:     { x: 25,  y: 610, w: 650, size: 17, align: "left", max: 15 },
-      chart6:   { x: 203, y: 230, w: 420, h: 220 },
-      // Page 7 (locked to your new defaults)
-      p7Patterns:  { x: 40,  y: 170, w: 650, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
-      // p7ThemePara coords kept but not rendered:
+      dom6desc: { x: 25,  y: 360, w: 265, size: 15, align: "left", max: 8 },
+      how6:     { x: 30,  y: 600, w: 660, size: 17, align: "left", max: 12 },
+      chart6:   { x: 213, y: 250, w: 410, h: 230 },
+
+      // ---------- Page 7 (YOUR LOCKED DEFAULTS) ----------
+      p7Patterns:  { x: 30,  y: 175, w: 660, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
+      // kept tunable but not rendered:
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 },
-      p7Tips:      { x: 40,  y: 595, w: 500, size: 16, align:"left",    maxLines: 8 },
-      p7Acts:      { x: 40,  y: 700, w: 500, size: 16, align:"left",    maxLines: 8 },
+      p7Tips:      { x: 30,  y: 530, w: 680, size: 20, align:"left",    maxLines: 12 },
+      // NOTE: These defaults only apply when taCols != 2 (per your existing logic)
+      p7Acts:      { x: 110, y: 530, w: 660, size: 16, align:"left",    maxLines: 12 },
     };
 
-    // Tuners (still overridable by URL if you ever want to tweak)
+    // Tuners (overridable by URL if you want to tweak)
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
@@ -300,6 +300,7 @@ export default async function handler(req, res) {
     POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");
     POS.how6.max = qnum(url,"how6max",POS.how6.max);
+
     POS.chart6 = {
       x: qnum(url,"c6x",POS.chart6.x), y: qnum(url,"c6y",POS.chart6.y),
       w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h)
@@ -317,7 +318,6 @@ export default async function handler(req, res) {
       maxBodyLines: qnum(url,"p7pmax",POS.p7Patterns.maxBodyLines),
     };
 
-    // p7ThemePara stays tunable but not drawn
     POS.p7ThemePara = {
       ...POS.p7ThemePara,
       x: qnum(url,"p7tx",POS.p7ThemePara.x), y: qnum(url,"p7ty",POS.p7ThemePara.y),
@@ -342,7 +342,7 @@ export default async function handler(req, res) {
     };
     POS.p7Acts.maxLines = qnum(url,"p7actsmax",POS.p7Acts.maxLines);
 
-    // bullet visuals (locked defaults)
+    // bullet visuals (defaults; you can override via URL)
     const bulletIndent = qnum(url, "bulleti", 18);
     const bulletGap    = qnum(url, "bulletgap", 4);
     const taCols       = Math.max(1, Math.min(2, qnum(url, "taCols", 1)));
@@ -396,7 +396,7 @@ export default async function handler(req, res) {
           const png = await pdf.embedPng(await r.arrayBuffer());
           const { x, y, w, h } = POS.chart6;
           const ph = page6.getHeight();
-          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h }); // origin = top-left
         }
       } catch { /* ignore image failure */ }
     }
@@ -422,7 +422,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // -------- Tips & Actions (bulleted, with real dots + indent) --------
+    // -------- Tips & Actions (bulleted) --------
     const uniqPush = (arr, s) => {
       const v = stripBulletLabel(s);
       if (!v) return;
@@ -431,7 +431,6 @@ export default async function handler(req, res) {
       if (!arr._seen.has(key)) { arr._seen.add(key); arr.push(v); }
     };
 
-    // Tips: combine dominantTip, spiderChartTip, tips2[], etc.
     const tips = [];
     const tipCands = [
       data?.dominantTip,
@@ -447,7 +446,6 @@ export default async function handler(req, res) {
       else uniqPush(tips, t);
     }
 
-    // Actions: themes + pattern shape (many possible keys)
     const actions = [];
     const patternActionCands = [
       data?.patternAction,
@@ -473,17 +471,19 @@ export default async function handler(req, res) {
     const bulletSpecActs = { ...POS.p7Acts, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Acts.align, color: rgb(0.24,0.23,0.35) };
 
     if (taCols === 2) {
+      // Two columns: actions derived from tips region (your existing behavior).
       const mid = bulletSpecTips.x + Math.floor((bulletSpecTips.w - 20) / 2);
       const colGap = 20;
 
       const leftSpec  = { ...bulletSpecTips,  w: mid - bulletSpecTips.x - colGap/2 };
       const rightSpec = { ...bulletSpecActs,  x: mid + colGap/2, w: (bulletSpecTips.x + bulletSpecTips.w) - (mid + colGap/2) };
 
-      drawBulleted(page7, Helv, tips,   leftSpec,  { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
-      drawBulleted(page7, Helv, actions, rightSpec, { maxLines: POS.p7Acts.maxLines, blockGap: 6 });
+      drawBulleted(page7, Helv, tips,    leftSpec,  { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
+      drawBulleted(page7, Helv, actions, rightSpec, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     } else {
+      // One block per section; respects p7actsx/p7actsw exactly.
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
-      drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines, blockGap: 6 });
+      drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     }
 
     /* ------------------------------ SAVE ------------------------------ */
