@@ -13,6 +13,7 @@ const norm = (v, fb = "") =>
     .replace(/[\u2013\u2014]/g, "-")
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
 
+// allow left | center | right | justify
 const alignNorm = (a) => {
   const v = String(a || "").toLowerCase();
   if (v === "centre") return "center";
@@ -20,33 +21,46 @@ const alignNorm = (a) => {
   return "left";
 };
 
+// remove headings/labels from p7 pattern bodies so paragraph starts correctly
 const dropLeadingLabel = (t) => {
   const s = norm(t || "");
   if (!s) return s;
   if (/^\s*(It looks like|You )/i.test(s)) return s;
   const lines = s.split(/\n+/);
   if (!lines.length) return s;
+
   const first = lines[0];
   const looksLikeLabel =
     /general\s+analysis/i.test(first) ||
     /Explorer|Balancer|Presence|Guide|Retreater|Light|Voice|Seeker|Beacon|Waters|Returner|Unsettled/i.test(first) ||
     /\(.*\)/.test(first);
-  if (looksLikeLabel && lines.length > 1) return lines.slice(1).join("\n").trim();
+
+  if (looksLikeLabel && lines.length > 1) {
+    return lines.slice(1).join("\n").trim();
+  }
   return s;
 };
 
+// Remove "Tip:" / "Action:" / leading bullets if they sneak in
 const stripBulletLabel = (s) =>
-  norm(s || "").replace(/^[\s•\-\u2022]*\b(Tips?|Actions?)\s*:\s*/i, "").trim();
+  norm(s || "")
+    .replace(/^[\s•\-\u2022]*\b(Tips?|Actions?)\s*:\s*/i, "")
+    .trim();
 
 /* ----------------------- text & bullet rendering ----------------------- */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
-  const { x = 40, y = 40, w = 540, size = 12, lineGap = 3, color = rgb(0, 0, 0), align = "left" } = spec;
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0, 0, 0), align = "left",
+  } = spec;
+
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
+  // simple wrapping by approx char width
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
@@ -113,11 +127,13 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 }
 
 function drawBulleted(page, font, items, spec = {}, opts = {}) {
-  const { x = 40, y = 40, w = 540, size = 12, lineGap = 3,
-          color = rgb(0, 0, 0), align = "left",
-          indent = 18, gap = 4, bulletRadius = 1.8 } = spec;
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0, 0, 0), align = "left",
+    indent = 18, gap = 4, bulletRadius = 1.8,
+  } = spec;
 
-  let curY = y;
+  let curY = y; // distance from TOP
   const pageH = page.getHeight();
   const blockGap = N(opts.blockGap, 6);
 
@@ -125,6 +141,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = stripBulletLabel(raw);
     if (!text) continue;
 
+    // bullet position
     const firstLineBaseline = pageH - curY;
     const cy = firstLineBaseline + (size * 0.33);
     if (page.drawCircle) {
@@ -134,7 +151,9 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     }
 
     const r = drawTextBox(
-      page, font, text,
+      page,
+      font,
+      text,
       { x: x + indent + gap, y: curY, w: w - indent - gap, size, lineGap, color, align },
       opts
     );
@@ -148,16 +167,16 @@ async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
-  let filename = (url?.searchParams?.get("tpl") || "").trim();
 
-  if (!filename) filename = "CTRL_Perspective_Assessment_Profile_template_v7.pdf";
-  if (!/\.pdf$/i.test(filename)) filename += ".pdf"; // force .pdf suffix
+  // ✅ v7 template (with .pdf suffix)
+  const tplParam = url?.searchParams?.get("tpl");
+  const filename = tplParam && tplParam.trim()
+    ? tplParam.trim()
+    : "CTRL_Perspective_Assessment_Profile_template_v7.pdf";
 
   const full = `${proto}://${host}/${filename}`;
-  const r = await fetch(full, { cache: "no-store" });
-  if (!r.ok) {
-    throw new Error(`template fetch failed for "${filename}": ${r.status} ${r.statusText}`);
-  }
+  const r = await fetch(full);
+  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
@@ -222,12 +241,6 @@ export default async function handler(req, res) {
   try {
     const tplBytes = await fetchTemplate(req, url);
     const pdf = await PDFDocument.load(tplBytes);
-
-    const pageCount = pdf.getPageCount();
-    if (pageCount < 7) {
-      throw new Error(`template has ${pageCount} pages; need at least 7 (page6=idx5, page7=idx6)`);
-    }
-
     const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
@@ -235,6 +248,7 @@ export default async function handler(req, res) {
     const page1 = pdf.getPage(0);
     const page6 = pdf.getPage(5);
     const page7 = pdf.getPage(6);
+    const pageCount = pdf.getPageCount();
 
     /* --------------------- DEFAULT (LOCKED) POSITIONS --------------------- */
     const POS = {
@@ -261,10 +275,8 @@ export default async function handler(req, res) {
       // ---------- PAGE 7 (LOCKED BASELINES) ----------
       p7Patterns:  { x: 30,  y: 175, w: 660, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 }, // not drawn currently
-
-      // tips / actions (stored defaults; still URL-overridable)
-      p7Tips: { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
-      p7Acts: { x: 320, y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
+      p7Tips:      { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
+      p7Acts:      { x: 320, y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
     };
 
     // Tuners (URL can still override if needed)
@@ -332,7 +344,7 @@ export default async function handler(req, res) {
     };
     POS.p7Acts.maxLines = qnum(url,"p7actsmax",POS.p7Acts.maxLines);
 
-    // bullet visuals + columns
+    // bullet visuals + columns (defaults, URL-overridable)
     const bulletIndent = qnum(url, "bulleti", 14);
     const bulletGap    = qnum(url, "bulletgap", 2);
     const taCols       = Math.max(1, Math.min(2, qnum(url, "taCols", 1)));
@@ -353,7 +365,7 @@ export default async function handler(req, res) {
     drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
-    // footers 2..9
+    // footers pages 2..9 (if exist)
     const p2 = pdf.getPage(1), p3 = pdf.getPage(2), p4 = pdf.getPage(3), p5 = pdf.getPage(4);
     drawFooter(p2, POS.footer.f2, POS.footer.n2);
     drawFooter(p3, POS.footer.f3, POS.footer.n3);
@@ -361,19 +373,50 @@ export default async function handler(req, res) {
     drawFooter(p5, POS.footer.f5, POS.footer.n5);
     drawFooter(page6, POS.footer.f6, POS.footer.n6);
     drawFooter(page7, POS.footer.f7, POS.footer.n7);
-    if (pageCount >= 8) { const p8 = pdf.getPage(7); drawFooter(p8, POS.footer.f8, POS.footer.n8); }
-    if (pageCount >= 9) { const p9 = pdf.getPage(8); drawFooter(p9, POS.footer.f9, POS.footer.n9); }
+    if (pdf.getPageCount() >= 8) {
+      const p8 = pdf.getPage(7); drawFooter(p8, POS.footer.f8, POS.footer.n8);
+    }
+    if (pageCount >= 9) {
+      const p9 = pdf.getPage(8); drawFooter(p9, POS.footer.f9, POS.footer.n9);
+    }
 
     /* -------------------------- PAGE 6 ---------------------------------- */
     const domLabel = norm(data?.dom6Label || data?.dom6 || "");
     const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
     const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
-    if (domLabel) drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    if (domDesc)  drawTextBox(page6, Helv,  domDesc,  { ...POS.dom6desc, color: rgb(0.24,0.23,0.35) }, { maxLines: POS.dom6desc.max, ellipsis: true });
-    if (how6Text) drawTextBox(page6, Helv,  how6Text, { ...POS.how6,     color: rgb(0.24,0.23,0.35) }, { maxLines: POS.how6.max,   ellipsis: true });
+    // Dominant label + description
+    if (domLabel) {
+      drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+    }
+    if (domDesc) {
+      drawTextBox(
+        page6,
+        Helv,
+        domDesc,
+        { ...POS.dom6desc, color: rgb(0.24,0.23,0.35), align: POS.dom6desc.align },
+        { maxLines: POS.dom6desc.max, ellipsis: true }
+      );
+    }
 
-    // Chart
+    // Auto-fit HOW block (keep your y & size; expand to physical space)
+    const DEFAULT_LINE_GAP = 3;
+    const howLineHeight = (POS.how6?.size ?? 12) + (POS.how6?.lineGap ?? DEFAULT_LINE_GAP);
+    const howAvailable  = page6.getHeight() - (POS.how6?.y ?? 0); // from y to page bottom
+    const howFitLines   = Math.max(1, Math.floor(howAvailable / howLineHeight));
+    const howMaxLines   = Math.min((POS.how6?.max ?? 12), howFitLines);
+
+    if (how6Text) {
+      drawTextBox(
+        page6,
+        Helv,
+        how6Text,
+        { ...POS.how6, color: rgb(0.24,0.23,0.35), align: POS.how6.align },
+        { maxLines: howMaxLines, ellipsis: true }
+      );
+    }
+
+    // Chart: accept chartUrl OR spiderChartUrl
     const chartURL = S(data?.chartUrl || data?.spiderChartUrl || "", "");
     if (chartURL) {
       try {
@@ -388,6 +431,7 @@ export default async function handler(req, res) {
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
+    // Left column (pattern + theme bodies). Titles removed, bodies cleaned.
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
@@ -400,7 +444,9 @@ export default async function handler(req, res) {
     for (const b of blocks) {
       if (b.body) {
         const r = drawTextBox(
-          page7, Helv, b.body,
+          page7,
+          Helv,
+          b.body,
           { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
           { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
         );
@@ -408,7 +454,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Tips & Actions (bulleted) — use your explicit boxes (also URL-overridable)
+    // Tips & Actions (bulleted)
     const uniqPush = (arr, s) => {
       const v = stripBulletLabel(s);
       if (!v) return;
@@ -419,49 +465,63 @@ export default async function handler(req, res) {
 
     const tips = [];
     const tipCands = [
-      data?.dominantTip, data?.spiderChartTip,
+      data?.dominantTip,
+      data?.spiderChartTip,
       data?.patternTip, data?.tipFromPattern,
       ...(Array.isArray(data?.tips2) ? data.tips2 : []),
       ...(Array.isArray(data?.tips) ? data.tips : []),
       ...(Array.isArray(data?.patternTips) ? data.patternTips : []),
       ...(Array.isArray(data?.dominantTips) ? data.dominantTips : []),
     ];
-    for (const t of tipCands) Array.isArray(t) ? t.forEach(x => uniqPush(tips, x)) : uniqPush(tips, t);
+    for (const t of tipCands) {
+      if (Array.isArray(t)) t.forEach(x => uniqPush(tips, x));
+      else uniqPush(tips, t);
+    }
 
     const actions = [];
     const patternActionCands = [
-      data?.patternAction, data?.patternShapeAction, data?.actionFromPattern,
-      data?.actionsFromPattern, data?.p7PatternAction,
+      data?.patternAction,
+      data?.patternShapeAction,
+      data?.actionFromPattern,
+      data?.actionsFromPattern,
+      data?.p7PatternAction,
       ...(Array.isArray(data?.patternActions) ? data.patternActions : []),
-      data?.pattern?.action, data?.patternShape?.action,
+      data?.pattern?.action,
+      data?.patternShape?.action,
     ];
     const actionCands = [
       ...(Array.isArray(data?.actions2) ? data.actions2 : []),
       ...(Array.isArray(data?.actions) ? data.actions : []),
       ...patternActionCands,
     ];
-    for (const a of actionCands) Array.isArray(a) ? a.forEach(x => uniqPush(actions, x)) : uniqPush(actions, a);
+    for (const a of actionCands) {
+      if (Array.isArray(a)) a.forEach(x => uniqPush(actions, x));
+      else uniqPush(actions, a);
+    }
 
     const bulletSpecTips = { ...POS.p7Tips, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Tips.align, color: rgb(0.24,0.23,0.35) };
     const bulletSpecActs = { ...POS.p7Acts, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Acts.align, color: rgb(0.24,0.23,0.35) };
 
     if (taCols === 2) {
-      // two explicit columns (use your boxes as-is)
+      // two separate columns (use your explicit boxes)
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
       drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     } else {
-      // stacked: tips box then actions box (still uses your explicit boxes)
+      // stacked: tips then actions, using your explicit boxes
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
       drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     }
 
     /* ------------------------------ SAVE ------------------------------ */
     const bytes = await pdf.save();
-    const fname = qstr(url, "name", defaultFileName(pickCoverName(data, url) || data?.person?.fullName));
+    const fname = qstr(url, "name", defaultFileName(coverName || data?.person?.fullName));
 
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${fname}"`);
+    res.setHeader(
+      "Content-Disposition",
+      `${preview ? "inline" : "attachment"}; filename="${fname}"`
+    );
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
