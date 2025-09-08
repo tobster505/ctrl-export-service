@@ -163,18 +163,26 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 }
 
 /* --------------------------- template fetch --------------------------- */
+const DEFAULT_TPL = "CTRL_Perspective_Assessment_Profile_template_v7";
+
 async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
   const host  = S(h.host, "ctrl-export-service.vercel.app");
   const proto = S(h["x-forwarded-proto"], "https");
-  const tplParam = url?.searchParams?.get("tpl");
-  const filename = tplParam && tplParam.trim()
-    ? tplParam.trim()
-    : "CTRL_Perspective_Assessment_Profile_template_v7.pdf";
-  const full = `${proto}://${host}/${filename}`;
-  const r = await fetch(full);
-  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
-  return new Uint8Array(await r.arrayBuffer());
+
+  const raw = (url?.searchParams?.get("tpl") || DEFAULT_TPL).trim();
+
+  // allow: full URL, slug without extension, or slug with .pdf
+  const asUrl = /^https?:\/\//i.test(raw) ? raw : `${proto}://${host}/${raw}`;
+  const candidates = /\.pdf$/i.test(raw) ? [asUrl] : [asUrl, `${asUrl}.pdf`];
+
+  let lastErr = "";
+  for (const u of candidates) {
+    const r = await fetch(u);
+    if (r.ok) return new Uint8Array(await r.arrayBuffer());
+    lastErr = `${r.status} ${r.statusText}`;
+  }
+  throw new Error(`template fetch failed for "${raw}": ${lastErr}`);
 }
 
 /* ----------------------------- URL tuners ---------------------------- */
@@ -275,7 +283,7 @@ export default async function handler(req, res) {
       // (theme paragraph coords kept for future but not drawn)
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 },
 
-      // tips / actions (your stored defaults)
+      // tips / actions (stored defaults)
       p7Tips: { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
       p7Acts: { x: 320, y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
     };
@@ -345,7 +353,7 @@ export default async function handler(req, res) {
     };
     POS.p7Acts.maxLines = qnum(url,"p7actsmax",POS.p7Acts.maxLines);
 
-    // bullet visuals + columns (your stored defaults)
+    // bullet visuals + columns (stored defaults, URL-overridable)
     const bulletIndent = qnum(url, "bulleti", 14);
     const bulletGap    = qnum(url, "bulletgap", 2);
     const taCols       = Math.max(1, Math.min(2, qnum(url, "taCols", 1)));
@@ -473,16 +481,16 @@ export default async function handler(req, res) {
       else uniqPush(actions, a);
     }
 
-    // bullet specs (use your stored defaults, still URL-overridable)
+    // bullet specs (use stored defaults, URL-overridable)
     const bulletSpecTips = { ...POS.p7Tips, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Tips.align, color: rgb(0.24,0.23,0.35) };
     const bulletSpecActs = { ...POS.p7Acts, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Acts.align, color: rgb(0.24,0.23,0.35) };
 
     if (taCols === 2) {
-      // honor your explicit boxes for each column (no auto mid calc)
+      // two columns; your explicit tip/action boxes are honored as-is
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
       drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     } else {
-      // one column each, stacked (tips first, then actions) using your exact boxes
+      // one column each; stacked using your exact boxes
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
       drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     }
