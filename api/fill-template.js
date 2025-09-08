@@ -263,22 +263,24 @@ export default async function handler(req, res) {
         f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
 
-      // ---------- Page 6 (YOUR LOCKED DEFAULTS) ----------
+      // ---------- PAGE 6 (LOCKED TO YOUR SPEC) ----------
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
       dom6desc: { x: 25,  y: 360, w: 265, size: 15, align: "left", max: 8 },
       how6:     { x: 30,  y: 600, w: 660, size: 17, align: "left", max: 12 },
       chart6:   { x: 213, y: 250, w: 410, h: 230 },
 
-      // ---------- Page 7 (YOUR LOCKED DEFAULTS) ----------
+      // ---------- PAGE 7 (LOCKED BASELINES) ----------
+      // pattern/theme bodies
       p7Patterns:  { x: 30,  y: 175, w: 660, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
-      // kept tunable but not rendered:
+      // (theme paragraph coords kept for future but not drawn)
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 },
-      p7Tips:      { x: 30,  y: 530, w: 680, size: 20, align:"left",    maxLines: 12 },
-      // NOTE: These defaults only apply when taCols != 2 (per your existing logic)
-      p7Acts:      { x: 110, y: 530, w: 660, size: 16, align:"left",    maxLines: 12 },
+
+      // tips / actions (your stored defaults)
+      p7Tips: { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
+      p7Acts: { x: 320, y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
     };
 
-    // Tuners (overridable by URL if you want to tweak)
+    // Tuners (URL can still override if needed)
     const tuneBox = (spec, pfx) => ({
       x: qnum(url,`${pfx}x`,spec.x), y: qnum(url,`${pfx}y`,spec.y),
       w: qnum(url,`${pfx}w`,spec.w), size: qnum(url,`${pfx}s`,spec.size),
@@ -295,17 +297,18 @@ export default async function handler(req, res) {
       POS.footer[n] = tuneBox(POS.footer[n], n);
     }
 
+    // Page 6 tunables
     POS.dom6     = tuneBox(POS.dom6, "dom6");
     POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc");
     POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");
     POS.how6.max = qnum(url,"how6max",POS.how6.max);
-
     POS.chart6 = {
       x: qnum(url,"c6x",POS.chart6.x), y: qnum(url,"c6y",POS.chart6.y),
       w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h)
     };
 
+    // Page 7 tunables
     POS.p7Patterns = {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
@@ -342,9 +345,9 @@ export default async function handler(req, res) {
     };
     POS.p7Acts.maxLines = qnum(url,"p7actsmax",POS.p7Acts.maxLines);
 
-    // bullet visuals (defaults; you can override via URL)
-    const bulletIndent = qnum(url, "bulleti", 18);
-    const bulletGap    = qnum(url, "bulletgap", 4);
+    // bullet visuals + columns (your stored defaults)
+    const bulletIndent = qnum(url, "bulleti", 14);
+    const bulletGap    = qnum(url, "bulletgap", 2);
     const taCols       = Math.max(1, Math.min(2, qnum(url, "taCols", 1)));
 
     /* -------------------- PAGE 1: Path / Name / Date -------------------- */
@@ -396,13 +399,13 @@ export default async function handler(req, res) {
           const png = await pdf.embedPng(await r.arrayBuffer());
           const { x, y, w, h } = POS.chart6;
           const ph = page6.getHeight();
-          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h }); // origin = top-left
+          page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
         }
       } catch { /* ignore image failure */ }
     }
 
     /* -------------------------- PAGE 7 ---------------------------------- */
-    // Left column (3 short blocks). Titles removed, bodies cleaned of labels.
+    // Left column (pattern + theme bodies). Titles removed, bodies cleaned.
     const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                     : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
                     : [];
@@ -414,7 +417,10 @@ export default async function handler(req, res) {
     let curY = POS.p7Patterns.y;
     for (const b of blocks) {
       if (b.body) {
-        const r = drawTextBox(page7, Helv, b.body,
+        const r = drawTextBox(
+          page7,
+          Helv,
+          b.body,
           { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
           { maxLines: POS.p7Patterns.maxBodyLines, ellipsis: true }
         );
@@ -467,28 +473,24 @@ export default async function handler(req, res) {
       else uniqPush(actions, a);
     }
 
+    // bullet specs (use your stored defaults, still URL-overridable)
     const bulletSpecTips = { ...POS.p7Tips, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Tips.align, color: rgb(0.24,0.23,0.35) };
     const bulletSpecActs = { ...POS.p7Acts, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Acts.align, color: rgb(0.24,0.23,0.35) };
 
     if (taCols === 2) {
-      // Two columns: actions derived from tips region (your existing behavior).
-      const mid = bulletSpecTips.x + Math.floor((bulletSpecTips.w - 20) / 2);
-      const colGap = 20;
-
-      const leftSpec  = { ...bulletSpecTips,  w: mid - bulletSpecTips.x - colGap/2 };
-      const rightSpec = { ...bulletSpecActs,  x: mid + colGap/2, w: (bulletSpecTips.x + bulletSpecTips.w) - (mid + colGap/2) };
-
-      drawBulleted(page7, Helv, tips,    leftSpec,  { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
-      drawBulleted(page7, Helv, actions, rightSpec, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
+      // honor your explicit boxes for each column (no auto mid calc)
+      drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
+      drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     } else {
-      // One block per section; respects p7actsx/p7actsw exactly.
+      // one column each, stacked (tips first, then actions) using your exact boxes
       drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
       drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
     }
 
     /* ------------------------------ SAVE ------------------------------ */
     const bytes = await pdf.save();
-    const fname = qstr(url, "name", defaultFileName(fullName));
+    const coverName = pickCoverName(data, url);
+    const fname = qstr(url, "name", defaultFileName(coverName || data?.person?.fullName));
 
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/pdf");
