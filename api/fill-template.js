@@ -1,4 +1,4 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (squircle + URL tuners + locked p1/footer)
+// /api/fill-template.js — CTRL V3 Slim Exporter (squircle + universal fallback + URL tuners + locked p1/footer)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -112,13 +112,40 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
   return { height: curY - y };
 }
 
-/* ─────────────────────── Squircle path generator ─────────────────────── */
-function makeSuperellipsePath(x, y, w, h, n = 4, steps = 96) {
-  // x,y in bottom-left space
+/* ─────────────── Superellipse (squircle) helpers ─────────────── */
+// If available, we use drawSvgPath. Otherwise we raster-fill the superellipse
+// with horizontal strips (fast and reliable on all pdf-lib builds).
+
+function superellipseHalfWidth(a, b, yRel, n) {
+  // yRel ∈ [-b, b] in superellipse local coords (origin at centre)
+  const t = Math.min(1, Math.max(0, Math.pow(Math.abs(yRel) / b, n)));
+  const x = a * Math.pow(1 - t, 1 / n);
+  return x;
+}
+
+function fillSuperellipseStrips(page, xBL, yBL, w, h, n = 4, step = 2, color = rgb(1,0,0), opacity = 0.45) {
+  // xBL,yBL are bottom-left; we draw thin rectangles to fill the superellipse
+  const a = w / 2, b = h / 2;
+  const cx = xBL + a, cy = yBL + b;
+  const dy = Math.max(1, Math.min(step, 6)); // sane strip height
+
+  for (let yy = -b; yy <= b; yy += dy) {
+    const half = superellipseHalfWidth(a, b, yy, n);
+    const x0 = cx - half;
+    const y0 = cy + yy;
+    const ww = half * 2;
+    const hh = Math.min(dy, (b - yy)); // last strip clip
+    if (ww > 0 && hh > 0) {
+      page.drawRectangle({ x: x0, y: y0, width: ww, height: hh, color, opacity });
+    }
+  }
+}
+
+function makeSuperellipsePath(xBL, yBL, w, h, n = 4, steps = 96) {
   const a = w / 2;
   const b = h / 2;
-  const cx = x + a;
-  const cy = y + b;
+  const cx = xBL + a;
+  const cy = yBL + b;
   const pow = (v, p) => Math.pow(Math.abs(v), 2 / p) * Math.sign(v);
 
   const pts = [];
@@ -135,7 +162,7 @@ function makeSuperellipsePath(x, y, w, h, n = 4, steps = 96) {
   return d;
 }
 
-/* ─────────────── Page 3 highlight (rounded-rect or squircle) ─────────────── */
+/* ─────────────── Page 3 highlight (round or squircle) ─────────────── */
 async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
@@ -167,12 +194,22 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const blY = pageH - (tlY + hh);
 
   const shape = (cfg.shape || cfg.state_shape || "round").toLowerCase();
-  if (shape === "squircle" && page3.drawSvgPath) {
-    const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
-    const steps = Number.isFinite(+cfg.steps) ? +cfg.steps : 96;
-    const dPath = makeSuperellipsePath(blX, blY, ww, hh, Nexp, steps);
-    page3.drawSvgPath(dPath, { color: shade, opacity });
+
+  if (shape === "squircle") {
+    // Preferred: use SVG path if available
+    if (typeof page3.drawSvgPath === "function") {
+      const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
+      const steps = Number.isFinite(+cfg.steps) ? +cfg.steps : 96;
+      const dPath = makeSuperellipsePath(blX, blY, ww, hh, Nexp, steps);
+      page3.drawSvgPath(dPath, { color: shade, opacity });
+    } else {
+      // Universal fallback: rasterize with horizontal strips
+      const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
+      const step  = Number.isFinite(+cfg.steps) ? Math.max(1, Math.round(+cfg.steps / 16)) : 2;
+      fillSuperellipseStrips(page3, blX, blY, ww, hh, Nexp, step, shade, opacity);
+    }
   } else {
+    // Rounded rectangle
     page3.drawRectangle({ x: blX, y: blY, width: ww, height: hh, color: shade, opacity, borderRadius: radius });
   }
 
@@ -307,6 +344,9 @@ function buildLayout(layoutV6) {
         highlightRadius: 16,
         fillOpacity: 0.45,
         fillColor: rgb(251/255, 236/255, 250/255),  // #FBECFA
+        shape: "squircle", // default
+        n: 4,
+        steps: 128,
         labelText: "YOU ARE HERE",
         labelSize: 10,
         labelColor: rgb(0.20, 0.20, 0.20),
@@ -380,7 +420,6 @@ function buildLayout(layoutV6) {
 }
 
 /* ───────────────────────────── URL Tuners ───────────────────────────── */
-// We intentionally DO NOT allow URL to change p1.* or footer.n* (locked)
 function applyUrlTuners(url, L) {
   const q = Object.fromEntries(url.searchParams.entries());
   const setBox = (box, prefix, withH = false) => {
