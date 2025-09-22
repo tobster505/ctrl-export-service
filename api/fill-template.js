@@ -1,4 +1,4 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (Pages 1–9, with Page 3 state highlight)
+// /api/fill-template.js — CTRL V3 Slim Exporter (with Page 3 rounded highlight & label presets)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -31,7 +31,6 @@ const ensureArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
 /* =========================================================================
    Drawing helpers
    ========================================================================= */
-// Text box measured from TOP (more natural for print layout)
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -44,7 +43,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
-  // quick wrap by estimated chars per line (good enough for body copy)
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
@@ -107,7 +105,6 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
-    // bullet
     const baseline = pageH - curY;
     const cy = baseline + (size * 0.33);
     if (page.drawCircle) {
@@ -127,22 +124,21 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 }
 
 /* =========================================================================
-   Page 3 — "Your current state" highlight
-   Everything here is configurable under L.p3.state.*
+   Page 3 — "Your current state" rounded highlight with label presets
    ========================================================================= */
 async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
   const useAbs = !!cfg.useAbsolute;
   const inset  = N(cfg.highlightInset, 4);
-  const label  = S(cfg.labelText || "YOU ARE HERE");
+  const radius = N(cfg.highlightRadius, 16); // rounded corners
+  const labelText = S(cfg.labelText || "YOU ARE HERE");
   const labelSize = N(cfg.labelSize, 10);
   const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
-  const pink = cfg.fillColor || rgb(0xF6/255, 0xED/255, 0xF3/255); // #F6EDF3
-  const opacity = N(cfg.fillOpacity, 0.35);
-  const padY = N(cfg.labelPadY, 10);
+  // New colour #FBECFA per screenshot (251,236,250)
+  const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255);
+  const opacity = N(cfg.fillOpacity, 0.45);
 
-  // Build box rects either from absolute coords or grid
   const BOXES = useAbs
     ? (cfg.absBoxes || {})
     : computeBoxesFromGrid(cfg.grid || defaultP3Grid());
@@ -151,24 +147,42 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const b = BOXES[dom];
   if (!b) return;
 
-  // fill highlight
+  // Draw rounded highlight
   page3.drawRectangle({
     x: b.x + inset,
     y: b.y + inset,
     width:  b.w - inset * 2,
     height: b.h - inset * 2,
-    color: pink,
-    opacity
+    color: shade,
+    opacity,
+    borderRadius: radius
   });
 
-  // label position (top for C/T, bottom for R/L unless overridden by b.here)
-  const herePos = (b.here || (dom === "C" || dom === "T" ? "top" : "bottom"));
-  const width = bold.widthOfTextAtSize(label, labelSize);
-  const cx = b.x + b.w / 2;
+  // Label placement:
+  // 1) If absolute label coords provided (labelCT for C/T, labelRL for R/L), use them.
+  // 2) Otherwise, auto-center within the box, near top for C/T, near bottom for R/L, with optional offsets.
+  const isTopRow = (dom === "C" || dom === "T");
+  const abs = isTopRow ? (cfg.labelCT || null) : (cfg.labelRL || null); // {x,y} in PDF coords (bottom-left)
+  const offX = N(cfg.labelOffsetX, 0);
+  const offY = N(cfg.labelOffsetY, 0);
 
-  page3.drawText(label, {
-    x: cx - width / 2,
-    y: herePos === "top" ? (b.y + b.h - padY - labelSize) : (b.y + padY),
+  let lx, ly;
+  if (abs && Number.isFinite(abs.x) && Number.isFinite(abs.y)) {
+    lx = abs.x;
+    ly = abs.y;
+  } else {
+    const cx = b.x + b.w / 2;
+    const py = isTopRow
+      ? (b.y + b.h - N(cfg.labelPadTop, 12))   // near top
+      : (b.y + N(cfg.labelPadBottom, 12));     // near bottom
+    lx = cx;
+    ly = py;
+  }
+
+  const textW = bold.widthOfTextAtSize(labelText, labelSize);
+  page3.drawText(labelText, {
+    x: lx - textW / 2 + offX,
+    y: ly + offY,
     size: labelSize,
     font: bold,
     color: labelColor
@@ -177,9 +191,9 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
 
 function defaultP3Grid() {
   return {
-    // These are bottom-left based numbers. Tweak as needed.
-    marginX: 45,     // left margin
-    marginY: 520,    // top row baseline (bottom-left origin)
+    // PDF-lib uses bottom-left origin for absolute coords
+    marginX: 45,     // left margin of the grid
+    marginY: 520,    // top row baseline
     gap: 24,         // gap between boxes
     boxW: 255,       // width of a state box
     boxH: 160        // height of a state box
@@ -190,11 +204,11 @@ function computeBoxesFromGrid(g) {
   const { marginX, marginY, gap, boxW, boxH } = { ...defaultP3Grid(), ...(g || {}) };
   return {
     // top row
-    T: { x: marginX,              y: marginY,           w: boxW, h: boxH, here: "top" },
-    C: { x: marginX + boxW + gap, y: marginY,           w: boxW, h: boxH, here: "top" },
+    T: { x: marginX,              y: marginY,              w: boxW, h: boxH },
+    C: { x: marginX + boxW + gap, y: marginY,              w: boxW, h: boxH },
     // bottom row
-    R: { x: marginX,              y: marginY - boxH - gap, w: boxW, h: boxH, here: "bottom" },
-    L: { x: marginX + boxW + gap, y: marginY - boxH - gap, w: boxW, h: boxH, here: "bottom" }
+    R: { x: marginX,              y: marginY - boxH - gap, w: boxW, h: boxH },
+    L: { x: marginX + boxW + gap, y: marginY - boxH - gap, w: boxW, h: boxH }
   };
 }
 
@@ -237,7 +251,6 @@ function normaliseInput(data) {
   d.spiderfreq = d.spiderfreq || d.chartUrl || "";
   d.spiderdesc = d.spiderdesc || d.how6 || "";
 
-  // Optional explicit short key for the state letter
   d.domkey = d.domkey || d.dom6Key || "";
 
   if (!d.seqpat || !d.theme) {
@@ -252,9 +265,7 @@ function normaliseInput(data) {
   d.tips    = ensureArray(d.tips && d.tips.length ? d.tips : (d.tips2 || []));
   d.actions = ensureArray(d.actions && d.actions.length ? d.actions : (d.actions2 || []));
 
-  // Normalise path label
   d.f = normPathLabel(d.f);
-
   return d;
 }
 
@@ -269,7 +280,6 @@ function deepMerge(base, patch) {
   return out;
 }
 
-// Build default layout, then merge in payload overrides (layoutV6) if provided
 function buildLayout(layoutV6) {
   const L = {
     meta: { units: "pt", origin: "TL", pages: "1-based" },
@@ -281,7 +291,7 @@ function buildLayout(layoutV6) {
       date: { x: 130, y: 630, w: 500, size: 20, align: "left"  }
     },
 
-    // Footer for pages 2..9 (path + name areas)
+    // Footer for pages 2..9
     footer: {
       f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
@@ -293,29 +303,43 @@ function buildLayout(layoutV6) {
       f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }
     },
 
-    // PAGE 3 (dominant)
+    // PAGE 3 (dominant) — note: we NO LONGER draw "Your current state is: …"
     p3: {
-      domHdr:  { x:  60, y: 150, w: 650, size: 13, align: "left"  },
-      domChar: { x:  60, y: 180, w: 650, size: 11, align: "left"  },
-      domDesc: { x:  60, y: 210, w: 650, size: 11, align: "left"  },
+      // Keep the character line + description (edit/disable as you wish)
+      domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
+      domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
 
-      // NEW: state highlight config (fully configurable)
+      // NEW: state highlight config (rounded corners & label presets)
       state: {
-        useAbsolute: false,                                // set true to use absBoxes
+        useAbsolute: false,                                // true = use absBoxes; false = use grid
         highlightInset: 4,
+        highlightRadius: 16,                               // rounded corners radius
         labelText: "YOU ARE HERE",
         labelSize: 10,
-        labelPadY: 10,
-        fillOpacity: 0.35,
-        fillColor: rgb(0xF6/255, 0xED/255, 0xF3/255),     // #F6EDF3
+        labelOffsetX: 0,                                   // tweak after positioning
+        labelOffsetY: 0,
+        labelPadTop: 12,                                   // when auto-placing for C/T
+        labelPadBottom: 12,                                // when auto-placing for R/L
+        fillOpacity: 0.45,
+        // Default shade: #FBECFA (your screenshot)
+        fillColor: rgb(251/255, 236/255, 250/255),
         labelColor: rgb(0.20, 0.20, 0.20),
+
+        // Optional ABSOLUTE label positions (PDF coords, bottom-left origin)
+        // If provided, these override auto placement.
+        // e.g., labelCT: { x: 180, y: 655 }, labelRL: { x: 180, y: 365 }
+        labelCT: null,   // { x, y } for Concealed/Triggered
+        labelRL: null,   // { x, y } for Regulated/Lead
+
+        // GRID-based boxes (used when useAbsolute=false)
         grid: { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 },
+
+        // ABSOLUTE boxes (used when useAbsolute=true)
         absBoxes: {
-          // If useAbsolute=true, provide exact rectangles (PDF origin = bottom-left)
-          T: { x: 45,  y: 520, w: 255, h: 160, here: "top"    },
-          C: { x: 324, y: 520, w: 255, h: 160, here: "top"    },
-          R: { x: 45,  y: 320, w: 255, h: 160, here: "bottom" },
-          L: { x: 324, y: 320, w: 255, h: 160, here: "bottom" }
+          T: { x: 45,  y: 520, w: 255, h: 160 },
+          C: { x: 324, y: 520, w: 255, h: 160 },
+          R: { x: 45,  y: 320, w: 255, h: 160 },
+          L: { x: 324, y: 320, w: 255, h: 160 }
         }
       }
     },
@@ -363,7 +387,6 @@ function buildLayout(layoutV6) {
 
   if (layoutV6 && typeof layoutV6 === "object") {
     try {
-      // Merge partial patches from payload
       ["p1","p3","p4","p5","p6","p7","p8","footer"].forEach(k => {
         if (layoutV6[k]) L[k] = deepMerge(L[k], layoutV6[k]);
       });
@@ -385,7 +408,6 @@ function safeFileName(url, fullName) {
    HTTP handler
    ========================================================================= */
 export default async function handler(req, res) {
-  // Parse query
   let url;
   try { url = new URL(req?.url || "/", "http://localhost"); }
   catch { url = new URL("/", "http://localhost"); }
@@ -394,7 +416,6 @@ export default async function handler(req, res) {
   const dataB64 = url.searchParams.get("data");
   if (!dataB64) { res.statusCode = 400; res.end("Missing ?data"); return; }
 
-  // Parse payload
   let data;
   try {
     const raw = Buffer.from(String(dataB64), "base64").toString("utf8");
@@ -406,13 +427,11 @@ export default async function handler(req, res) {
   try {
     const normData = normaliseInput(data);
 
-    // Template + fonts
     const tplBytes = await fetchTemplate(req, url);
     const pdf = await PDFDocument.load(tplBytes);
     const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    // Pages
     const p1 = pdf.getPage(0);
     const p2 = pdf.getPage(1);
     const p3 = pdf.getPage(2);
@@ -423,10 +442,8 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
-    // Layout (merge in overrides from payload)
     const L = buildLayout(normData.layoutV6);
 
-    // Footer helper for p2..p9
     const drawFooter = (page, idx) => {
       const fc = rgb(0.24,0.23,0.35);
       drawTextBox(page, Helv, normData.f, { ...(L.footer[`f${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
@@ -444,13 +461,15 @@ export default async function handler(req, res) {
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawFooter(p3, 3);
 
-    const domHdr = normData.dom ? `Your current state is: ${normData.dom}` : "";
-    if (domHdr) drawTextBox(p3, HelvB, domHdr,  { ...L.p3.domHdr,  color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
+    // NOTE: Removed "Your current state is: …" per request.
     if (normData.domchar)
-      drawTextBox(p3, Helv,  `Representing the character: ${normData.domchar}`, { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
-    drawTextBox(p3, Helv, normData.domdesc, { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
+      drawTextBox(p3, Helv, `Representing the character: ${normData.domchar}`,
+        { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
 
-    // NEW: paint state highlight (uses domkey or dom6Key)
+    drawTextBox(p3, Helv, normData.domdesc,
+      { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
+
+    // Rounded highlight + label presets
     await paintStateHighlight(pdf, p3, normData.domkey || normData.dom6Key || "", L);
 
     /* ---------------------------- PAGE 4 ---------------------------- */
@@ -528,14 +547,13 @@ export default async function handler(req, res) {
     drawBulleted(p8, Helv, tips,
       { ...L.p8.tipsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
       { maxLines: 26, blockGap: 6 });
-    drawBulleted(p8, Helv, actions
-      ,{ ...L.p8.actsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
+    drawBulleted(p8, Helv, actions,
+      { ...L.p8.actsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
       { maxLines: 26, blockGap: 6 });
 
     /* ---------------------------- PAGE 9 ---------------------------- */
     drawFooter(p9, 9);
 
-    // Save
     const bytes = await pdf.save();
     const fname = safeFileName(url, normData.n);
     res.statusCode = 200;
