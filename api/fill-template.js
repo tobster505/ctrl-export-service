@@ -1,4 +1,4 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (Page-3 highlight + URL tuner; path coords LOCKED)
+// /api/fill-template.js — CTRL V3 Slim Exporter (no path rendering anywhere)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -21,11 +21,6 @@ const todayLbl = () => {
   return `${String(now.getDate()).padStart(2,"0")}/${MMM}/${now.getFullYear()}`;
 };
 
-const ucFirst = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-const normPathLabel = (v) => {
-  const s = String(v || "Perspective").trim();
-  return s.toLowerCase() === "perspective" ? "Perspective" : ucFirst(s);
-};
 const ensureArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
 
 /* =========================================================================
@@ -134,7 +129,8 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const labelText = S(cfg.labelText || "YOU ARE HERE");
   const labelSize = N(cfg.labelSize, 10);
   const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
-  const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255); // #FBECFA
+  // Shade #FBECFA
+  const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255);
   const opacity = N(cfg.fillOpacity, 0.45);
 
   const BOXES = useAbs
@@ -220,7 +216,7 @@ async function fetchTemplate(req, url) {
    ========================================================================= */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
-  d.f = d.f || d.flow || "Perspective";
+  d.f = d.f || d.flow || "Perspective"; // still stored, just not drawn
   d.n = d.n || (d.person && (d.person.preferredName || d.person.fullName)) || "";
   d.d = d.d || d.dateLbl || todayLbl();
 
@@ -245,7 +241,6 @@ function normaliseInput(data) {
   d.tips    = ensureArray(d.tips && d.tips.length ? d.tips : (d.tips2 || []));
   d.actions = ensureArray(d.actions && d.actions.length ? d.actions : (d.actions2 || []));
 
-  d.f = normPathLabel(d.f);
   return d;
 }
 
@@ -261,43 +256,39 @@ function deepMerge(base, patch) {
 }
 
 function buildLayout(layoutV6) {
-  // Fixed, non-tunable path coordinates (LOCKED)
-  const FIXED_P1_PATH = { x: 290, y: 170, w: 400, size: 40, align: "left" };
-  const FIXED_FOOTERS_FLOW = {
-    f2: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f3: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f4: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f5: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f6: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f7: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f8: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
-    f9: { x: 200, y: 64,  w: 400, size: 13, align: "left" }
-  };
-
   const L = {
     meta: { units: "pt", origin: "TL", pages: "1-based" },
 
-    // PAGE 1
+    // PAGE 1 (no path field drawn)
     p1: {
-      path: { ...FIXED_P1_PATH }, // LOCKED
+      // path removed from rendering; we keep defaults here only if you want to re-enable later
+      path: { x: 290, y: 170, w: 400, size: 40, align: "left" },
       name: { x:  10, y: 573, w: 500, size: 30, align: "center"},
       date: { x: 130, y: 630, w: 500, size: 20, align: "left"  }
     },
 
-    // footers 2–9
+    // footers 2–9 (we will only draw the 'name' blocks n2..n9)
     footer: {
-      ...FIXED_FOOTERS_FLOW, // f2..f9 LOCKED
-      n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n4: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n5: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }
+      f2: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f3: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f4: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f5: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f6: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f7: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f8: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+      f9: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+
+      n2: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n3: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n4: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n5: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n6: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n7: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n8: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      n9: { x: 250, y: 64,  w: 400, size: 12, align: "center" }
     },
 
-    // PAGE 3
+    // PAGE 3 (no "Your current state is …" line)
     p3: {
       domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
       domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
@@ -311,8 +302,8 @@ function buildLayout(layoutV6) {
         labelText: "YOU ARE HERE",
         labelSize: 10,
         labelColor: rgb(0.20, 0.20, 0.20),
-        labelCT: { x: 180, y: 655 }, // C/T
-        labelRL: { x: 180, y: 365 }, // R/L
+        labelCT: { x: 180, y: 655 },                 // C/T label anchor (optional)
+        labelRL: { x: 180, y: 365 },                 // R/L label anchor (optional)
         labelOffsetX: 0,
         labelOffsetY: 0,
         labelPadTop: 12,
@@ -368,23 +359,14 @@ function buildLayout(layoutV6) {
     }
   };
 
-  // Merge overrides but NEVER for path coordinates
+  // Merge external overrides (Botpress), but there is no path rendering anyway
   if (layoutV6 && typeof layoutV6 === "object") {
     try {
-      // Merge only sections where path isn’t; we’ll re-lock path & footers flow after.
       ["p1","p3","p4","p5","p6","p7","p8","footer"].forEach(k => {
         if (layoutV6[k]) L[k] = deepMerge(L[k], layoutV6[k]);
       });
     } catch { /* ignore */ }
   }
-
-  // Re-lock path and footer flow positions (ignore any overrides)
-  L.p1.path = { ...FIXED_P1_PATH };
-  L.footer = {
-    ...L.footer,
-    ...FIXED_FOOTERS_FLOW
-  };
-
   return L;
 }
 
@@ -429,10 +411,10 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
-    // layout (with Botpress overrides, but path locked)
+    // layout (with Botpress overrides)
     const L = buildLayout(normData.layoutV6);
 
-    // --- URL tuner overrides (kept: state & grid only; NO path tuners) ---
+    // --- URL tuner overrides (state + label/grid only; NO path anywhere) ---
     const q = Object.fromEntries(url.searchParams.entries());
     function num(v, fb){ const n = +v; return Number.isFinite(n) ? n : fb; }
 
@@ -485,19 +467,14 @@ export default async function handler(req, res) {
       upd("L", d.L || { x:324, y:320, w:255, h:160 });
     }
 
-    // footer helper
+    // footers: draw ONLY the name (centre). Do not draw flow/path anywhere.
     const drawFooter = (page, idx) => {
       const fc = rgb(0.24,0.23,0.35);
-      // FLOW/PATH (left footer) — coordinates LOCKED
-      drawTextBox(page, Helv, normData.f, { ...(L.footer[`f${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
-      // NAME (center footer) — tunable via layoutV6 (still)
       drawTextBox(page, Helv, normData.n, { ...(L.footer[`n${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
     };
 
     /* ---------------------------- PAGE 1 ---------------------------- */
-    // PATH/TITLE (top) — coordinates LOCKED; still drawn here
-    drawTextBox(p1, HelvB, normData.f, { ...L.p1.path, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
-    // NAME + DATE still tunable
+    // NO path on Page-1 (the template artwork already shows it)
     drawTextBox(p1, HelvB, normData.n, { ...L.p1.name, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(p1, Helv,  normData.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
@@ -507,7 +484,6 @@ export default async function handler(req, res) {
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawFooter(p3, 3);
 
-    // (No “Your current state is …” line)
     if (normData.domchar)
       drawTextBox(p3, Helv, `Representing the character: ${normData.domchar}`,
         { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
