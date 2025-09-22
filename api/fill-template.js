@@ -1,9 +1,20 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 state highlight)
+// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 Current State)
 //
-// - Template file is read from: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
-// - Page-3 state highlight (Current state) ABS rectangles + per-state labels + style are HARD-LOCKED.
-//   Payload layoutV6 cannot override them; only URL tuners can override per-render.
-// - All original tuners for p3 text (domChar/domDesc) and pages 4–8 remain supported.
+// WHAT’S NEW IN THIS DROP
+// - Robust domKey resolution (C/T/R/L) so “Triggered” never falls back to “Regulated”.
+// - Page-3 Current State is HARD-LOCKED to your exact coordinates + label anchors.
+//   Payload (data.layoutV6) cannot override the highlight; only URL tuners can.
+// - Template path fixed to: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+//
+// COORDINATES LOCKED BY DEFAULT (exactly as you provided)
+//   R: x=60  y=433  w=188 h=158  radius=1000 inset=1  label (150,612)
+//   C: x=58  y=258  w=188 h=156  radius=28   inset=6  label (150,245)
+//   T: x=299 y=258  w=188 h=156  radius=28   inset=6  label (390,244)
+//   L: x=298 y=440  w=188 h=156  radius=28   inset=6  label (390,605)
+//
+// You can still override per render via URL tuners (e.g. state_useAbs=0, abs_*,
+// label*, state_shape). Page 3 text boxes (domChar/domDesc) and Pages 4–8 tuners
+// remain fully supported.
 
 export const config = { runtime: "nodejs" };
 
@@ -32,9 +43,7 @@ const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
-  // If URL-encoded, decode first
   try { s = decodeURIComponent(s); } catch {}
-  // Convert base64url to base64
   s = s.replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
   try {
@@ -119,7 +128,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
-    const baseline = pageH - curY; // convert to BL coords for shapes
+    const baseline = pageH - curY; // BL coords for shapes
     const cy = baseline + (size * 0.33);
     if (page.drawCircle) {
       page.drawCircle({ x: x + bulletRadius, y: cy, size: bulletRadius, color });
@@ -180,7 +189,10 @@ function makeSuperellipsePath(xBL, yBL, w, h, n = 4, steps = 96) {
 async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
-  const dom  = String(dominantKey || "R").toUpperCase();
+
+  // Validate incoming key; DO NOT silently default to "R" unless invalid
+  const upper = String(dominantKey || "").toUpperCase();
+  const dom = ["C","T","R","L"].includes(upper) ? upper : "R";
 
   // Per-state style overrides (radius/inset)
   const styleByState = cfg.styleByState || {};
@@ -200,7 +212,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const b = BOXES[dom];
   if (!b) return;
 
-  // Layout uses top-left; pdf-lib draws bottom-left → convert
+  // TL → BL for pdf-lib
   const tlX = b.x + inset;
   const tlY = b.y + inset;
   const ww  = Math.max(0, b.w - inset * 2);
@@ -267,6 +279,28 @@ function computeBoxesFromGrid(g) {
   };
 }
 
+/* ────────────────────── domKey resolution (bulletproof) ───────────────────── */
+function resolveDomKey(d) {
+  const mapLabel = { concealed: "C", triggered: "T", regulated: "R", lead: "L" };
+  const mapChar  = { art: "C", fal: "T", mika: "R", sam: "L" };
+
+  const cand = [
+    d.domkey, d.domKey, d.dom6Key, d.dom6key,
+    d.dom, d.dom6Label, d.domlabel, d.domLabel,
+    d.domchar, d.character
+  ].map(x => String(x || "").trim());
+
+  for (const c of cand) {
+    if (!c) continue;
+    const u = c.toUpperCase();
+    if (["C","T","R","L"].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
+  }
+  return ""; // caller will guard / fallback
+}
+
 /* ─────────────────────────── Input normalisation ─────────────────────────── */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
@@ -281,7 +315,9 @@ function normaliseInput(data) {
   d.spiderfreq = d.spiderfreq || d.chartUrl || "";
   d.spiderdesc = d.spiderdesc || d.how6 || "";
 
-  d.domkey = (d.domkey || d.dom6Key || "").toUpperCase();
+  // Robust domKey resolution (no accidental default to "R")
+  const resKey = resolveDomKey(d);
+  d.domkey = resKey || d.domkey || d.dom6Key || d.domKey || "";
 
   if (!d.seqpat || !d.theme) {
     const b = Array.isArray(d.page7Blocks) ? d.page7Blocks : [];
@@ -341,7 +377,7 @@ function buildLayout(layoutV6) {
         // ✅ absolute rectangles by default
         useAbsolute: true,
 
-        // Global defaults (can be overridden per-state)
+        // Global defaults
         shape: "round",
         highlightRadius: 28,
         highlightInset: 6,
@@ -356,7 +392,7 @@ function buildLayout(layoutV6) {
           L: { radius: 28,   inset: 6  }
         },
 
-        // ✅ Per-state label anchors (top-left coords)
+        // ✅ Per-state label anchors (TL coords)
         labelByState: {
           C: { x: 150, y: 245 },
           T: { x: 390, y: 244 },
@@ -364,7 +400,7 @@ function buildLayout(layoutV6) {
           L: { x: 390, y: 605 }
         },
 
-        // Fallback anchors if you ever flip to grouped CT/RL behaviour
+        // Fallback anchors if grouped CT/RL ever used
         labelCT: { x: 180, y: 655 }, // for C/T (top)
         labelRL: { x: 180, y: 365 }, // for R/L (bottom)
         labelText: "YOU ARE HERE",
@@ -375,7 +411,7 @@ function buildLayout(layoutV6) {
         labelPadTop: 12,
         labelPadBottom: 12,
 
-        // ✅ Locked absolute rectangles (top-left coords)
+        // ✅ Locked absolute rectangles (TL coords)
         absBoxes: {
           R: { x:  60, y: 433, w: 188, h: 158 },
           C: { x:  58, y: 258, w: 188, h: 156 },
@@ -442,7 +478,7 @@ function buildLayout(layoutV6) {
       merged.p1     = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
       merged.footer = { ...merged.footer, ...LOCKED.footer };
 
-      // 🔒 HARD-LOCK Page-3 state highlight (geometry + style + labels)
+      // 🔒 HARD-LOCK Page-3 Current State (geometry + style + labels)
       merged.p3 = merged.p3 || {};
       merged.p3.state = { ...L.p3.state };
 
@@ -470,7 +506,7 @@ function applyUrlTuners(url, L) {
   if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept typo
   setBox(L.p3?.domDesc, "p3_domDesc");
 
-  // Page 3 state highlight + label (URL can override the hard lock)
+  // Page 3 state highlight + labels (URL can override the hard lock)
   L.p3 = L.p3 || {};
   L.p3.state = L.p3.state || {};
   const S3 = L.p3.state;
@@ -501,7 +537,7 @@ function applyUrlTuners(url, L) {
   if (q.labelPadTop  != null) S3.labelPadTop  = +q.labelPadTop;
   if (q.labelPadBottom != null) S3.labelPadBottom = +q.labelPadBottom;
 
-  // per-state label anchors via URL (optional)
+  // Per-state label anchors via URL (optional)
   const psl = {};
   const setLS = (k, X, Y) => {
     if (X != null || Y != null) psl[k] = { x: X != null ? +X : undefined, y: Y != null ? +Y : undefined };
@@ -572,7 +608,7 @@ function applyUrlTuners(url, L) {
 }
 
 /* ───────────────────────────── Template load ───────────────────────────── */
-// Read from local filesystem: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+// Reads: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
 async function loadTemplateBytes(url) {
   const tplParam = (url && url.searchParams && url.searchParams.get("tpl")) || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
   const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, "");
@@ -619,6 +655,9 @@ export default async function handler(req, res) {
     let L = buildLayout(P.layoutV6);
     L = applyUrlTuners(url, L);
 
+    // Resolve dominant key robustly (C/T/R/L)
+    const resolvedDomKey = resolveDomKey(P) || "R";
+
     /* ---------------------------- PAGE 1 (locked) ---------------------------- */
     drawTextBox(p1, HelvB, P.n, { ...L.p1.name, color: rgb(0.12,0.11,0.20) }, { maxLines: 1, ellipsis: true });
     drawTextBox(p1, Helv,  P.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
@@ -635,7 +674,7 @@ export default async function handler(req, res) {
     drawTextBox(p3, Helv, P.domdesc,
       { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
 
-    await paintStateHighlight(pdf, p3, P.domkey || P.dom6Key || "", L);
+    await paintStateHighlight(pdf, p3, resolvedDomKey, L);
 
     /* ---------------------------- PAGE 4 ---------------------------- */
     drawTextBox(p4, Helv, P.n, { ...(L.footer.n4||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
