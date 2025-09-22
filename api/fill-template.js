@@ -1,13 +1,10 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter
-// - Path/flow is NOT rendered (template handles it).
-// - URL tuners enabled for EVERY element on every page (see "applyUrlTuners" section).
+// /api/fill-template.js — CTRL V3 Slim Exporter (with squircle + wide tuners)
+// Locked: p1_name / p1_date / footer_n2..n9 (URL tuners are ignored for these)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Utilities
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────── Utilities ───────────────────────────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 const norm = (v, fb = "") =>
@@ -24,9 +21,7 @@ const todayLbl = () => {
 };
 const ensureArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Drawing helpers
-────────────────────────────────────────────────────────────────────────── */
+/* ────────────────────────────── Drawing helpers ───────────────────────────── */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -118,9 +113,29 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
   return { height: curY - y };
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Page 3 — highlight box + label presets
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────── Squircle path generator ───────────────────────── */
+function makeSuperellipsePath(x, y, w, h, n = 4, steps = 96) {
+  const a = w / 2;
+  const b = h / 2;
+  const cx = x + a;
+  const cy = y + b;
+  const pow = (v, p) => Math.pow(Math.abs(v), 2 / p) * Math.sign(v);
+
+  const pts = [];
+  for (let i = 0; i < steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const ct = Math.cos(t), st = Math.sin(t);
+    const px = cx + a * pow(ct, n);
+    const py = cy + b * pow(st, n);
+    pts.push([px, py]);
+  }
+  let d = `M ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
+  for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0].toFixed(2)} ${pts[i][1].toFixed(2)}`;
+  d += " Z";
+  return d;
+}
+
+/* ───────────────────── Page 3 highlight painter (round/squircle) ───────────────────── */
 async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
@@ -141,16 +156,21 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const b = BOXES[dom];
   if (!b) return;
 
-  page3.drawRectangle({
-    x: b.x + inset,
-    y: b.y + inset,
-    width:  b.w - inset * 2,
-    height: b.h - inset * 2,
-    color: shade,
-    opacity,
-    borderRadius: radius
-  });
+  // draw shaded highlight: rounded rectangle OR squircle
+  const shape = (cfg.shape || cfg.state_shape || "round").toLowerCase();
+  const xx = b.x + inset, yy = b.y + inset;
+  const ww = b.w - inset * 2, hh = b.h - inset * 2;
 
+  if (shape === "squircle" && page3.drawSvgPath) {
+    const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
+    const steps = Number.isFinite(+cfg.steps) ? +cfg.steps : 96;
+    const dPath = makeSuperellipsePath(xx, yy, ww, hh, Nexp, steps);
+    page3.drawSvgPath(dPath, { color: shade, opacity });
+  } else {
+    page3.drawRectangle({ x: xx, y: yy, width: ww, height: hh, color: shade, opacity, borderRadius: radius });
+  }
+
+  // label placement
   const isTop = (dom === "C" || dom === "T");
   const abs = isTop ? (cfg.labelCT || null) : (cfg.labelRL || null);
   const offX = N(cfg.labelOffsetX, 0);
@@ -167,13 +187,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   }
 
   const textW = bold.widthOfTextAtSize(labelText, labelSize);
-  page3.drawText(labelText, {
-    x: lx - textW / 2 + offX,
-    y: ly + offY,
-    size: labelSize,
-    font: bold,
-    color: labelColor
-  });
+  page3.drawText(labelText, { x: lx - textW / 2 + offX, y: ly + offY, size: labelSize, font: bold, color: labelColor });
 }
 
 function defaultP3Grid() {
@@ -189,9 +203,7 @@ function computeBoxesFromGrid(g) {
   };
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Template fetch
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────── Template fetch ───────────────────────────── */
 async function fetchTemplate(req, url) {
   const tplParam = url?.searchParams?.get("tpl");
   if (tplParam && /^https?:\/\//i.test(tplParam)) {
@@ -210,12 +222,10 @@ async function fetchTemplate(req, url) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Input normalisation
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────── Input normalisation ───────────────────────── */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
-  d.f = d.f || d.flow || "Perspective"; // NOT drawn, but kept as metadata
+  d.f = d.f || d.flow || "Perspective"; // not drawn
   d.n = d.n || (d.person && (d.person.preferredName || d.person.fullName)) || "";
   d.d = d.d || d.dateLbl || todayLbl();
 
@@ -243,9 +253,7 @@ function normaliseInput(data) {
   return d;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Layout (defaults) — every element is tunable via URL or layoutV6
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────── Layout defaults ───────────────────────────── */
 function deepMerge(base, patch) {
   if (!patch || typeof patch !== "object") return base;
   const out = Array.isArray(base) ? base.slice() : { ...(base || {}) };
@@ -257,27 +265,30 @@ function deepMerge(base, patch) {
   return out;
 }
 
+// 🔒 LOCKED positions for p1 + footer (URL tuners will be ignored)
+const LOCKED = {
+  p1: {
+    name: { x: 7,   y: 473,  w: 500, size: 30, align: "center" },
+    date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
+  },
+  footer: (() => {
+    const one = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
+    return { n2: {...one}, n3:{...one}, n4:{...one}, n5:{...one}, n6:{...one}, n7:{...one}, n8:{...one}, n9:{...one} };
+  })()
+};
+
 function buildLayout(layoutV6) {
   const L = {
     meta: { units: "pt", origin: "TL", pages: "1-based" },
 
-    // PAGE 1 (we DO NOT render path; only name/date)
+    // PAGE 1 (locked)
     p1: {
-      name: { x:  10, y: 573, w: 500, size: 30, align: "center"},
-      date: { x: 130, y: 630, w: 500, size: 20, align: "left"  }
+      name: LOCKED.p1.name,
+      date: LOCKED.p1.date
     },
 
-    // FOOTERS 2–9 (only the 'name' is drawn; path is never drawn)
-    footer: {
-      n2: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n3: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n4: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n5: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n6: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n7: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n8: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      n9: { x: 250, y: 64,  w: 400, size: 12, align: "center" }
-    },
+    // FOOTERS 2–9 (locked: only the name centre line)
+    footer: LOCKED.footer,
 
     // PAGE 3
     p3: {
@@ -293,8 +304,8 @@ function buildLayout(layoutV6) {
         labelText: "YOU ARE HERE",
         labelSize: 10,
         labelColor: rgb(0.20, 0.20, 0.20),
-        labelCT: { x: 180, y: 655 },                 // C/T anchor
-        labelRL: { x: 180, y: 365 },                 // R/L anchor
+        labelCT: { x: 180, y: 655 },
+        labelRL: { x: 180, y: 365 },
         labelOffsetX: 0,
         labelOffsetY: 0,
         labelPadTop: 12,
@@ -350,26 +361,23 @@ function buildLayout(layoutV6) {
     }
   };
 
-  // Merge Botpress overrides if supplied in payload
+  // Merge Botpress overrides (but keep p1 + footer locked)
   if (layoutV6 && typeof layoutV6 === "object") {
     try {
-      for (const k of ["p1","p3","p4","p5","p6","p7","p8","footer"]) {
-        if (layoutV6[k]) L[k] = deepMerge(L[k], layoutV6[k]);
-      }
+      const merged = deepMerge(L, layoutV6);
+      // overwrite any attempted changes to locked blocks
+      merged.p1 = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
+      merged.footer = { ...merged.footer, ...LOCKED.footer };
+      return merged;
     } catch { /* ignore */ }
   }
   return L;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   URL Tuners — enable overrides for EVERY element on every page
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────── URL Tuners ───────────────────────────── */
+// Note: we intentionally DO NOT allow URL to modify p1.* or footer.n* (locked)
 function applyUrlTuners(url, L) {
   const q = Object.fromEntries(url.searchParams.entries());
-  const num = (v, fb) => {
-    const n = +v;
-    return Number.isFinite(n) ? n : fb;
-  };
   const setBox = (box, prefix, withH = false) => {
     if (!box) return;
     if (q[`${prefix}_x`]    != null) box.x    = +q[`${prefix}_x`];
@@ -380,17 +388,10 @@ function applyUrlTuners(url, L) {
     if (q[`${prefix}_align`])       box.align = String(q[`${prefix}_align`]);
   };
 
-  // Page 1
-  setBox(L.p1?.name, "p1_name");
-  setBox(L.p1?.date, "p1_date");
-
-  // Footers (name only)
-  for (let i = 2; i <= 9; i++) {
-    setBox(L.footer?.[`n${i}`], `footer_n${i}`);
-  }
-
   // Page 3 text
   setBox(L.p3?.domChar, "p3_domChar");
+  // accept both domDesc_size (correct) and dokdesc_size (legacy typo)
+  if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"];
   setBox(L.p3?.domDesc, "p3_domDesc");
 
   // Page 3 state highlight + label
@@ -405,15 +406,19 @@ function applyUrlTuners(url, L) {
   if (q.state_radius  != null) S3.highlightRadius = +q.state_radius;
   if (q.state_opacity != null) S3.fillOpacity     = +q.state_opacity;
 
+  if (q.state_shape)    S3.shape = String(q.state_shape); // "round" | "squircle"
+  if (q.state_n != null)     S3.n     = +q.state_n;
+  if (q.state_steps != null) S3.steps = +q.state_steps;
+
   if (q.labelText)    S3.labelText  = String(q.labelText);
   if (q.labelSize)    S3.labelSize  = +q.labelSize;
   if (q.labelCTx || q.labelCTy) S3.labelCT = {
-    x: num(q.labelCTx, (S3.labelCT||{}).x ?? 180),
-    y: num(q.labelCTy, (S3.labelCT||{}).y ?? 655)
+    x: +q.labelCTx || (S3.labelCT?.x ?? 180),
+    y: +q.labelCTy || (S3.labelCT?.y ?? 655)
   };
   if (q.labelRLx || q.labelRLy) S3.labelRL = {
-    x: num(q.labelRLx, (S3.labelRL||{}).x ?? 180),
-    y: num(q.labelRLy, (S3.labelRL||{}).y ?? 365)
+    x: +q.labelRLx || (S3.labelRL?.x ?? 180),
+    y: +q.labelRLy || (S3.labelRL?.y ?? 365)
   };
   if (q.labelOffsetX != null) S3.labelOffsetX = +q.labelOffsetX;
   if (q.labelOffsetY != null) S3.labelOffsetY = +q.labelOffsetY;
@@ -423,11 +428,11 @@ function applyUrlTuners(url, L) {
   if (q.gridX || q.gridY || q.gridW || q.gridH || q.gridGap) {
     const g = S3.grid || {};
     S3.grid = {
-      marginX: num(q.gridX,   g.marginX ?? 45),
-      marginY: num(q.gridY,   g.marginY ?? 520),
-      boxW:    num(q.gridW,   g.boxW    ?? 255),
-      boxH:    num(q.gridH,   g.boxH    ?? 160),
-      gap:     num(q.gridGap, g.gap     ?? 24),
+      marginX: +q.gridX   || g.marginX || 45,
+      marginY: +q.gridY   || g.marginY || 520,
+      boxW:    +q.gridW   || g.boxW    || 255,
+      boxH:    +q.gridH   || g.boxH    || 160,
+      gap:     +q.gridGap || g.gap     || 24,
     };
   }
 
@@ -454,24 +459,15 @@ function applyUrlTuners(url, L) {
   // Page 6
   setBox(L.p6?.theme,  "p6_theme");
 
-  // Page 7 headings + body controls
+  // Page 7
   setBox(L.p7?.hCol, "p7_hCol");
   setBox(L.p7?.hLdr, "p7_hLdr");
   if (q.p7_bodySize != null) L.p7.bodySize = +q.p7_bodySize;
   if (q.p7_maxLines != null) L.p7.maxLines = +q.p7_maxLines;
 
-  // Page 7 colleague boxes C/T/R/L
-  const colKeys = ["C","T","R","L"];
-  colKeys.forEach((k, i) => {
-    const box = L.p7?.colBoxes?.[i];
-    setBox(box, `p7_col${k}`, true);
-  });
-
-  // Page 7 leader boxes C/T/R/L
-  colKeys.forEach((k, i) => {
-    const box = L.p7?.ldrBoxes?.[i];
-    setBox(box, `p7_ldr${k}`, true);
-  });
+  const order = ["C","T","R","L"];
+  order.forEach((k, i) => setBox(L.p7?.colBoxes?.[i], `p7_col${k}`, true));
+  order.forEach((k, i) => setBox(L.p7?.ldrBoxes?.[i], `p7_ldr${k}`, true));
 
   // Page 8
   setBox(L.p8?.tipsHdr, "p8_tipsHdr");
@@ -482,9 +478,7 @@ function applyUrlTuners(url, L) {
   return L;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   HTTP handler
-────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────── HTTP handler ───────────────────────────────── */
 export default async function handler(req, res) {
   let url;
   try { url = new URL(req?.url || "/", "http://localhost"); }
@@ -523,13 +517,11 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
-    // layout (defaults + payload overrides)
+    // layout (defaults + payload overrides), then apply URL tuners (respecting locks)
     let L = buildLayout(normData.layoutV6);
-    // apply URL tuners for EVERY element
     L = applyUrlTuners(url, L);
 
-    /* ---------------------------- PAGE 1 ---------------------------- */
-    // NOTE: We do NOT draw 'path/flow' — template handles it.
+    /* ---------------------------- PAGE 1 (locked) ---------------------------- */
     drawTextBox(p1, HelvB, normData.n, { ...L.p1.name, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(p1, Helv,  normData.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
@@ -550,7 +542,6 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 4 ---------------------------- */
     drawTextBox(p4, Helv, normData.n, { ...(L.footer.n4||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-
     drawTextBox(p4, Helv, normData.spiderdesc,
       { ...L.p4.spider, color: rgb(0.15,0.14,0.22) }, { maxLines: 18, ellipsis: true });
 
