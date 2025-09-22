@@ -1,4 +1,4 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (with Page 3 rounded highlight & label presets)
+// /api/fill-template.js — CTRL V3 Slim Exporter (rounded Page 3 highlight + URL tuner)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -39,10 +39,10 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
-
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
+  // simple wrap
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
@@ -92,7 +92,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     indent = 18, gap = 2, bulletRadius = 1.8,
   } = spec;
 
-  let curY = y; // distance from TOP
+  let curY = y;
   const pageH = page.getHeight();
   const blockGap = N(opts.blockGap, 6);
 
@@ -105,6 +105,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
+    // bullet
     const baseline = pageH - curY;
     const cy = baseline + (size * 0.33);
     if (page.drawCircle) {
@@ -124,18 +125,18 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 }
 
 /* =========================================================================
-   Page 3 — "Your current state" rounded highlight with label presets
+   Page 3 — rounded highlight with label presets
    ========================================================================= */
 async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
   const useAbs = !!cfg.useAbsolute;
   const inset  = N(cfg.highlightInset, 4);
-  const radius = N(cfg.highlightRadius, 16); // rounded corners
+  const radius = N(cfg.highlightRadius, 16);
   const labelText = S(cfg.labelText || "YOU ARE HERE");
   const labelSize = N(cfg.labelSize, 10);
   const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
-  // New colour #FBECFA per screenshot (251,236,250)
+  // Shade #FBECFA (251,236,250)
   const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255);
   const opacity = N(cfg.fillOpacity, 0.45);
 
@@ -147,7 +148,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const b = BOXES[dom];
   if (!b) return;
 
-  // Draw rounded highlight
+  // Rounded highlight
   page3.drawRectangle({
     x: b.x + inset,
     y: b.y + inset,
@@ -158,25 +159,20 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
     borderRadius: radius
   });
 
-  // Label placement:
-  // 1) If absolute label coords provided (labelCT for C/T, labelRL for R/L), use them.
-  // 2) Otherwise, auto-center within the box, near top for C/T, near bottom for R/L, with optional offsets.
-  const isTopRow = (dom === "C" || dom === "T");
-  const abs = isTopRow ? (cfg.labelCT || null) : (cfg.labelRL || null); // {x,y} in PDF coords (bottom-left)
+  // Label placement (absolute CT/RL if set, else auto)
+  const isTop = (dom === "C" || dom === "T");
+  const abs = isTop ? (cfg.labelCT || null) : (cfg.labelRL || null);
   const offX = N(cfg.labelOffsetX, 0);
   const offY = N(cfg.labelOffsetY, 0);
 
   let lx, ly;
   if (abs && Number.isFinite(abs.x) && Number.isFinite(abs.y)) {
-    lx = abs.x;
-    ly = abs.y;
+    lx = abs.x; ly = abs.y;
   } else {
     const cx = b.x + b.w / 2;
-    const py = isTopRow
-      ? (b.y + b.h - N(cfg.labelPadTop, 12))   // near top
-      : (b.y + N(cfg.labelPadBottom, 12));     // near bottom
-    lx = cx;
-    ly = py;
+    const py = isTop ? (b.y + b.h - N(cfg.labelPadTop, 12))
+                     : (b.y + N(cfg.labelPadBottom, 12));
+    lx = cx; ly = py;
   }
 
   const textW = bold.widthOfTextAtSize(labelText, labelSize);
@@ -190,23 +186,14 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
 }
 
 function defaultP3Grid() {
-  return {
-    // PDF-lib uses bottom-left origin for absolute coords
-    marginX: 45,     // left margin of the grid
-    marginY: 520,    // top row baseline
-    gap: 24,         // gap between boxes
-    boxW: 255,       // width of a state box
-    boxH: 160        // height of a state box
-  };
+  return { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 };
 }
 
 function computeBoxesFromGrid(g) {
   const { marginX, marginY, gap, boxW, boxH } = { ...defaultP3Grid(), ...(g || {}) };
   return {
-    // top row
     T: { x: marginX,              y: marginY,              w: boxW, h: boxH },
     C: { x: marginX + boxW + gap, y: marginY,              w: boxW, h: boxH },
-    // bottom row
     R: { x: marginX,              y: marginY - boxH - gap, w: boxW, h: boxH },
     L: { x: marginX + boxW + gap, y: marginY - boxH - gap, w: boxW, h: boxH }
   };
@@ -238,8 +225,7 @@ async function fetchTemplate(req, url) {
    ========================================================================= */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
-
-  // Short keys first
+  // short keys (+ legacy fallbacks)
   d.f = d.f || d.flow || "Perspective";
   d.n = d.n || (d.person && (d.person.preferredName || d.person.fullName)) || "";
   d.d = d.d || d.dateLbl || todayLbl();
@@ -291,92 +277,81 @@ function buildLayout(layoutV6) {
       date: { x: 130, y: 630, w: 500, size: 20, align: "left"  }
     },
 
-    // Footer for pages 2..9
+    // footers 2–9
     footer: {
-      f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f4: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n4: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f5: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n5: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }
+      f2: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n2: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f3: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n3: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f4: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n4: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f5: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n5: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f6: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n6: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f7: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n7: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f8: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n8: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
+      f9: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n9: { x: 250, y: 64,  w: 400, size: 12, align: "center" }
     },
 
-    // PAGE 3 (dominant) — note: we NO LONGER draw "Your current state is: …"
+    // PAGE 3 (no "Your current state is: …" line)
     p3: {
-      // Keep the character line + description (edit/disable as you wish)
       domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
       domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
 
-      // NEW: state highlight config (rounded corners & label presets)
       state: {
-        useAbsolute: false,                                // true = use absBoxes; false = use grid
+        useAbsolute: false,
         highlightInset: 4,
-        highlightRadius: 16,                               // rounded corners radius
+        highlightRadius: 16,
+        fillOpacity: 0.45,
+        fillColor: rgb(251/255, 236/255, 250/255),  // #FBECFA
         labelText: "YOU ARE HERE",
         labelSize: 10,
-        labelOffsetX: 0,                                   // tweak after positioning
-        labelOffsetY: 0,
-        labelPadTop: 12,                                   // when auto-placing for C/T
-        labelPadBottom: 12,                                // when auto-placing for R/L
-        fillOpacity: 0.45,
-        // Default shade: #FBECFA (your screenshot)
-        fillColor: rgb(251/255, 236/255, 250/255),
         labelColor: rgb(0.20, 0.20, 0.20),
-
-        // Optional ABSOLUTE label positions (PDF coords, bottom-left origin)
-        // If provided, these override auto placement.
-        // e.g., labelCT: { x: 180, y: 655 }, labelRL: { x: 180, y: 365 }
-        labelCT: null,   // { x, y } for Concealed/Triggered
-        labelRL: null,   // { x, y } for Regulated/Lead
-
-        // GRID-based boxes (used when useAbsolute=false)
-        grid: { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 },
-
-        // ABSOLUTE boxes (used when useAbsolute=true)
+        labelCT: { x: 180, y: 655 },                 // C/T label anchor (optional)
+        labelRL: { x: 180, y: 365 },                 // R/L label anchor (optional)
+        labelOffsetX: 0,
+        labelOffsetY: 0,
+        labelPadTop: 12,
+        labelPadBottom: 12,
+        grid:  { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 },
         absBoxes: {
-          T: { x: 45,  y: 520, w: 255, h: 160 },
+          T: { x:  45, y: 520, w: 255, h: 160 },
           C: { x: 324, y: 520, w: 255, h: 160 },
-          R: { x: 45,  y: 320, w: 255, h: 160 },
+          R: { x:  45, y: 320, w: 255, h: 160 },
           L: { x: 324, y: 320, w: 255, h: 160 }
         }
       }
     },
 
-    // PAGE 4 (spider)
+    // PAGE 4
     p4: {
       spider: { x:  60, y: 320, w: 280, size: 11, align: "left" },
       chart:  { x: 360, y: 320, w: 260, h: 260 }
     },
 
-    // PAGE 5 (sequence)
+    // PAGE 5
     p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left" } },
 
-    // PAGE 6 (theme)
+    // PAGE 6
     p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
 
-    // PAGE 7 (work with colleagues/leaders)
+    // PAGE 7
     p7: {
-      hCol: { x: 60, y: 110, w: 650, size: 12, align: "left" },
-      hLdr: { x: 60, y: 360, w: 650, size: 12, align: "left" },
+      hCol: { x:  60, y: 110, w: 650, size: 12, align: "left" },
+      hLdr: { x:  60, y: 360, w: 650, size: 12, align: "left" },
       colBoxes: [
-        { x:  60, y: 140, w: 300, h: 90 }, // C
-        { x: 410, y: 140, w: 300, h: 90 }, // T
-        { x:  60, y: 240, w: 300, h: 90 }, // R
-        { x: 410, y: 240, w: 300, h: 90 }  // L
+        { x:  60, y: 140, w: 300, h: 90 },  // C
+        { x: 410, y: 140, w: 300, h: 90 },  // T
+        { x:  60, y: 240, w: 300, h: 90 },  // R
+        { x: 410, y: 240, w: 300, h: 90 }   // L
       ],
       ldrBoxes: [
-        { x:  60, y: 390, w: 300, h: 90 }, // C
-        { x: 410, y: 390, w: 300, h: 90 }, // T
-        { x:  60, y: 490, w: 300, h: 90 }, // R
-        { x: 410, y: 490, w: 300, h: 90 }  // L
+        { x:  60, y: 390, w: 300, h: 90 },  // C
+        { x: 410, y: 390, w: 300, h: 90 },  // T
+        { x:  60, y: 490, w: 300, h: 90 },  // R
+        { x: 410, y: 490, w: 300, h: 90 }   // L
       ],
       bodySize: 10,
       maxLines: 9
     },
 
-    // PAGE 8 (tips + actions)
+    // PAGE 8
     p8: {
       tipsHdr: { x:  60, y: 120, w: 320, size: 12, align: "left" },
       actsHdr: { x: 390, y: 120, w: 320, size: 12, align: "left" },
@@ -390,24 +365,16 @@ function buildLayout(layoutV6) {
       ["p1","p3","p4","p5","p6","p7","p8","footer"].forEach(k => {
         if (layoutV6[k]) L[k] = deepMerge(L[k], layoutV6[k]);
       });
-    } catch { /* ignore bad overrides */ }
+    } catch { /* ignore */ }
   }
   return L;
-}
-
-function safeFileName(url, fullName) {
-  const who = S(fullName || "report").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
-  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-  const d = new Date();
-  const name = `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
-  const qName = url.searchParams.get("name");
-  return qName ? String(qName) : name;
 }
 
 /* =========================================================================
    HTTP handler
    ========================================================================= */
 export default async function handler(req, res) {
+  // parse query
   let url;
   try { url = new URL(req?.url || "/", "http://localhost"); }
   catch { url = new URL("/", "http://localhost"); }
@@ -416,6 +383,7 @@ export default async function handler(req, res) {
   const dataB64 = url.searchParams.get("data");
   if (!dataB64) { res.statusCode = 400; res.end("Missing ?data"); return; }
 
+  // payload
   let data;
   try {
     const raw = Buffer.from(String(dataB64), "base64").toString("utf8");
@@ -427,11 +395,13 @@ export default async function handler(req, res) {
   try {
     const normData = normaliseInput(data);
 
+    // template + fonts
     const tplBytes = await fetchTemplate(req, url);
     const pdf = await PDFDocument.load(tplBytes);
     const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
+    // pages
     const p1 = pdf.getPage(0);
     const p2 = pdf.getPage(1);
     const p3 = pdf.getPage(2);
@@ -442,8 +412,41 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
+    // layout (with Botpress overrides)
     const L = buildLayout(normData.layoutV6);
 
+    // --- OPTIONAL: quick URL tuner overrides (so you can tweak without redeploying Botpress)
+    const q = Object.fromEntries(url.searchParams.entries());
+    function num(v, fb){ const n = +v; return Number.isFinite(n) ? n : fb; }
+
+    // Page 3 label anchors (separate presets for C/T vs R/L)
+    if (q.labelCTx || q.labelCTy || q.labelRLx || q.labelRLy) {
+      L.p3 = L.p3 || {}; L.p3.state = L.p3.state || {};
+      if (q.labelCTx || q.labelCTy) {
+        L.p3.state.labelCT = {
+          x: num(q.labelCTx, (L.p3.state.labelCT||{}).x ?? 180),
+          y: num(q.labelCTy, (L.p3.state.labelCT||{}).y ?? 655)
+        };
+      }
+      if (q.labelRLx || q.labelRLy) {
+        L.p3.state.labelRL = {
+          x: num(q.labelRLx, (L.p3.state.labelRL||{}).x ?? 180),
+          y: num(q.labelRLy, (L.p3.state.labelRL||{}).y ?? 365)
+        };
+      }
+    }
+    // Other handy knobs
+    if (q.stateRadius)  { L.p3.state.highlightRadius = num(q.stateRadius, L.p3.state.highlightRadius); }
+    if (q.stateOpacity) { L.p3.state.fillOpacity     = num(q.stateOpacity, L.p3.state.fillOpacity); }
+    if (q.gridX || q.gridY) {
+      L.p3.state.grid = {
+        ...(L.p3.state.grid||{}),
+        marginX: num(q.gridX, (L.p3.state.grid||{}).marginX ?? 45),
+        marginY: num(q.gridY, (L.p3.state.grid||{}).marginY ?? 520)
+      };
+    }
+
+    // footer helper
     const drawFooter = (page, idx) => {
       const fc = rgb(0.24,0.23,0.35);
       drawTextBox(page, Helv, normData.f, { ...(L.footer[`f${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
@@ -461,7 +464,7 @@ export default async function handler(req, res) {
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawFooter(p3, 3);
 
-    // NOTE: Removed "Your current state is: …" per request.
+    // (Your current state line removed)
     if (normData.domchar)
       drawTextBox(p3, Helv, `Representing the character: ${normData.domchar}`,
         { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
@@ -469,7 +472,6 @@ export default async function handler(req, res) {
     drawTextBox(p3, Helv, normData.domdesc,
       { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
 
-    // Rounded highlight + label presets
     await paintStateHighlight(pdf, p3, normData.domkey || normData.dom6Key || "", L);
 
     /* ---------------------------- PAGE 4 ---------------------------- */
@@ -491,7 +493,7 @@ export default async function handler(req, res) {
             width: L.p4.chart.w, height: L.p4.chart.h
           });
         }
-      } catch { /* ignore image fetch failure */ }
+      } catch { /* ignore */ }
     }
 
     /* ---------------------------- PAGE 5 ---------------------------- */
@@ -504,7 +506,6 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 7 ---------------------------- */
     drawFooter(p7, 7);
-
     drawTextBox(p7, HelvB, "What to look out for / How to work with colleagues",
       { ...L.p7.hCol, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
     drawTextBox(p7, HelvB, "What to look out for / How to work with a leader",
@@ -537,23 +538,21 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 8 ---------------------------- */
     drawFooter(p8, 8);
-
-    const tips    = ensureArray(normData.tips);
-    const actions = ensureArray(normData.actions);
-
     drawTextBox(p8, HelvB, "Tips",    { ...L.p8.tipsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
     drawTextBox(p8, HelvB, "Actions", { ...L.p8.actsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
 
-    drawBulleted(p8, Helv, tips,
+    drawBulleted(p8, Helv, ensureArray(normData.tips),
       { ...L.p8.tipsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
       { maxLines: 26, blockGap: 6 });
-    drawBulleted(p8, Helv, actions,
+
+    drawBulleted(p8, Helv, ensureArray(normData.actions),
       { ...L.p8.actsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
       { maxLines: 26, blockGap: 6 });
 
     /* ---------------------------- PAGE 9 ---------------------------- */
     drawFooter(p9, 9);
 
+    // save
     const bytes = await pdf.save();
     const fname = safeFileName(url, normData.n);
     res.statusCode = 200;
@@ -565,4 +564,13 @@ export default async function handler(req, res) {
     res.setHeader("Content-Type", "text/plain");
     res.end("fill-template error: " + (e?.message || e));
   }
+}
+
+function safeFileName(url, fullName) {
+  const who = S(fullName || "report").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
+  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  const d = new Date();
+  const name = `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
+  const qName = url.searchParams.get("name");
+  return qName ? String(qName) : name;
 }
