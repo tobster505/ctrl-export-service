@@ -1,4 +1,4 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (rounded Page 3 highlight + URL tuner)
+// /api/fill-template.js — CTRL V3 Slim Exporter (Page-3 highlight + URL tuner; path coords LOCKED)
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -42,7 +42,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const clean = norm(text);
   if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
 
-  // simple wrap
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
@@ -105,7 +104,6 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
-    // bullet
     const baseline = pageH - curY;
     const cy = baseline + (size * 0.33);
     if (page.drawCircle) {
@@ -136,8 +134,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const labelText = S(cfg.labelText || "YOU ARE HERE");
   const labelSize = N(cfg.labelSize, 10);
   const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
-  // Shade #FBECFA (251,236,250)
-  const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255);
+  const shade = cfg.fillColor || rgb(251/255, 236/255, 250/255); // #FBECFA
   const opacity = N(cfg.fillOpacity, 0.45);
 
   const BOXES = useAbs
@@ -148,7 +145,6 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const b = BOXES[dom];
   if (!b) return;
 
-  // Rounded highlight
   page3.drawRectangle({
     x: b.x + inset,
     y: b.y + inset,
@@ -159,7 +155,6 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
     borderRadius: radius
   });
 
-  // Label placement (absolute CT/RL if set, else auto)
   const isTop = (dom === "C" || dom === "T");
   const abs = isTop ? (cfg.labelCT || null) : (cfg.labelRL || null);
   const offX = N(cfg.labelOffsetX, 0);
@@ -225,7 +220,6 @@ async function fetchTemplate(req, url) {
    ========================================================================= */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
-  // short keys (+ legacy fallbacks)
   d.f = d.f || d.flow || "Perspective";
   d.n = d.n || (d.person && (d.person.preferredName || d.person.fullName)) || "";
   d.d = d.d || d.dateLbl || todayLbl();
@@ -267,29 +261,43 @@ function deepMerge(base, patch) {
 }
 
 function buildLayout(layoutV6) {
+  // Fixed, non-tunable path coordinates (LOCKED)
+  const FIXED_P1_PATH = { x: 290, y: 170, w: 400, size: 40, align: "left" };
+  const FIXED_FOOTERS_FLOW = {
+    f2: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f3: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f4: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f5: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f6: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f7: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f8: { x: 200, y: 64,  w: 400, size: 13, align: "left" },
+    f9: { x: 200, y: 64,  w: 400, size: 13, align: "left" }
+  };
+
   const L = {
     meta: { units: "pt", origin: "TL", pages: "1-based" },
 
     // PAGE 1
     p1: {
-      path: { x: 290, y: 170, w: 400, size: 40, align: "left"  },
+      path: { ...FIXED_P1_PATH }, // LOCKED
       name: { x:  10, y: 573, w: 500, size: 30, align: "center"},
       date: { x: 130, y: 630, w: 500, size: 20, align: "left"  }
     },
 
     // footers 2–9
     footer: {
-      f2: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n2: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f3: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n3: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f4: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n4: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f5: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n5: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f6: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n6: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f7: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n7: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f8: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n8: { x: 250, y: 64,  w: 400, size: 12, align: "center" },
-      f9: { x: 200, y: 64,  w: 400, size: 13, align: "left" },  n9: { x: 250, y: 64,  w: 400, size: 12, align: "center" }
+      ...FIXED_FOOTERS_FLOW, // f2..f9 LOCKED
+      n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n4: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n5: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n9: { x: 250, y: 64, w: 400, size: 12, align: "center" }
     },
 
-    // PAGE 3 (no "Your current state is: …" line)
+    // PAGE 3
     p3: {
       domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
       domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
@@ -303,8 +311,8 @@ function buildLayout(layoutV6) {
         labelText: "YOU ARE HERE",
         labelSize: 10,
         labelColor: rgb(0.20, 0.20, 0.20),
-        labelCT: { x: 180, y: 655 },                 // C/T label anchor (optional)
-        labelRL: { x: 180, y: 365 },                 // R/L label anchor (optional)
+        labelCT: { x: 180, y: 655 }, // C/T
+        labelRL: { x: 180, y: 365 }, // R/L
         labelOffsetX: 0,
         labelOffsetY: 0,
         labelPadTop: 12,
@@ -360,13 +368,23 @@ function buildLayout(layoutV6) {
     }
   };
 
+  // Merge overrides but NEVER for path coordinates
   if (layoutV6 && typeof layoutV6 === "object") {
     try {
+      // Merge only sections where path isn’t; we’ll re-lock path & footers flow after.
       ["p1","p3","p4","p5","p6","p7","p8","footer"].forEach(k => {
         if (layoutV6[k]) L[k] = deepMerge(L[k], layoutV6[k]);
       });
     } catch { /* ignore */ }
   }
+
+  // Re-lock path and footer flow positions (ignore any overrides)
+  L.p1.path = { ...FIXED_P1_PATH };
+  L.footer = {
+    ...L.footer,
+    ...FIXED_FOOTERS_FLOW
+  };
+
   return L;
 }
 
@@ -374,7 +392,6 @@ function buildLayout(layoutV6) {
    HTTP handler
    ========================================================================= */
 export default async function handler(req, res) {
-  // parse query
   let url;
   try { url = new URL(req?.url || "/", "http://localhost"); }
   catch { url = new URL("/", "http://localhost"); }
@@ -412,14 +429,14 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
-    // layout (with Botpress overrides)
+    // layout (with Botpress overrides, but path locked)
     const L = buildLayout(normData.layoutV6);
 
-    // --- OPTIONAL: quick URL tuner overrides (so you can tweak without redeploying Botpress)
+    // --- URL tuner overrides (kept: state & grid only; NO path tuners) ---
     const q = Object.fromEntries(url.searchParams.entries());
     function num(v, fb){ const n = +v; return Number.isFinite(n) ? n : fb; }
 
-    // Page 3 label anchors (separate presets for C/T vs R/L)
+    // Page 3 label anchors / highlight tuning
     if (q.labelCTx || q.labelCTy || q.labelRLx || q.labelRLy) {
       L.p3 = L.p3 || {}; L.p3.state = L.p3.state || {};
       if (q.labelCTx || q.labelCTy) {
@@ -435,26 +452,52 @@ export default async function handler(req, res) {
         };
       }
     }
-    // Other handy knobs
     if (q.stateRadius)  { L.p3.state.highlightRadius = num(q.stateRadius, L.p3.state.highlightRadius); }
     if (q.stateOpacity) { L.p3.state.fillOpacity     = num(q.stateOpacity, L.p3.state.fillOpacity); }
-    if (q.gridX || q.gridY) {
+    if (q.gridX || q.gridY || q.gridW || q.gridH || q.gridGap) {
+      const g = L.p3.state.grid || {};
       L.p3.state.grid = {
-        ...(L.p3.state.grid||{}),
-        marginX: num(q.gridX, (L.p3.state.grid||{}).marginX ?? 45),
-        marginY: num(q.gridY, (L.p3.state.grid||{}).marginY ?? 520)
+        marginX: num(q.gridX,   g.marginX ?? 45),
+        marginY: num(q.gridY,   g.marginY ?? 520),
+        boxW:    num(q.gridW,   g.boxW    ?? 255),
+        boxH:    num(q.gridH,   g.boxH    ?? 160),
+        gap:     num(q.gridGap, g.gap     ?? 24)
       };
+    }
+    if (q.state_useAbs === "1") L.p3.state.useAbsolute = true;
+    if (q.state_useAbs === "0") L.p3.state.useAbsolute = false;
+    if (L.p3.state.useAbsolute) {
+      const abs = (k, prop) => num(q[`abs_${k}_${prop}`], undefined);
+      const upd = (key, def) => {
+        const x = abs(key,"x"), y = abs(key,"y"), w = abs(key,"w"), h = abs(key,"h");
+        if (!L.p3.state.absBoxes) L.p3.state.absBoxes = {};
+        L.p3.state.absBoxes[key] = {
+          x: Number.isFinite(x) ? x : def.x,
+          y: Number.isFinite(y) ? y : def.y,
+          w: Number.isFinite(w) ? w : def.w,
+          h: Number.isFinite(h) ? h : def.h
+        };
+      };
+      const d = L.p3.state.absBoxes || {};
+      upd("T", d.T || { x:45,  y:520, w:255, h:160 });
+      upd("C", d.C || { x:324, y:520, w:255, h:160 });
+      upd("R", d.R || { x:45,  y:320, w:255, h:160 });
+      upd("L", d.L || { x:324, y:320, w:255, h:160 });
     }
 
     // footer helper
     const drawFooter = (page, idx) => {
       const fc = rgb(0.24,0.23,0.35);
+      // FLOW/PATH (left footer) — coordinates LOCKED
       drawTextBox(page, Helv, normData.f, { ...(L.footer[`f${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
+      // NAME (center footer) — tunable via layoutV6 (still)
       drawTextBox(page, Helv, normData.n, { ...(L.footer[`n${idx}`]||{}), color: fc }, { maxLines: 1, ellipsis: true });
     };
 
     /* ---------------------------- PAGE 1 ---------------------------- */
+    // PATH/TITLE (top) — coordinates LOCKED; still drawn here
     drawTextBox(p1, HelvB, normData.f, { ...L.p1.path, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+    // NAME + DATE still tunable
     drawTextBox(p1, HelvB, normData.n, { ...L.p1.name, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(p1, Helv,  normData.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
@@ -464,7 +507,7 @@ export default async function handler(req, res) {
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawFooter(p3, 3);
 
-    // (Your current state line removed)
+    // (No “Your current state is …” line)
     if (normData.domchar)
       drawTextBox(p3, Helv, `Representing the character: ${normData.domchar}`,
         { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
