@@ -1,20 +1,11 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 Current State)
-//
-// WHAT’S NEW IN THIS DROP
-// - Robust domKey resolution (C/T/R/L) so “Triggered” never falls back to “Regulated”.
-// - Page-3 Current State is HARD-LOCKED to your exact coordinates + label anchors.
+// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 Current State, clean)
+// WHAT’S IN HERE
+// - Bulletproof dominant-key resolution (C/T/R/L) so “Triggered” never falls back to “Regulated”.
+// - Page-3 Current State: HARD-LOCKED to your exact rectangles + per-state label anchors.
 //   Payload (data.layoutV6) cannot override the highlight; only URL tuners can.
 // - Template path fixed to: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
-//
-// COORDINATES LOCKED BY DEFAULT (exactly as you provided)
-//   R: x=60  y=433  w=188 h=158  radius=1000 inset=1  label (150,612)
-//   C: x=58  y=258  w=188 h=156  radius=28   inset=6  label (150,245)
-//   T: x=299 y=258  w=188 h=156  radius=28   inset=6  label (390,244)
-//   L: x=298 y=440  w=188 h=156  radius=28   inset=6  label (390,605)
-//
-// You can still override per render via URL tuners (e.g. state_useAbs=0, abs_*,
-// label*, state_shape). Page 3 text boxes (domChar/domDesc) and Pages 4–8 tuners
-// remain fully supported.
+// - Page-3 text prints: domChar = NAME ONLY (no “Representing the character:” prefix)
+// - Defaults for Pages 3–8 set to your tuned coordinates (still tunable by URL).
 
 export const config = { runtime: "nodejs" };
 
@@ -190,7 +181,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
 
-  // Validate incoming key; DO NOT silently default to "R" unless invalid
+  // Validate incoming key
   const upper = String(dominantKey || "").toUpperCase();
   const dom = ["C","T","R","L"].includes(upper) ? upper : "R";
 
@@ -370,8 +361,9 @@ function buildLayout(layoutV6) {
 
     // PAGE 3 — text + state highlight (locked defaults, tunable via URL)
     p3: {
-      domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
-      domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
+      // Tuned defaults (NAME ONLY on domChar; paragraph on domDesc)
+      domChar: { x:  72, y: 182, w: 630, size: 12, align: "left"  },
+      domDesc: { x:  72, y: 214, w: 630, size: 11, align: "left"  },
 
       state: {
         // ✅ absolute rectangles by default
@@ -411,7 +403,7 @@ function buildLayout(layoutV6) {
         labelPadTop: 12,
         labelPadBottom: 12,
 
-        // ✅ Locked absolute rectangles (TL coords)
+        // ✅ Locked absolute rectangles (TL coords — your exact values)
         absBoxes: {
           R: { x:  60, y: 433, w: 188, h: 158 },
           C: { x:  58, y: 258, w: 188, h: 156 },
@@ -428,33 +420,33 @@ function buildLayout(layoutV6) {
       }
     },
 
-    // PAGE 4
+    // PAGE 4 (tuned defaults)
     p4: {
-      spider: { x:  60, y: 320, w: 280, size: 11, align: "left" },
-      chart:  { x: 360, y: 320, w: 260, h: 260 }
+      spider: { x:  80, y: 340, w: 260, size: 11, align: "left" },
+      chart:  { x: 355, y: 315, w: 270, h: 250 }
     },
 
     // PAGE 5
-    p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left" } },
+    p5: { seqpat: { x:  70, y: 170, w: 630, size: 11, align: "left" } },
 
     // PAGE 6
-    p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
+    p6: { theme:  { x:  70, y: 170, w: 630, size: 11, align: "left" } },
 
     // PAGE 7
     p7: {
-      hCol: { x:  60, y: 110, w: 650, size: 12, align: "left" },
-      hLdr: { x:  60, y: 360, w: 650, size: 12, align: "left" },
+      hCol: { x:  70, y: 115, w: 640, size: 12, align: "left" },
+      hLdr: { x:  70, y: 370, w: 640, size: 12, align: "left" },
       colBoxes: [
-        { x:  60, y: 140, w: 300, h: 90 },  // C
-        { x: 410, y: 140, w: 300, h: 90 },  // T
-        { x:  60, y: 240, w: 300, h: 90 },  // R
-        { x: 410, y: 240, w: 300, h: 90 }   // L
+        { x:  70, y: 145, w: 290, h: 95 },  // C
+        { x: 400, y: 145, w: 310, h: 95 },  // T
+        { x:  70, y: 250, w: 290, h: 95 },  // R
+        { x: 400, y: 250, w: 310, h: 95 }   // L
       ],
       ldrBoxes: [
-        { x:  60, y: 390, w: 300, h: 90 },  // C
-        { x: 410, y: 390, w: 300, h: 90 },  // T
-        { x:  60, y: 490, w: 300, h: 90 },  // R
-        { x: 410, y: 490, w: 300, h: 90 }   // L
+        { x:  70, y: 395, w: 290, h: 95 },  // C
+        { x: 400, y: 395, w: 310, h: 95 },  // T
+        { x:  70, y: 505, w: 290, h: 95 },  // R
+        { x: 400, y: 505, w: 310, h: 95 }   // L
       ],
       bodySize: 10,
       maxLines: 9
@@ -462,10 +454,10 @@ function buildLayout(layoutV6) {
 
     // PAGE 8
     p8: {
-      tipsHdr: { x:  60, y: 120, w: 320, size: 12, align: "left" },
-      actsHdr: { x: 390, y: 120, w: 320, size: 12, align: "left" },
-      tipsBox: { x:  60, y: 150, w: 320, size: 11, align: "left" },
-      actsBox: { x: 390, y: 150, w: 320, size: 11, align: "left" }
+      tipsHdr: { x:  70, y: 122, w: 320, size: 12, align: "left" },
+      actsHdr: { x: 400, y: 122, w: 320, size: 12, align: "left" },
+      tipsBox: { x:  70, y: 155, w: 315, size: 11, align: "left" },
+      actsBox: { x: 400, y: 155, w: 315, size: 11, align: "left" }
     }
   };
 
@@ -667,13 +659,19 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawTextBox(p3, Helv, P.n, { ...(L.footer.n3||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-    if (P.domchar) {
-      drawTextBox(p3, Helv, `Representing the character: ${P.domchar}`,
+
+    // Character NAME ONLY (no prefix)
+    const charText = String(P.domchar || "").trim();
+    if (charText) {
+      drawTextBox(p3, Helv, charText,
         { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
     }
+
+    // Dominant DESCRIPTION (separate paragraph)
     drawTextBox(p3, Helv, P.domdesc,
       { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
 
+    // Current-State shaded highlight (uses hard-locked abs boxes)
     await paintStateHighlight(pdf, p3, resolvedDomKey, L);
 
     /* ---------------------------- PAGE 4 ---------------------------- */
