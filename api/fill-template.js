@@ -1,6 +1,10 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter
-// Aligned with your original exporter (helpers, tuners, squircle fallback, pages 1–9),
-// plus latest locks for Page-3 state highlight (abs rects + per-state labels + per-state style).
+// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 state highlight)
+//
+// - Template file is read from: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+// - Page-3 state highlight (Current state) ABS rectangles + per-state labels + style are HARD-LOCKED.
+//   Payload layoutV6 cannot override them; only URL tuners can override per-render.
+// - All original tuners for p3 text (domChar/domDesc) and pages 4–8 remain supported.
+
 export const config = { runtime: "nodejs" };
 
 import fs from "fs/promises";
@@ -23,6 +27,23 @@ const todayLbl = () => {
   return `${String(now.getDate()).padStart(2,"0")}/${MMM}/${now.getFullYear()}`;
 };
 const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+
+// Base64url → JSON (accepts base64 *or* base64url)
+function parseDataParam(b64ish) {
+  if (!b64ish) return {};
+  let s = String(b64ish);
+  // If URL-encoded, decode first
+  try { s = decodeURIComponent(s); } catch {}
+  // Convert base64url to base64
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  try {
+    const raw = Buffer.from(s, "base64").toString("utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
 
 /* ─────────────────────────── Drawing helpers ───────────────────────── */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
@@ -58,7 +79,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     : wrapped;
 
   const pageH   = page.getHeight();
-  const yTop    = pageH - y; // convert top-left to bottom-left
+  const yTop    = pageH - y; // convert TL to BL
   const widthOf = (s) => font.widthOfTextAtSize(s, size);
   const lineH   = size + lineGap;
 
@@ -98,7 +119,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
-    const baseline = pageH - curY; // convert to bottom-left for shapes
+    const baseline = pageH - curY; // convert to BL coords for shapes
     const cy = baseline + (size * 0.33);
     if (page.drawCircle) {
       page.drawCircle({ x: x + bulletRadius, y: cy, size: bulletRadius, color });
@@ -311,13 +332,13 @@ function buildLayout(layoutV6) {
     // FOOTERS 2–9 (locked)
     footer: LOCKED.footer,
 
-    // PAGE 3 — text + state highlight (locked defaults, tunable)
+    // PAGE 3 — text + state highlight (locked defaults, tunable via URL)
     p3: {
       domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
       domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
 
       state: {
-        // ✅ use your absolute rectangles by default
+        // ✅ absolute rectangles by default
         useAbsolute: true,
 
         // Global defaults (can be overridden per-state)
@@ -412,12 +433,19 @@ function buildLayout(layoutV6) {
     }
   };
 
-  // Merge BP overrides (but keep p1/footer locked)
+  // ── Merge payload overrides, but HARD-LOCK Page-3 state; only URL tuners may change it
   if (layoutV6 && typeof layoutV6 === "object") {
     try {
       const merged = deepMerge(L, layoutV6);
-      merged.p1 = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
+
+      // Always keep Page 1 + footers locked
+      merged.p1     = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
       merged.footer = { ...merged.footer, ...LOCKED.footer };
+
+      // 🔒 HARD-LOCK Page-3 state highlight (geometry + style + labels)
+      merged.p3 = merged.p3 || {};
+      merged.p3.state = { ...L.p3.state };
+
       return merged;
     } catch { /* ignore */ }
   }
@@ -442,7 +470,7 @@ function applyUrlTuners(url, L) {
   if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept typo
   setBox(L.p3?.domDesc, "p3_domDesc");
 
-  // Page 3 state highlight + label
+  // Page 3 state highlight + label (URL can override the hard lock)
   L.p3 = L.p3 || {};
   L.p3.state = L.p3.state || {};
   const S3 = L.p3.state;
@@ -473,7 +501,7 @@ function applyUrlTuners(url, L) {
   if (q.labelPadTop  != null) S3.labelPadTop  = +q.labelPadTop;
   if (q.labelPadBottom != null) S3.labelPadBottom = +q.labelPadBottom;
 
-  // NEW: per-state label anchors via URL (optional)
+  // per-state label anchors via URL (optional)
   const psl = {};
   const setLS = (k, X, Y) => {
     if (X != null || Y != null) psl[k] = { x: X != null ? +X : undefined, y: Y != null ? +Y : undefined };
@@ -501,7 +529,7 @@ function applyUrlTuners(url, L) {
     };
   }
 
-  // Abs rectangles per state
+  // Abs rectangles per state (URL can still override)
   if (S3.useAbsolute || q.state_useAbs === "1") {
     const setAbs = (key) => {
       S3.absBoxes = S3.absBoxes || {};
@@ -544,7 +572,7 @@ function applyUrlTuners(url, L) {
 }
 
 /* ───────────────────────────── Template load ───────────────────────────── */
-// Read from local filesystem: ctrl-export-service/public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+// Read from local filesystem: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
 async function loadTemplateBytes(url) {
   const tplParam = (url && url.searchParams && url.searchParams.get("tpl")) || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
   const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, "");
@@ -566,14 +594,7 @@ export default async function handler(req, res) {
   const dataB64 = url.searchParams.get("data");
   if (!dataB64) { res.statusCode = 400; res.end("Missing ?data"); return; }
 
-  let data;
-  try {
-    const raw = Buffer.from(String(dataB64), "base64").toString("utf8");
-    data = JSON.parse(raw);
-  } catch (e) {
-    res.statusCode = 400; res.end("Invalid ?data: " + (e?.message || e)); return;
-  }
-
+  const data = parseDataParam(dataB64);
   try {
     const P = normaliseInput(data);
 
@@ -583,7 +604,7 @@ export default async function handler(req, res) {
     const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    // pages
+    // pages (expect 9 pages)
     const p1 = pdf.getPage(0);
     const p2 = pdf.getPage(1);
     const p3 = pdf.getPage(2);
@@ -594,7 +615,7 @@ export default async function handler(req, res) {
     const p8 = pdf.getPage(7);
     const p9 = pdf.getPage(8);
 
-    // layout + URL tuners (locks preserved)
+    // layout + URL tuners (Page-3 state hard-locked during build)
     let L = buildLayout(P.layoutV6);
     L = applyUrlTuners(url, L);
 
