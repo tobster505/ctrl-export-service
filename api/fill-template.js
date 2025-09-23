@@ -3,10 +3,13 @@
 // Changes in this version:
 // - Page 3 “Character” line prints the plain name only (no prefix).
 // - Page 7 draws only the four *colleague* boxes; internal “What to look…” labels removed.
-//   • Tune text length with ?p7_maxLines=NN and/or increase each box’s _h.
+//   • Tune globally with ?p7_bodySize=NN or ?p7_s=NN and ?p7_maxLines=NN
+//   • Tune per-box with ?p7_col{C|T|R|L}_s=NN and/or ?p7_col{C|T|R|L}_max=NN
 // - Page 8 draws the four *leader* boxes (moved from p7); titles removed.
-//   • Tune with ?p8_ldr{C|T|R|L}_* and ?p8_maxLines=NN  (also accepts legacy p7_ldr* as fallback).
-// - Page 9 now contains Tips & Actions (moved off p8). Use p9_* tuners.
+//   • Tune globally with ?p8_bodySize=NN or ?p8_s=NN and ?p8_maxLines=NN
+//   • Tune per-box with ?p8_ldr{C|T|R|L}_s=NN and/or ?p8_ldr{C|T|R|L}_max=NN
+//     (also accepts legacy ?p7_ldr{C|T|R|L}_s / _max as fallback)
+// - Page 9 contains Tips & Actions. Use p9_* tuners (set *_size=0 to hide headers).
 // - Optional Page 10 footer/name slot: tune with n10x=…&n10y=…&n10w=…&n10s=…&n10align=…
 // - “size=0” cleanly hides any text box (no draw).
 //
@@ -489,6 +492,7 @@ function buildLayout(layoutV6) {
 /* ───────────────────────────── URL Tuners ───────────────────────────── */
 function applyUrlTuners(url, L) {
   const q = Object.fromEntries(url.searchParams.entries());
+
   const setBox = (box, prefix, withH = false) => {
     if (!box) return;
     if (q[`${prefix}_x`]    != null) box.x    = +q[`${prefix}_x`];
@@ -497,6 +501,14 @@ function applyUrlTuners(url, L) {
     if (withH && q[`${prefix}_h`] != null)    box.h    = +q[`${prefix}_h`];
     if (q[`${prefix}_size`] != null) box.size = +q[`${prefix}_size`];
     if (q[`${prefix}_align`])       box.align = String(q[`${prefix}_align`]);
+  };
+
+  // setBoxPlus: adds _s (alias of _size) and _max (per-box maxLines)
+  const setBoxPlus = (box, prefix, withH = false) => {
+    setBox(box, prefix, withH);
+    if (!box) return;
+    if (q[`${prefix}_s`]    != null) box.size     = +q[`${prefix}_s`];
+    if (q[`${prefix}_max`]  != null) box.maxLines = +q[`${prefix}_max`];
   };
 
   // Page 3 text
@@ -586,24 +598,26 @@ function applyUrlTuners(url, L) {
   // Page 6
   setBox(L.p6?.theme,  "p6_theme");
 
-  // Page 7 — colleagues
+  // Page 7 — colleagues (globals + per-box s/max)
   setBox(L.p7?.hCol, "p7_hCol");
   if (q.p7_bodySize != null)  L.p7.bodySize = +q.p7_bodySize;
+  if (q.p7_s        != null)  L.p7.bodySize = +q.p7_s;          // alias
   if (q.p7_maxLines != null)  L.p7.maxLines = +q.p7_maxLines;
-  ["C","T","R","L"].forEach((k, i) => setBox(L.p7?.colBoxes?.[i], `p7_col${k}`, true));
+  ["C","T","R","L"].forEach((k, i) => setBoxPlus(L.p7?.colBoxes?.[i], `p7_col${k}`, true));
 
-  // Page 8 — leaders (primary: p8_ldr*; fallback: p7_ldr*)
+  // Page 8 — leaders (globals + per-box s/max; primary: p8_*, fallback: p7_*)
   setBox(L.p8?.hLdr, "p8_hLdr");
   if (q.p8_bodySize != null)  L.p8.bodySize = +q.p8_bodySize;
+  if (q.p8_s        != null)  L.p8.bodySize = +q.p8_s;          // alias
   if (q.p8_maxLines != null)  L.p8.maxLines = +q.p8_maxLines;
 
   const applyLeaderBox = (idx, key) => {
     const b = L.p8?.ldrBoxes?.[idx];
     if (!b) return;
-    // prefer p8_*, else mirror p7_*
-    const hasP8 = ["x","y","w","h","size","align"].some(s => q[`p8_ldr${key}_${s}`] != null);
-    setBox(b, `p8_ldr${key}`, true);
-    if (!hasP8) setBox(b, `p7_ldr${key}`, true);
+    // prefer p8_*, else mirror p7_* (legacy)
+    const hasP8Any = ["x","y","w","h","size","s","align","max"].some(s => q[`p8_ldr${key}_${s}`] != null);
+    setBoxPlus(b, `p8_ldr${key}`, true);
+    if (!hasP8Any) setBoxPlus(b, `p7_ldr${key}`, true);
   };
   ["C","T","R","L"].forEach((k, i) => applyLeaderBox(i, k));
 
@@ -755,10 +769,18 @@ export default async function handler(req, res) {
         const entry = (P.workwcol || []).find(v => v?.their === k);
         const box  = L.p7.colBoxes[i] || L.p7.colBoxes[0];
         const txt  = mk(entry);
-        if (txt && box?.w > 0 && box?.h > 0) {
+        if (txt && box?.w > 0) {
           drawTextBox(p7, Helv, txt,
-            { x: box.x, y: box.y, w: box.w, size: L.p7.bodySize, align: "left", color: rgb(0.15,0.14,0.22) },
-            { maxLines: L.p7.maxLines, ellipsis: true });
+            {
+              x: box.x, y: box.y, w: box.w,
+              size: (box.size != null ? box.size : L.p7.bodySize),
+              align: box.align || "left",
+              color: rgb(0.15,0.14,0.22)
+            },
+            {
+              maxLines: (box.maxLines != null ? box.maxLines : L.p7.maxLines),
+              ellipsis: true
+            });
         }
       });
     }
@@ -780,10 +802,18 @@ export default async function handler(req, res) {
         const entry = (P.workwlead || []).find(v => v?.their === k);
         const box  = L.p8.ldrBoxes[i] || L.p8.ldrBoxes[0];
         const txt  = mk(entry);
-        if (txt && box?.w > 0 && box?.h > 0) {
+        if (txt && box?.w > 0) {
           drawTextBox(p8, Helv, txt,
-            { x: box.x, y: box.y, w: box.w, size: L.p8.bodySize, align: "left", color: rgb(0.15,0.14,0.22) },
-            { maxLines: L.p8.maxLines, ellipsis: true });
+            {
+              x: box.x, y: box.y, w: box.w,
+              size: (box.size != null ? box.size : L.p8.bodySize),
+              align: box.align || "left",
+              color: rgb(0.15,0.14,0.22)
+            },
+            {
+              maxLines: (box.maxLines != null ? box.maxLines : L.p8.maxLines),
+              ellipsis: true
+            });
         }
       });
     }
