@@ -1,11 +1,28 @@
-// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 Current State, clean)
-// WHAT’S IN HERE
-// - Bulletproof dominant-key resolution (C/T/R/L) so “Triggered” never falls back to “Regulated”.
-// - Page-3 Current State: HARD-LOCKED to your exact rectangles + per-state label anchors.
+// /api/fill-template.js — CTRL V3 Slim Exporter (HARD-LOCK Page-3 Current State, Page-7/8 tuning, hide-by-size)
+//
+// WHAT’S INCLUDED
+// - Robust domKey resolution (C/T/R/L) so “Triggered” never falls back to “Regulated”.
+// - Page-3 Current State is HARD-LOCKED to your exact coordinates + label anchors.
 //   Payload (data.layoutV6) cannot override the highlight; only URL tuners can.
 // - Template path fixed to: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
-// - Page-3 text prints: domChar = NAME ONLY (no “Representing the character:” prefix)
-// - Defaults for Pages 3–8 set to your tuned coordinates (still tunable by URL).
+// - Page-3 domChar prints the *name only* (no “Representing the character: …” prefix).
+// - Page-7 boxes render WITHOUT “What to look out for / How to work with them” sub-labels;
+//   each box instead adds a short context header line (e.g. “As you are triggered… with a Concealed colleague”).
+//   You can tune all 8 boxes individually via URL (p7_colC_*, p7_colT_*, …, p7_ldrL_*).
+// - Page-8 bullets are baseline-locked with their text (no misalignment).
+// - Any text box (headers included) is hidden cleanly if you pass *_size=0 (consumes zero space).
+//   Convenience flags: &p7_hideHeaders=1 and/or &p8_hideHeaders=1.
+//
+// COORDINATES LOCKED BY DEFAULT (exactly as provided)
+//   R: x=60  y=433  w=188 h=158  radius=1000 inset=1  label (150,612)
+//   C: x=58  y=258  w=188 h=156  radius=28   inset=6  label (150,245)
+//   T: x=299 y=258  w=188 h=156  radius=28   inset=6  label (390,244)
+//   L: x=298 y=440  w=188 h=156  radius=28   inset=6  label (390,605)
+//
+// URL TUNERS (examples)
+//   ?p3_domChar_x=72&p3_domChar_y=182&p3_domChar_w=630&p3_domChar_size=12
+//   ?p7_colC_x=30&...&p7_ldrL_w=310&...&p7_hideHeaders=1
+//   ?p8_tipsHdr_size=0&p8_actsHdr_size=0 (hide headers) · bullets in tips/acts stay aligned.
 
 export const config = { runtime: "nodejs" };
 
@@ -45,7 +62,8 @@ function parseDataParam(b64ish) {
   }
 }
 
-/* ─────────────────────────── Drawing helpers ───────────────────────── */
+/* ─────────────────────────── Text helpers ─────────────────────────── */
+/* TL coords. If size <= 0 OR text empty → draw nothing, consume 0 space. */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -54,16 +72,21 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 
   const maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
-  const clean = norm(text);
-  if (!clean) return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
+
+  const raw = (text == null ? "" : String(text));
+  const clean = norm(raw);
+  if (!clean || size <= 0) {
+    return { height: 0, linesDrawn: 0, lastY: page.getHeight() - y };
+  }
 
   const lines = clean.split("\n");
   const avgCharW = size * 0.55;
   const maxChars = Math.max(8, Math.floor(w / avgCharW));
   const wrapped = [];
 
-  for (const raw of lines) {
-    let t = raw.trim();
+  for (const ln of lines) {
+    let t = ln.trim();
+    if (t === "") { wrapped.push(""); continue; }
     while (t.length > maxChars) {
       let cut = t.lastIndexOf(" ", maxChars);
       if (cut <= 0) cut = maxChars;
@@ -71,7 +94,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
       t = t.slice(cut).trim();
     }
     wrapped.push(t);
-    if (raw.trim() === "") wrapped.push("");
   }
 
   const out = wrapped.length > maxLines
@@ -79,7 +101,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     : wrapped;
 
   const pageH   = page.getHeight();
-  const yTop    = pageH - y; // convert TL to BL
+  const yTop    = pageH - y; // TL → BL
   const widthOf = (s) => font.widthOfTextAtSize(s, size);
   const lineH   = size + lineGap;
 
@@ -99,12 +121,15 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
+/* Bulleted list — bullet glyph baseline-locked with text; size <= 0 hides. */
 function drawBulleted(page, font, items, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
     color = rgb(0, 0, 0), align = "left",
-    indent = 18, gap = 2, bulletRadius = 1.8,
+    indent = 14, gap = 4
   } = spec;
+
+  if (size <= 0) return { height: 0 };
 
   let curY = y;
   const pageH = page.getHeight();
@@ -119,13 +144,9 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     const text = strip(raw);
     if (!text) continue;
 
-    const baseline = pageH - curY; // BL coords for shapes
-    const cy = baseline + (size * 0.33);
-    if (page.drawCircle) {
-      page.drawCircle({ x: x + bulletRadius, y: cy, size: bulletRadius, color });
-    } else {
-      page.drawRectangle({ x, y: cy - bulletRadius, width: bulletRadius * 2, height: bulletRadius * 2, color });
-    }
+    // Bullet glyph on same baseline as first line of text
+    const baseline = (pageH - curY) - size;
+    page.drawText("•", { x, y: baseline, size, font, color });
 
     const r = drawTextBox(
       page, font, text,
@@ -181,7 +202,7 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const cfg  = L.p3.state || {};
 
-  // Validate incoming key
+  // Validate incoming key; DO NOT silently default to a wrong state
   const upper = String(dominantKey || "").toUpperCase();
   const dom = ["C","T","R","L"].includes(upper) ? upper : "R";
 
@@ -190,8 +211,8 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
   const dStyle = styleByState[dom] || {};
 
   const useAbs = !!cfg.useAbsolute;
-  const inset  = Number.isFinite(+dStyle.inset)  ? +dStyle.inset  : N(cfg.highlightInset, 4);
-  const radius = Number.isFinite(+dStyle.radius) ? +dStyle.radius : N(cfg.highlightRadius, 16);
+  const inset  = Number.isFinite(+dStyle.inset)  ? +dStyle.inset  : N(cfg.highlightInset, 6);
+  const radius = Number.isFinite(+dStyle.radius) ? +dStyle.radius : N(cfg.highlightRadius, 28);
 
   const labelText  = S(cfg.labelText || "YOU ARE HERE");
   const labelSize  = N(cfg.labelSize, 10);
@@ -292,7 +313,7 @@ function resolveDomKey(d) {
   return ""; // caller will guard / fallback
 }
 
-/* ─────────────────────────── Input normalisation ─────────────────────────── */
+/* ───────────────────────── Input normalisation ───────────────────────── */
 function normaliseInput(data) {
   const d = { ...(data || {}) };
   d.f = d.f || d.flow || "Perspective";
@@ -306,7 +327,7 @@ function normaliseInput(data) {
   d.spiderfreq = d.spiderfreq || d.chartUrl || "";
   d.spiderdesc = d.spiderdesc || d.how6 || "";
 
-  // Robust domKey resolution (no accidental default to "R")
+  // Robust domKey resolution (no accidental default to wrong value)
   const resKey = resolveDomKey(d);
   d.domkey = resKey || d.domkey || d.dom6Key || d.domKey || "";
 
@@ -361,9 +382,8 @@ function buildLayout(layoutV6) {
 
     // PAGE 3 — text + state highlight (locked defaults, tunable via URL)
     p3: {
-      // Tuned defaults (NAME ONLY on domChar; paragraph on domDesc)
-      domChar: { x:  72, y: 182, w: 630, size: 12, align: "left"  },
-      domDesc: { x:  72, y: 214, w: 630, size: 11, align: "left"  },
+      domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  }, // prints *name only*
+      domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
 
       state: {
         // ✅ absolute rectangles by default
@@ -403,7 +423,7 @@ function buildLayout(layoutV6) {
         labelPadTop: 12,
         labelPadBottom: 12,
 
-        // ✅ Locked absolute rectangles (TL coords — your exact values)
+        // ✅ Locked absolute rectangles (TL coords)
         absBoxes: {
           R: { x:  60, y: 433, w: 188, h: 158 },
           C: { x:  58, y: 258, w: 188, h: 156 },
@@ -420,44 +440,51 @@ function buildLayout(layoutV6) {
       }
     },
 
-    // PAGE 4 (tuned defaults)
+    // PAGE 4
     p4: {
-      spider: { x:  80, y: 340, w: 260, size: 11, align: "left" },
-      chart:  { x: 355, y: 315, w: 270, h: 250 }
+      spider: { x:  60, y: 320, w: 280, size: 11, align: "left" },
+      chart:  { x: 360, y: 320, w: 260, h: 260 }
     },
 
     // PAGE 5
-    p5: { seqpat: { x:  70, y: 170, w: 630, size: 11, align: "left" } },
+    p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left" } },
 
     // PAGE 6
-    p6: { theme:  { x:  70, y: 170, w: 630, size: 11, align: "left" } },
+    p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
 
     // PAGE 7
     p7: {
-      hCol: { x:  70, y: 115, w: 640, size: 12, align: "left" },
-      hLdr: { x:  70, y: 370, w: 640, size: 12, align: "left" },
+      // Optional page-level headers (hide with size=0 or &p7_hideHeaders=1)
+      hCol: { x:  60, y: 110, w: 650, size: 12, align: "left" },
+      hLdr: { x:  60, y: 360, w: 650, size: 12, align: "left" },
+
+      // Colleagues grid (top half) — tune with p7_colC_* / p7_colT_* / p7_colR_* / p7_colL_*
       colBoxes: [
-        { x:  70, y: 145, w: 290, h: 95 },  // C
-        { x: 400, y: 145, w: 310, h: 95 },  // T
-        { x:  70, y: 250, w: 290, h: 95 },  // R
-        { x: 400, y: 250, w: 310, h: 95 }   // L
+        { x:  60, y: 140, w: 300, h: 90 },  // C
+        { x: 410, y: 140, w: 300, h: 90 },  // T
+        { x:  60, y: 240, w: 300, h: 90 },  // R
+        { x: 410, y: 240, w: 300, h: 90 }   // L
       ],
+      // Leaders grid (bottom half) — tune with p7_ldrC_* / ... / p7_ldrL_*
       ldrBoxes: [
-        { x:  70, y: 395, w: 290, h: 95 },  // C
-        { x: 400, y: 395, w: 310, h: 95 },  // T
-        { x:  70, y: 505, w: 290, h: 95 },  // R
-        { x: 400, y: 505, w: 310, h: 95 }   // L
+        { x:  60, y: 390, w: 300, h: 90 },  // C
+        { x: 410, y: 390, w: 300, h: 90 },  // T
+        { x:  60, y: 490, w: 300, h: 90 },  // R
+        { x: 410, y: 490, w: 300, h: 90 }   // L
       ],
+
+      titleSize: 10,  // small bold context line inside each box
       bodySize: 10,
       maxLines: 9
     },
 
     // PAGE 8
     p8: {
-      tipsHdr: { x:  70, y: 122, w: 320, size: 12, align: "left" },
-      actsHdr: { x: 400, y: 122, w: 320, size: 12, align: "left" },
-      tipsBox: { x:  70, y: 155, w: 315, size: 11, align: "left" },
-      actsBox: { x: 400, y: 155, w: 315, size: 11, align: "left" }
+      // Optional headers (hide with size=0 or &p8_hideHeaders=1)
+      tipsHdr: { x:  60, y: 120, w: 320, size: 12, align: "left" },
+      actsHdr: { x: 390, y: 120, w: 320, size: 12, align: "left" },
+      tipsBox: { x:  60, y: 150, w: 320, size: 11, align: "left" },
+      actsBox: { x: 390, y: 150, w: 320, size: 11, align: "left" }
     }
   };
 
@@ -495,7 +522,7 @@ function applyUrlTuners(url, L) {
 
   // Page 3 text
   setBox(L.p3?.domChar, "p3_domChar");
-  if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept typo
+  if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept the common typo
   setBox(L.p3?.domDesc, "p3_domDesc");
 
   // Page 3 state highlight + labels (URL can override the hard lock)
@@ -584,17 +611,26 @@ function applyUrlTuners(url, L) {
   // Page 7
   setBox(L.p7?.hCol, "p7_hCol");
   setBox(L.p7?.hLdr, "p7_hLdr");
-  if (q.p7_bodySize != null) L.p7.bodySize = +q.p7_bodySize;
-  if (q.p7_maxLines != null) L.p7.maxLines = +q.p7_maxLines;
+  if (q.p7_bodySize  != null) L.p7.bodySize  = +q.p7_bodySize;
+  if (q.p7_titleSize != null) L.p7.titleSize = +q.p7_titleSize;
+  if (q.p7_maxLines  != null) L.p7.maxLines  = +q.p7_maxLines;
   const order = ["C","T","R","L"];
   order.forEach((k, i) => setBox(L.p7?.colBoxes?.[i], `p7_col${k}`, true));
   order.forEach((k, i) => setBox(L.p7?.ldrBoxes?.[i], `p7_ldr${k}`, true));
+  if (q.p7_hideHeaders === "1") {
+    if (L.p7?.hCol) L.p7.hCol.size = 0;
+    if (L.p7?.hLdr) L.p7.hLdr.size = 0;
+  }
 
   // Page 8
   setBox(L.p8?.tipsHdr, "p8_tipsHdr");
   setBox(L.p8?.actsHdr, "p8_actsHdr");
   setBox(L.p8?.tipsBox, "p8_tipsBox");
   setBox(L.p8?.actsBox, "p8_actsBox");
+  if (q.p8_hideHeaders === "1") {
+    if (L.p8?.tipsHdr) L.p8.tipsHdr.size = 0;
+    if (L.p8?.actsHdr) L.p8.actsHdr.size = 0;
+  }
 
   return L;
 }
@@ -610,6 +646,24 @@ async function loadTemplateBytes(url) {
   } catch (e) {
     throw new Error(`Template not found at /public/${safeTpl}`);
   }
+}
+
+/* ────────────────────── Page-7 helpers (context header) ───────────────────── */
+function stateLabel(key) {
+  return ({ C:"Concealed", T:"Triggered", R:"Regulated", L:"Lead" })[String(key||"").toUpperCase()] || "";
+}
+function lower(s) { return String(s||"").toLowerCase(); }
+function makeContextHeader(myKey, theirKey, role /* "colleague" | "leader" */) {
+  const me  = stateLabel(myKey);
+  const you = stateLabel(theirKey);
+  if (!me || !you) return "";
+  return `As you are ${lower(me)}… when you have a ${you} ${role}`;
+}
+function stripLookWork(s) {
+  return norm(s || "")
+    .replace(/^\s*(What\s+to\s+look\s+out\s+for:?)\s*/i, "")
+    .replace(/^\s*(How\s+to\s+work\s+with\s+them:?)\s*/i, "")
+    .trim();
 }
 
 /* ─────────────────────────────── HTTP handler ─────────────────────────────── */
@@ -659,19 +713,13 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 3 ---------------------------- */
     drawTextBox(p3, Helv, P.n, { ...(L.footer.n3||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
-
-    // Character NAME ONLY (no prefix)
-    const charText = String(P.domchar || "").trim();
-    if (charText) {
-      drawTextBox(p3, Helv, charText,
-        { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
+    if (P.domchar) {
+      // Name only (no prefix)
+      drawTextBox(p3, Helv, P.domchar, { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
     }
-
-    // Dominant DESCRIPTION (separate paragraph)
     drawTextBox(p3, Helv, P.domdesc,
       { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
 
-    // Current-State shaded highlight (uses hard-locked abs boxes)
     await paintStateHighlight(pdf, p3, resolvedDomKey, L);
 
     /* ---------------------------- PAGE 4 ---------------------------- */
@@ -694,7 +742,7 @@ export default async function handler(req, res) {
             width: L.p4.chart.w, height: L.p4.chart.h
           });
         }
-      } catch { /* ignore */ }
+      } catch { /* ignore image fetch issues */ }
     }
 
     /* ---------------------------- PAGE 5 ---------------------------- */
@@ -710,49 +758,57 @@ export default async function handler(req, res) {
     /* ---------------------------- PAGE 7 ---------------------------- */
     drawTextBox(p7, Helv, P.n, { ...(L.footer.n7||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
+    // Optional page-level headings (hide via size=0 or &p7_hideHeaders=1)
     drawTextBox(p7, HelvB, "What to look out for / How to work with colleagues",
       { ...L.p7.hCol, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
-
     drawTextBox(p7, HelvB, "What to look out for / How to work with a leader",
       { ...L.p7.hLdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
 
+    const myKey = resolvedDomKey;
     const order = ["C","T","R","L"];
-    const makeTxt = (e) => {
-      const look = norm(e?.look || "");
-      const work = norm(e?.work || "");
-      return (look || work) ? `What to look out for:\n${look}\n\nHow to work with them:\n${work}` : "";
+
+    const drawSection = (page, box, title, look, work) => {
+      const bodyTxt = [stripLookWork(look), stripLookWork(work)].filter(Boolean).join("\n\n");
+      if (!bodyTxt) return;
+
+      // Title line (small bold), then body text
+      const titleSize = N(L.p7.titleSize, Math.max(9, L.p7.bodySize));
+      const titleSpec = { x: box.x, y: box.y, w: box.w, size: titleSize, align: "left", color: rgb(0.12,0.11,0.20) };
+      const bodySpec  = { x: box.x, y: box.y + titleSize + 4, w: box.w, size: L.p7.bodySize, align: "left", color: rgb(0.15,0.14,0.22) };
+
+      drawTextBox(page, HelvB, title, titleSpec, { maxLines: 1, ellipsis: true });
+      drawTextBox(page, Helv,  bodyTxt, bodySpec, { maxLines: L.p7.maxLines, ellipsis: true });
     };
 
-    order.forEach((k, i) => {
-      const e = (P.workwcol || []).find(v => v?.their === k);
+    // Colleagues (top half)
+    order.forEach((their, i) => {
+      const e = (P.workwcol || []).find(v => v?.their === their);
       const box = L.p7.colBoxes[i] || L.p7.colBoxes[0];
-      const txt = makeTxt(e);
-      if (txt) drawTextBox(p7, Helv, txt,
-        { x: box.x, y: box.y, w: box.w, size: L.p7.bodySize, align: "left", color: rgb(0.15,0.14,0.22) },
-        { maxLines: L.p7.maxLines, ellipsis: true });
+      const title = makeContextHeader(myKey, their, "colleague");
+      drawSection(p7, box, title, e?.look, e?.work);
     });
 
-    order.forEach((k, i) => {
-      const e = (P.workwlead || []).find(v => v?.their === k);
+    // Leaders (bottom half)
+    order.forEach((their, i) => {
+      const e = (P.workwlead || []).find(v => v?.their === their);
       const box = L.p7.ldrBoxes[i] || L.p7.ldrBoxes[0];
-      const txt = makeTxt(e);
-      if (txt) drawTextBox(p7, Helv, txt,
-        { x: box.x, y: box.y, w: box.w, size: L.p7.bodySize, align: "left", color: rgb(0.15,0.14,0.22) },
-        { maxLines: L.p7.maxLines, ellipsis: true });
+      const title = makeContextHeader(myKey, their, "leader");
+      drawSection(p7, box, title, e?.look, e?.work);
     });
 
     /* ---------------------------- PAGE 8 ---------------------------- */
     drawTextBox(p8, Helv, P.n, { ...(L.footer.n8||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
+    // Optional headers (hide via size=0 or &p8_hideHeaders=1)
     drawTextBox(p8, HelvB, "Tips",    { ...L.p8.tipsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
     drawTextBox(p8, HelvB, "Actions", { ...L.p8.actsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
 
     drawBulleted(p8, Helv, ensureArray(P.tips),
-      { ...L.p8.tipsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
+      { ...L.p8.tipsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 4 },
       { maxLines: 26, blockGap: 6 });
 
     drawBulleted(p8, Helv, ensureArray(P.actions),
-      { ...L.p8.actsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 2, bulletRadius: 1.8 },
+      { ...L.p8.actsBox, color: rgb(0.15,0.14,0.22), indent: 14, gap: 4 },
       { maxLines: 26, blockGap: 6 });
 
     /* ---------------------------- PAGE 9 ---------------------------- */
