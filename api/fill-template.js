@@ -6,6 +6,8 @@
 // - Moves Tips & Actions to page 11
 // - Splits look/work: p7 look-colleagues, p8 work-colleagues, p9 look-leaders, p10 work-leaders
 // - Adds tunable footers n2..n12 (including n11 & n12)
+// NOTE: The query param `name=` is treated as the OUTPUT FILENAME only.
+//       The PERSON name comes from the data blob (e.g. D.n or D.person.*).
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import fs from "fs/promises";
@@ -176,7 +178,7 @@ function deepMerge(base, override) {
 
 // ----------------------------- template resolving -----------------------------
 
-async function resolveTemplateBytes(tpl, req, qp) {
+async function resolveTemplateBytes(tpl, req) {
   // If tpl is a full URL -> fetch
   if (/^https?:\/\//i.test(tpl)) {
     const r = await fetch(tpl);
@@ -217,7 +219,7 @@ async function resolveTemplateBytes(tpl, req, qp) {
     if (r.ok) return await r.arrayBuffer();
   }
 
-  // Last resort: the original service root (if it hosts templates for you)
+  // Last resort: a generic fallback path (adjust if you host templates elsewhere)
   try {
     const fallback = `https://ctrl-export-service.vercel.app/templates/${encodeURIComponent(tpl)}`;
     const r = await fetch(fallback);
@@ -498,8 +500,7 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  try:
-  {
+  try {
     const url = req.url || "";
     const qp = new URL(url, "https://x").searchParams;
 
@@ -512,13 +513,18 @@ export default async function handler(req, res) {
     const dataParam = qp.get("data");
     const D = decodeDataParam(dataParam);
 
+    // Output filename (from ?name=, NOT the person name)
+    const outNameParam = qp.get("name");
+    // Person name for page content/footer
+    const personName =
+      D.n ||
+      (D.person &&
+        (D.person.preferredName || D.person.fullName || D.person.name)) ||
+      "";
+
     const P = {
       flow: qp.get("flow") || D.f || "Perspective",
-      name:
-        qp.get("name") ||
-        D.n ||
-        (D.person && (D.person.fullName || D.person.preferredName)) ||
-        "",
+      personName,
       dateLbl: D.dateLbl || qp.get("d") || D.d || D.date || "",
       safe: toBool(qp.get("safe") ?? "1"),
       strict: toBool(qp.get("strict") ?? "1"),
@@ -530,7 +536,7 @@ export default async function handler(req, res) {
     L = applyUrlTuners(url, L);
 
     // Load template bytes
-    const tplBytes = await resolveTemplateBytes(tpl, req, qp);
+    const tplBytes = await resolveTemplateBytes(tpl, req);
 
     // Build PDF
     const pdfDoc = await PDFDocument.load(tplBytes);
@@ -555,7 +561,7 @@ export default async function handler(req, res) {
 
     // ---------------------- PAGE 1 ----------------------
     if (p1) {
-      if (P.name) drawTextBox(p1, HelvB, P.name, L.p1.name);
+      if (P.personName) drawTextBox(p1, HelvB, P.personName, L.p1.name);
       if (P.dateLbl) drawTextBox(p1, Helv, P.dateLbl, L.p1.date);
     }
 
@@ -607,7 +613,8 @@ export default async function handler(req, res) {
           maxLines: L.p7.maxLines,
         });
       });
-      if (L.footer?.n7 && P.name) drawTextBox(p7, Helv, P.name, L.footer.n7);
+      if (L.footer?.n7 && P.personName)
+        drawTextBox(p7, Helv, P.personName, L.footer.n7);
     }
 
     // ---------------------- PAGE 8 — WORK (Colleagues) ----------------------
@@ -628,7 +635,8 @@ export default async function handler(req, res) {
           maxLines: L.p8.maxLines,
         });
       });
-      if (L.footer?.n8 && P.name) drawTextBox(p8, Helv, P.name, L.footer.n8);
+      if (L.footer?.n8 && P.personName)
+        drawTextBox(p8, Helv, P.personName, L.footer.n8);
     }
 
     // ---------------------- PAGE 9 — LOOK (Leaders) ----------------------
@@ -650,7 +658,8 @@ export default async function handler(req, res) {
           maxLines: box.max,
         });
       });
-      if (L.footer?.n9 && P.name) drawTextBox(p9, Helv, P.name, L.footer.n9);
+      if (L.footer?.n9 && P.personName)
+        drawTextBox(p9, Helv, P.personName, L.footer.n9);
     }
 
     // ---------------------- PAGE 10 — WORK (Leaders) ----------------------
@@ -672,7 +681,8 @@ export default async function handler(req, res) {
           maxLines: box.max,
         });
       });
-      if (L.footer?.n10 && P.name) drawTextBox(p10, Helv, P.name, L.footer.n10);
+      if (L.footer?.n10 && P.personName)
+        drawTextBox(p10, Helv, P.personName, L.footer.n10);
     }
 
     // ---------------------- PAGE 11 — Tips & Actions (moved here) ----------------------
@@ -692,19 +702,20 @@ export default async function handler(req, res) {
       drawTextBox(p11, Helv, tipsBody, L.p11.tipsBox);
       drawTextBox(p11, Helv, actsBody, L.p11.actsBox);
 
-      if (L.footer?.n11 && P.name) drawTextBox(p11, Helv, P.name, L.footer.n11);
+      if (L.footer?.n11 && P.personName)
+        drawTextBox(p11, Helv, P.personName, L.footer.n11);
     }
 
     // ---------------------- PAGE 12 — (footer only / future use) ----------------------
-    if (p12 && L.footer?.n12 && P.name) {
-      drawTextBox(p12, Helv, P.name, L.footer.n12);
+    if (p12 && L.footer?.n12 && P.personName) {
+      drawTextBox(p12, Helv, P.personName, L.footer.n12);
     }
 
     // ---------------------- send pdf ----------------------
     const outName =
-      qp.get("name") ||
+      outNameParam ||
       D.outputName ||
-      `CTRL_${P.name ? P.name.replace(/\s+/g, "_") : "output"}.pdf`;
+      `CTRL_${P.personName ? P.personName.replace(/\s+/g, "_") : "output"}.pdf`;
 
     const pdfBytes = await pdfDoc.save();
     res.setHeader("Content-Type", "application/pdf");
