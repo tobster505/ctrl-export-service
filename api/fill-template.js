@@ -1,12 +1,15 @@
 // /api/fill-template.js
 // Next.js (Node runtime) serverless function
-// - Locks default coordinates to your latest URL
-// - Allows tuning via URL params (p3_*, p4_*, p5_*, p6_*, p7_*, p8_*, p9_*, p10_*, p11_* and n2..n12)
-// - Splits look/work content across pages 7–10
+// - Locks in your latest coordinates
+// - Robust template resolving (local FS in /public or /templates, or remote URL)
+// - URL tuners for ALL boxes (supports both underscore and short aliases e.g. n11x/n11s/n11align)
 // - Moves Tips & Actions to page 11
-// - Adds tunable footers for pages 11 & 12
+// - Splits look/work: p7 look-colleagues, p8 work-colleagues, p9 look-leaders, p10 work-leaders
+// - Adds tunable footers n2..n12 (including n11 & n12)
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import fs from "fs/promises";
+import path from "path";
 
 // ----------------------------- helpers -----------------------------
 
@@ -15,45 +18,12 @@ const ensureArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
 const toBool = (v) =>
   typeof v === "string" ? v === "1" || v.toLowerCase() === "true" : !!v;
 
-function bufferFromBase64(b64) {
-  return Buffer.from(b64, "base64");
-}
-
-function tryParseJSON(s) {
+function tryJSON(s) {
   try {
     return JSON.parse(s);
   } catch {
     return null;
   }
-}
-
-function decodeDataParam(raw) {
-  if (!raw) return {};
-  // 1) try direct JSON
-  const j1 = tryParseJSON(raw);
-  if (j1) return j1;
-
-  // 2) try decodeURIComponent then JSON
-  const maybeUri = tryParseJSON(decodeURIComponentSafe(raw));
-  if (maybeUri) return maybeUri;
-
-  // 3) try base64 -> string -> JSON
-  try {
-    const s = Buffer.from(raw, "base64").toString("utf8");
-    const j3 = tryParseJSON(s);
-    if (j3) return j3;
-  } catch {}
-
-  // 4) try base64 + decodeURIComponent
-  try {
-    const s = decodeURIComponentSafe(
-      Buffer.from(raw, "base64").toString("utf8")
-    );
-    const j4 = tryParseJSON(s);
-    if (j4) return j4;
-  } catch {}
-
-  return {};
 }
 
 function decodeURIComponentSafe(s) {
@@ -64,19 +34,44 @@ function decodeURIComponentSafe(s) {
   }
 }
 
-// text wrapping and drawing (Top-Left coordinate system)
+function decodeDataParam(raw) {
+  if (!raw) return {};
+  // plain JSON?
+  const j1 = tryJSON(raw);
+  if (j1) return j1;
+
+  // uri-decoded JSON?
+  const j2 = tryJSON(decodeURIComponentSafe(raw));
+  if (j2) return j2;
+
+  // base64(JSON)
+  try {
+    const s = Buffer.from(raw, "base64").toString("utf8");
+    const j3 = tryJSON(s);
+    if (j3) return j3;
+  } catch {}
+
+  // base64(uri-decoded JSON)
+  try {
+    const s = decodeURIComponentSafe(Buffer.from(raw, "base64").toString("utf8"));
+    const j4 = tryJSON(s);
+    if (j4) return j4;
+  } catch {}
+
+  return {};
+}
+
+// word wrap in TL coordinates
 function splitLinesToWidth(text, font, size, maxWidth) {
   const words = (text || "").replace(/\r/g, "").split(/\s+/g);
   const lines = [];
   let cur = "";
-
   const width = (t) => font.widthOfTextAtSize(t, size);
 
   words.forEach((w, idx) => {
     const test = cur ? cur + " " + w : w;
-    if (width(test) <= maxWidth) {
-      cur = test;
-    } else {
+    if (width(test) <= maxWidth) cur = test;
+    else {
       if (cur) lines.push(cur);
       cur = w;
     }
@@ -88,20 +83,16 @@ function splitLinesToWidth(text, font, size, maxWidth) {
 
 function bulletize(text) {
   if (!text) return "";
-  // Keep existing bullets; if line starts with emoji bullet, dash, or •, preserve it.
   const lines = text.replace(/\r/g, "").split("\n");
   return lines
-    .map((ln) => {
-      if (/^\s*(•|-|–|—|·|●|\u{1F4A1}|\u{1F539}|\u{1F538})\s+/u.test(ln)) {
-        return ln;
-      }
-      return ln;
-    })
+    .map((ln) =>
+      /^\s*(•|-|–|—|·|●|\u{1F4A1}|\u{1F539}|\u{1F538})\s+/u.test(ln) ? ln : ln
+    )
     .join("\n");
 }
 
 function drawTextBox(page, font, text, box) {
-  if (!text && text !== 0) return;
+  if (text == null) return;
   const {
     x = 0,
     y = 0,
@@ -115,41 +106,35 @@ function drawTextBox(page, font, text, box) {
   } = box || {};
 
   const pageH = page.getHeight();
-  const startY = pageH - y; // convert TL to BL baseline top
+  const startY = pageH - y;
   const lineGap = size * lineHeight;
-
   const paragraphs = String(text).replace(/\r/g, "").split(/\n{2,}/g);
+
   let cursorY = startY;
 
-  paragraphs.forEach((para, pi) => {
-    const normalized = para.replace(/\n/g, " ").trim();
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const normalized = paragraphs[pi].replace(/\n/g, " ").trim();
     const lines = splitLinesToWidth(normalized, font, size, w);
     for (let i = 0; i < lines.length; i++) {
-      if (maxLines && maxLines <= 0) return; // cut off if maxLines consumed
+      if (maxLines !== undefined && maxLines <= 0) return;
+
       const ln = lines[i];
       const lnWidth = font.widthOfTextAtSize(ln, size);
       let dx = x;
       if (align === "center") dx = x + (w - lnWidth) / 2;
       else if (align === "right") dx = x + (w - lnWidth);
 
-      // if an explicit height is set, abort if next line would overflow box
+      // overflow guard if fixed height
       if (h && startY - (cursorY - lineGap) > h) return;
 
-      page.drawText(ln, {
-        x: dx,
-        y: cursorY - size, // text draws from baseline
-        size,
-        font,
-        color,
-      });
+      page.drawText(ln, { x: dx, y: cursorY - size, size, font, color });
 
       cursorY -= lineGap;
-      if (maxLines) maxLines -= 1;
-      if (maxLines === 0) return;
+      if (maxLines !== undefined) box.maxLines = --box.maxLines;
+      if (maxLines !== undefined && box.maxLines <= 0) return;
     }
-    // paragraph gap
     cursorY -= lineGap * 0.4;
-  });
+  }
 }
 
 async function drawImageFromUrl(page, url, rect) {
@@ -158,7 +143,6 @@ async function drawImageFromUrl(page, url, rect) {
     const resp = await fetch(url);
     if (!resp.ok) return;
     const buf = await resp.arrayBuffer();
-    // try png, then jpg
     let img;
     try {
       img = await page.doc.embedPng(buf);
@@ -169,13 +153,11 @@ async function drawImageFromUrl(page, url, rect) {
     const pageH = page.getHeight();
     page.drawImage(img, {
       x,
-      y: pageH - (y + h), // TL -> BL
+      y: pageH - (y + h),
       width: w,
       height: h,
     });
-  } catch {
-    // ignore missing images
-  }
+  } catch {}
 }
 
 function deepMerge(base, override) {
@@ -190,6 +172,59 @@ function deepMerge(base, override) {
         : ov;
   }
   return out;
+}
+
+// ----------------------------- template resolving -----------------------------
+
+async function resolveTemplateBytes(tpl, req, qp) {
+  // If tpl is a full URL -> fetch
+  if (/^https?:\/\//i.test(tpl)) {
+    const r = await fetch(tpl);
+    if (!r.ok) throw new Error(`HTTP ${r.status} fetching template URL`);
+    return await r.arrayBuffer();
+  }
+
+  // Try local filesystem (bundled with your deployment)
+  const candidates = [
+    path.join(process.cwd(), "public", tpl),
+    path.join(process.cwd(), "public", "templates", tpl),
+    path.join(process.cwd(), "templates", tpl),
+    path.join(process.cwd(), tpl),
+  ];
+
+  for (const pth of candidates) {
+    try {
+      const buf = await fs.readFile(pth);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    } catch {}
+  }
+
+  // Try same-host static (/templates/<tpl>) if available
+  try {
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const host = req.headers.host;
+    if (host) {
+      const sameHost = `${proto}://${host}/templates/${encodeURIComponent(tpl)}`;
+      const r = await fetch(sameHost);
+      if (r.ok) return await r.arrayBuffer();
+    }
+  } catch {}
+
+  // Try a known fallback CDN/base if provided
+  const ENV_BASE = process.env.TEMPLATE_BASE_URL; // e.g. https://your-domain/templates
+  if (ENV_BASE) {
+    const r = await fetch(`${ENV_BASE.replace(/\/+$/,"")}/${encodeURIComponent(tpl)}`);
+    if (r.ok) return await r.arrayBuffer();
+  }
+
+  // Last resort: the original service root (if it hosts templates for you)
+  try {
+    const fallback = `https://ctrl-export-service.vercel.app/templates/${encodeURIComponent(tpl)}`;
+    const r = await fetch(fallback);
+    if (r.ok) return await r.arrayBuffer();
+  } catch {}
+
+  throw new Error(`Failed to locate template: ${tpl}`);
 }
 
 // ----------------------------- LOCKED defaults -----------------------------
@@ -227,7 +262,7 @@ const LOCKED = (() => {
   };
 })();
 
-// ----------------------------- layout (locked to your URL) -----------------------------
+// ----------------------------- layout (locked to your latest URL) -----------------------------
 
 function buildLayout(layoutV6) {
   const L = {
@@ -260,7 +295,7 @@ function buildLayout(layoutV6) {
       n12: LOCKED.footer.n12,
     },
 
-    // PAGE 3 (locked to your latest URL)
+    // PAGE 3
     p3: {
       state: {
         useAbsolute: true,
@@ -356,7 +391,7 @@ function buildLayout(layoutV6) {
       ldrL: { x: 320, y: 525, w: 300, h: 210, size: 10, max: 25 },
     },
 
-    // PAGE 11 (Tips & Actions)
+    // PAGE 11 (Tips & Actions moved here)
     p11: {
       tipsHdr: { x: 70, y: 122, w: 320, size: 12, align: "left" },
       actsHdr: { x: 400, y: 122, w: 320, size: 12, align: "left" },
@@ -368,33 +403,50 @@ function buildLayout(layoutV6) {
   return layoutV6 ? deepMerge(L, layoutV6) : L;
 }
 
-// ----------------------------- URL tuners -----------------------------
+// ----------------------------- URL tuners (supports underscores & short aliases) -----------------------------
 
 function applyUrlTuners(url, L) {
   if (!url) return L;
   const qp = new URL(url, "https://x").searchParams;
-  const t = (k, d) => (qp.has(k) ? Number(qp.get(k)) : d);
-  const s = (k, d) => (qp.has(k) ? qp.get(k) : d);
+
+  const num = (keys, d) => {
+    for (const k of keys) {
+      if (qp.has(k)) {
+        const v = Number(qp.get(k));
+        if (!Number.isNaN(v)) return v;
+      }
+    }
+    return d;
+  };
+  const str = (keys, d) => {
+    for (const k of keys) {
+      if (qp.has(k)) return qp.get(k);
+    }
+    return d;
+  };
 
   function setBox(prefix, box) {
     if (!box) return;
-    box.x = t(prefix + "_x", box.x);
-    box.y = t(prefix + "_y", box.y);
-    box.w = t(prefix + "_w", box.w);
-    if ("h" in box) box.h = t(prefix + "_h", box.h);
-    if ("size" in box) box.size = t(prefix + "_size", box.size);
-    if ("align" in box) box.align = s(prefix + "_align", box.align || "left");
-    if ("max" in box) box.max = t(prefix + "_max", box.max);
+    box.x = num([`${prefix}_x`, `${prefix}x`], box.x);
+    box.y = num([`${prefix}_y`, `${prefix}y`], box.y);
+    if ("w" in box) box.w = num([`${prefix}_w`, `${prefix}w`], box.w);
+    if ("h" in box) box.h = num([`${prefix}_h`, `${prefix}h`], box.h);
+    if ("size" in box) box.size = num([`${prefix}_size`, `${prefix}s`], box.size);
+    if ("align" in box)
+      box.align = str([`${prefix}_align`, `${prefix}align`], box.align || "left");
+    if ("max" in box) box.max = num([`${prefix}_max`, `${prefix}max`], box.max);
   }
+
   function setRect(prefix, rect) {
     if (!rect) return;
-    rect.x = t(prefix + "_x", rect.x);
-    rect.y = t(prefix + "_y", rect.y);
-    rect.w = t(prefix + "_w", rect.w);
-    rect.h = t(prefix + "_h", rect.h);
-    if ("size" in rect) rect.size = t(prefix + "_size", rect.size);
-    if ("align" in rect) rect.align = s(prefix + "_align", rect.align || "left");
-    if ("max" in rect) rect.max = t(prefix + "_max", rect.max);
+    rect.x = num([`${prefix}_x`, `${prefix}x`], rect.x);
+    rect.y = num([`${prefix}_y`, `${prefix}y`], rect.y);
+    rect.w = num([`${prefix}_w`, `${prefix}w`], rect.w);
+    rect.h = num([`${prefix}_h`, `${prefix}h`], rect.h);
+    if ("size" in rect) rect.size = num([`${prefix}_size`, `${prefix}s`], rect.size);
+    if ("align" in rect)
+      rect.align = str([`${prefix}_align`, `${prefix}align`], rect.align || "left");
+    if ("max" in rect) rect.max = num([`${prefix}_max`, `${prefix}max`], rect.max);
   }
 
   // p3–p6
@@ -428,7 +480,7 @@ function applyUrlTuners(url, L) {
   setBox("p11_tipsBox", L.p11.tipsBox);
   setBox("p11_actsBox", L.p11.actsBox);
 
-  // Footers n2..n12 (+ f2..f10 pass-through)
+  // Footers n2..n12 (accept both underscore and short aliases: n11x, n11s, n11align)
   ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"].forEach((n) => {
     const fx = "f" + n,
       nx = "n" + n;
@@ -442,29 +494,32 @@ function applyUrlTuners(url, L) {
 // ----------------------------- API route -----------------------------
 
 export const config = {
-  api: {
-    bodyParser: false,
-  },
+  api: { bodyParser: false },
 };
 
 export default async function handler(req, res) {
-  try {
+  try:
+  {
     const url = req.url || "";
     const qp = new URL(url, "https://x").searchParams;
 
-    const tpl = qp.get("tpl"); // template PDF (URL or path your infra resolves)
+    const tpl = qp.get("tpl"); // string or full URL
     if (!tpl) {
-      res.status(400).json({ error: "Missing ?tpl=<template.pdf>" });
+      res.status(400).json({ error: "Missing ?tpl=<template.pdf or URL>" });
       return;
     }
 
     const dataParam = qp.get("data");
     const D = decodeDataParam(dataParam);
+
     const P = {
       flow: qp.get("flow") || D.f || "Perspective",
-      name: qp.get("name") || D.n || (D.person && (D.person.fullName || D.person.preferredName)) || "",
-      dateLbl: D.dateLbl || D.dateLbl || D.dateLbl || "",
-      n: D.n || qp.get("name") || "",
+      name:
+        qp.get("name") ||
+        D.n ||
+        (D.person && (D.person.fullName || D.person.preferredName)) ||
+        "",
+      dateLbl: D.dateLbl || qp.get("d") || D.d || D.date || "",
       safe: toBool(qp.get("safe") ?? "1"),
       strict: toBool(qp.get("strict") ?? "1"),
       preview: toBool(qp.get("preview") ?? "0"),
@@ -474,27 +529,19 @@ export default async function handler(req, res) {
     let L = buildLayout(D.layoutV6 || D.layouTV6 || D.layoutV || null);
     L = applyUrlTuners(url, L);
 
-    // fetch template
-    const tplResp = await fetch(
-      /^https?:\/\//i.test(tpl)
-        ? tpl
-        : `https://ctrl-export-service.vercel.app/templates/${tpl}`
-    );
-    if (!tplResp.ok) {
-      res.status(400).json({ error: `Failed to fetch template: ${tpl}` });
-      return;
-    }
-    const tplBytes = await tplResp.arrayBuffer();
+    // Load template bytes
+    const tplBytes = await resolveTemplateBytes(tpl, req, qp);
 
+    // Build PDF
     const pdfDoc = await PDFDocument.load(tplBytes);
     const pages = pdfDoc.getPages();
     const Helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const HelvB = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    pages.forEach((pg) => (pg.doc = pdfDoc)); // for image embedding helper
 
-    // give page helper (1-based in comments)
+    // Helper: 1-based index in comments
     const p = (i) => pages[i] || null;
     const p1 = p(0),
-      p2 = p(1),
       p3 = p(2),
       p4 = p(3),
       p5 = p(4),
@@ -506,26 +553,13 @@ export default async function handler(req, res) {
       p11 = p(10),
       p12 = p(11);
 
-    // inject backrefs for image embedders
-    pages.forEach((pg) => (pg.doc = pdfDoc));
-
     // ---------------------- PAGE 1 ----------------------
     if (p1) {
       if (P.name) drawTextBox(p1, HelvB, P.name, L.p1.name);
-      const dateLabel =
-        D.dateLbl ||
-        D.dateLabel ||
-        qp.get("d") ||
-        D.d ||
-        D.date ||
-        D.dateLbl ||
-        "";
-      if (dateLabel) drawTextBox(p1, Helv, dateLabel, L.p1.date);
+      if (P.dateLbl) drawTextBox(p1, Helv, P.dateLbl, L.p1.date);
     }
 
-    // ---------------------- PAGES 2–6 (only touched where specified) ----------------------
-
-    // PAGE 3: Dominant trait & description
+    // ---------------------- PAGE 3 ----------------------
     if (p3) {
       const domChar = D.dom6Label || D.dom6 || D.dom || D.dom6Key || "";
       const domDesc =
@@ -534,7 +568,7 @@ export default async function handler(req, res) {
       if (domDesc) drawTextBox(p3, Helv, domDesc, L.p3.domDesc);
     }
 
-    // PAGE 4: Spider desc + chart
+    // ---------------------- PAGE 4 ----------------------
     if (p4) {
       const spiderTxt = D.spiderdesc || D.spiderDesc || D.how6 || D.how || "";
       if (spiderTxt) drawTextBox(p4, Helv, spiderTxt, L.p4.spider);
@@ -543,19 +577,19 @@ export default async function handler(req, res) {
       if (chartUrl) await drawImageFromUrl(p4, chartUrl, L.p4.chart);
     }
 
-    // PAGE 5: Sequence pattern
+    // ---------------------- PAGE 5 ----------------------
     if (p5) {
       const seq = D.seqpat || D.sequent || "";
       if (seq) drawTextBox(p5, Helv, seq, L.p5.seqpat);
     }
 
-    // PAGE 6: Theme
+    // ---------------------- PAGE 6 ----------------------
     if (p6) {
       const theme = D.theme || D.theme6 || "";
       if (theme) drawTextBox(p6, Helv, theme, L.p6.theme);
     }
 
-    // ---------------------- PAGE 7 — Colleagues (LOOK) ----------------------
+    // ---------------------- PAGE 7 — LOOK (Colleagues) ----------------------
     if (p7) {
       drawTextBox(p7, HelvB, "Colleagues — What to look out for", {
         ...L.p7.hCol,
@@ -564,8 +598,7 @@ export default async function handler(req, res) {
 
       const view = ensureArray(D.workwcol).map((x) => x || {});
       const byTheir = (k) => view.find((o) => (o || {}).their === k) || {};
-      const keys = ["C", "T", "R", "L"];
-      keys.forEach((k, i) => {
+      ["C", "T", "R", "L"].forEach((k, i) => {
         const v = byTheir(k);
         const msg = v.look || (v.look && v.look.look) || "";
         drawTextBox(p7, Helv, msg, {
@@ -574,11 +607,10 @@ export default async function handler(req, res) {
           maxLines: L.p7.maxLines,
         });
       });
-
-      if (P.n) drawTextBox(p7, Helv, P.n, L.footer.n7);
+      if (L.footer?.n7 && P.name) drawTextBox(p7, Helv, P.name, L.footer.n7);
     }
 
-    // ---------------------- PAGE 8 — Colleagues (WORK) ----------------------
+    // ---------------------- PAGE 8 — WORK (Colleagues) ----------------------
     if (p8) {
       drawTextBox(p8, HelvB, "Colleagues — How to work with you", {
         ...L.p8.hCol,
@@ -587,8 +619,7 @@ export default async function handler(req, res) {
 
       const view = ensureArray(D.workwcol).map((x) => x || {});
       const byTheir = (k) => view.find((o) => (o || {}).their === k) || {};
-      const keys = ["C", "T", "R", "L"];
-      keys.forEach((k, i) => {
+      ["C", "T", "R", "L"].forEach((k, i) => {
         const v = byTheir(k);
         const msg = v.work || (v.work && v.work.work) || "";
         drawTextBox(p8, Helv, msg, {
@@ -597,11 +628,10 @@ export default async function handler(req, res) {
           maxLines: L.p8.maxLines,
         });
       });
-
-      if (P.n) drawTextBox(p8, Helv, P.n, L.footer.n8);
+      if (L.footer?.n8 && P.name) drawTextBox(p8, Helv, P.name, L.footer.n8);
     }
 
-    // ---------------------- PAGE 9 — Leaders (LOOK) ----------------------
+    // ---------------------- PAGE 9 — LOOK (Leaders) ----------------------
     if (p9) {
       drawTextBox(p9, HelvB, "Leaders — What to look out for", {
         ...L.p9.hLdr,
@@ -610,8 +640,7 @@ export default async function handler(req, res) {
 
       const view = ensureArray(D.workwlead).map((x) => x || {});
       const byTheir = (k) => view.find((o) => (o || {}).their === k) || {};
-      const keys = ["C", "T", "R", "L"];
-      keys.forEach((k) => {
+      ["C", "T", "R", "L"].forEach((k) => {
         const v = byTheir(k);
         const msg = v.look || (v.look && v.look.look) || "";
         const box = L.p9["ldr" + k];
@@ -621,11 +650,10 @@ export default async function handler(req, res) {
           maxLines: box.max,
         });
       });
-
-      if (P.n) drawTextBox(p9, Helv, P.n, L.footer.n9);
+      if (L.footer?.n9 && P.name) drawTextBox(p9, Helv, P.name, L.footer.n9);
     }
 
-    // ---------------------- PAGE 10 — Leaders (WORK) ----------------------
+    // ---------------------- PAGE 10 — WORK (Leaders) ----------------------
     if (p10) {
       drawTextBox(p10, HelvB, "Leaders — How to work with you", {
         ...L.p10.hLdr,
@@ -634,8 +662,7 @@ export default async function handler(req, res) {
 
       const view = ensureArray(D.workwlead).map((x) => x || {});
       const byTheir = (k) => view.find((o) => (o || {}).their === k) || {};
-      const keys = ["C", "T", "R", "L"];
-      keys.forEach((k) => {
+      ["C", "T", "R", "L"].forEach((k) => {
         const v = byTheir(k);
         const msg = v.work || (v.work && v.work.work) || "";
         const box = L.p10["ldr" + k];
@@ -645,8 +672,7 @@ export default async function handler(req, res) {
           maxLines: box.max,
         });
       });
-
-      if (P.n) drawTextBox(p10, Helv, P.n, L.footer.n10);
+      if (L.footer?.n10 && P.name) drawTextBox(p10, Helv, P.name, L.footer.n10);
     }
 
     // ---------------------- PAGE 11 — Tips & Actions (moved here) ----------------------
@@ -666,21 +692,21 @@ export default async function handler(req, res) {
       drawTextBox(p11, Helv, tipsBody, L.p11.tipsBox);
       drawTextBox(p11, Helv, actsBody, L.p11.actsBox);
 
-      if (P.n) drawTextBox(p11, Helv, P.n, L.footer.n11);
+      if (L.footer?.n11 && P.name) drawTextBox(p11, Helv, P.name, L.footer.n11);
     }
 
-    // ---------------------- Optional PAGE 12 — footer only ----------------------
-    if (p12 && P.n) {
-      drawTextBox(p12, Helv, P.n, L.footer.n12);
+    // ---------------------- PAGE 12 — (footer only / future use) ----------------------
+    if (p12 && L.footer?.n12 && P.name) {
+      drawTextBox(p12, Helv, P.name, L.footer.n12);
     }
 
     // ---------------------- send pdf ----------------------
-    const pdfBytes = await pdfDoc.save();
     const outName =
       qp.get("name") ||
       D.outputName ||
       `CTRL_${P.name ? P.name.replace(/\s+/g, "_") : "output"}.pdf`;
 
+    const pdfBytes = await pdfDoc.save();
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
@@ -689,8 +715,9 @@ export default async function handler(req, res) {
     res.status(200).send(Buffer.from(pdfBytes));
   } catch (err) {
     console.error("fill-template error:", err);
-    res
-      .status(500)
-      .json({ error: "INTERNAL_SERVER_ERROR", message: String(err?.message || err) });
+    res.status(500).json({
+      error: "INTERNAL_SERVER_ERROR",
+      message: String(err?.message || err),
+    });
   }
 }
