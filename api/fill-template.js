@@ -16,7 +16,7 @@
  *  p12 (footer only)
  *
  * URL tuners (examples):
- *  • Footers:  ?f7_x=80&f7_y=64&f7_size=12&f7_align=left   · ?n11_y=50
+ *  • Footers:  ?f7_x=80&f7_y=64&f7_size=12&f7_align=left   · ?f11_y=50
  *  • P3 labels: ?p3_state_labelOffsetX=0&p3_state_labelOffsetY=6
  *  • P3 boxes:  ?p3_state_abs_R_x=60&y=433&w=188&h=158     (same for C,T,L)
  *  • P3 text:   ?p3_domChar_y=182&p3_domDesc_y=214
@@ -31,6 +31,9 @@
  *
  * Strictly local template:
  *  - tpl must be a filename present in /public (no http(s): accepted)
+ *
+ * Footer policy in this version:
+ *  - Footer shows **Full Name only** on pages 2–12 (no flow, no date, no page numbers).
  *********************************************************************** */
 
 export const config = { runtime: "nodejs" };
@@ -274,15 +277,11 @@ const LOCKED = {
     date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
   },
   footer: (() => {
-    // Left footer text defaults (f2..f12)
+    // Left footer text defaults (f2..f12) — shows **name only**
     const f = { x: 200, y: 64, w: 400, size: 13, align: "left" };
-    // Page number defaults (n2..n12); p10 is slightly different
-    const n = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
     return {
-      f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f}, f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f},
-      n2:{...n}, n3:{...n}, n4:{...n}, n5:{...n}, n6:{...n}, n7:{...n}, n8:{...n}, n9:{...n},
-      n10: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n11:{...n}, n12:{...n}
+      f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f},
+      f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f}
     };
   })()
 };
@@ -404,7 +403,7 @@ function buildLayout(base) {
       L[k] = { ...(L[k] || {}), ...(base[k] || {}) };
     }
   }
-  // Footers always start from LOCKED defaults
+  // Footers always start from LOCKED defaults (name only)
   L.footer = { ...(LOCKED.footer), ...((base && base.footer) || {}) };
   return L;
 }
@@ -412,8 +411,8 @@ function buildLayout(base) {
 function applyUrlTuners(q, L) {
   const pick = (obj, keys) => keys.reduce((o, k) => (q[k] != null ? (o[k] = q[k], o) : o), {});
 
-  // Footers f*/n*
-  for (const pn of ["f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12","n2","n3","n4","n5","n6","n7","n8","n9","n10","n11","n12"]) {
+  // Footers f* (name only)
+  for (const pn of ["f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12"]) {
     const spec = pick(q, [`${pn}_x`, `${pn}_y`, `${pn}_w`, `${pn}_size`, `${pn}_align`]);
     if (Object.keys(spec).length) {
       L.footer[pn] = { ...(L.footer[pn]||{}),
@@ -711,26 +710,27 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ------------------------------ FOOTERS --------------------------- */
+    /* ------------------------------ FOOTERS --------------------------- *
+       Name only (no page numbers, no flow/date)                          */
     const footerSpec = L.footer || LOCKED.footer;
-    const footerLabel = norm([P.flow, P.name, P.dateLbl].filter(Boolean).join(" | "));
+    const footerName = norm(P.name || "");
     const put = (idx, key, text) => {
       const spec = footerSpec[key];
-      if (!spec) return;
+      if (!spec || !text) return;
       drawTextBox(pages[idx], font, text, spec, { maxLines: 1 });
     };
     // 1-based page indices we draw on: 2..12 (array is 0-based)
-    put(1,  "f2",  footerLabel); put(1,  "n2",  String(2));
-    put(2,  "f3",  footerLabel); put(2,  "n3",  String(3));
-    put(3,  "f4",  footerLabel); put(3,  "n4",  String(4));
-    put(4,  "f5",  footerLabel); put(4,  "n5",  String(5));
-    put(5,  "f6",  footerLabel); put(5,  "n6",  String(6));
-    put(6,  "f7",  footerLabel); put(6,  "n7",  String(7));
-    put(7,  "f8",  footerLabel); put(7,  "n8",  String(8));
-    put(8,  "f9",  footerLabel); put(8,  "n9",  String(9));
-    put(9,  "f10", footerLabel); put(9,  "n10", String(10));
-    put(10, "f11", footerLabel); put(10, "n11", String(11));
-    put(11, "f12", footerLabel); put(11, "n12", String(12));
+    put(1,  "f2",  footerName);
+    put(2,  "f3",  footerName);
+    put(3,  "f4",  footerName);
+    put(4,  "f5",  footerName);
+    put(5,  "f6",  footerName);
+    put(6,  "f7",  footerName);
+    put(7,  "f8",  footerName);
+    put(8,  "f9",  footerName);
+    put(9,  "f10", footerName);
+    put(10, "f11", footerName);
+    put(11, "f12", footerName);
 
     // Save output
     const bytes = await pdfDoc.save();
