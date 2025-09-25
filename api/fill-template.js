@@ -1,12 +1,10 @@
-// /api/fill-template.js — CTRL V3 Clean Exporter (pages 7–10 re-split + new page 11 Tips/Actions, n11/n12)
-// Runtime: Vercel Node
-// Notes:
-// - Locks in latest coordinates with safe defaults; EVERYTHING is still tunable via URL.
-// - Splits colleague/leader statements into LOOK vs WORK across p7–p10.
-// - Moves Tips & Actions to p11 (with bullet renderer + p11_* tuners).
-// - Adds WinAnsi "Option 1" sanitizer to remove/replace unsupported glyphs (e.g., emoji 👉).
-// - Adds footer page-number coords for pages 11 & 12 (n11*, n12*).
-// - "size=0" cleanly hides any text box.
+// /api/fill-template.js — CTRL V3 Clean Exporter
+// - Pages 7–10 re-split (look/work x colleagues/leaders)
+// - Tips & Actions moved to page 11
+// - Footer page-number coords include n11 and n12
+// - Robust WinAnsi sanitizer ("Option 1") fixes unsupported glyphs (e.g., 0x1F449 👉)
+// - All coordinates have safe defaults and remain tunable via URL
+// - Template is read from /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
 
 export const config = { runtime: "nodejs" };
 
@@ -17,34 +15,25 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 /* ───────────────────────────── Utilities ───────────────────────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
+const toRGB = (c, fb) =>
+  (c && typeof c === "object" && "r" in c) ? rgb(c.r ?? 0, c.g ?? 0, c.b ?? 0) : (c || fb);
 
-// Robust WinAnsi-safe normaliser (Option 1)
-// - Standardises quotes/dashes/ellipsis
-// - Maps common emoji & bullets to ASCII counterparts
-// - Removes remaining non-WinAnsi (above \xFF), keeps Latin-1
-// - Trims stray control chars (except \t\n\r)
+// WinAnsi-safe normaliser (Option 1)
 function norm(input, fb = "") {
   let s = S(input, fb);
-  // Common typography to ASCII
   s = s
-    .replace(/[\u2018\u2019\u2032]/g, "'")   // curly apos, prime → '
-    .replace(/[\u201C\u201D\u2033]/g, '"')   // curly quotes, double prime → "
-    .replace(/[\u2013\u2014\u2212]/g, "-")  // en/em/minus → -
-    .replace(/[\u2026]/g, "...")             // ellipsis → ...
-    .replace(/[\u00A0]/g, " ")               // nbsp → space
-    // Bullets/arrows/checks (map before stripping)
-    .replace(/[\u2022\u2043\u2219]/g, "•")  // unify bullets
+    .replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    .replace(/[\u2013\u2014\u2212]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u2022\u2043\u2219]/g, "•") // unify bullets (will be stripped; we render our own)
     .replace(/[\u279C\u27A1\u2192\u21AA\u21A9]/g, "->")
     .replace(/[\u2705\u2713\u2714]/g, "[check]")
     .replace(/[\u274C\u2716]/g, "[x]")
     .replace(/[\u26A0\u2757]/g, "[!]")
-    // Common hand pointers (incl. U+1F449 etc.) → "->"
     .replace(/[\u{1F449}\u{1F448}\u{1F44D}\u{1F44E}]/gu, "->");
-
-  // Drop all codepoints above Latin-1 (WinAnsi superset), but keep tab/newline/CR
-  s = s.replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "");
-
-  // Guard against PDF control hazards
+  s = s.replace(/[^\x09\x0A\x0D\x20-\xFF]/g, ""); // drop > Latin-1
   return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").trim();
 }
 
@@ -62,10 +51,8 @@ function parseDataParam(b64ish) {
   try { s = decodeURIComponent(s); } catch {}
   s = s.replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
-  try {
-    const raw = Buffer.from(s, "base64").toString("utf8");
-    return JSON.parse(raw);
-  } catch { return {}; }
+  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+  catch { return {}; }
 }
 
 /* ─────────────────────────── Drawing helpers ───────────────────────── */
@@ -157,8 +144,8 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     );
 
     // Bullet anchored to first line baseline
-    const baseline = (pageH - curY) - size * 0.2; // small optical tweak
-    if (page.drawCircle) {
+    const baseline = (pageH - curY) - size * 0.2;
+    if (typeof page.drawCircle === "function") {
       page.drawCircle({ x: x + bulletRadius, y: baseline, size: bulletRadius, color });
     } else {
       page.drawRectangle({ x, y: baseline - bulletRadius, width: bulletRadius * 2, height: bulletRadius * 2, color });
@@ -225,8 +212,8 @@ async function paintStateHighlight(pdf, page3, dominantKey, L) {
 
   const labelText  = S(cfg.labelText || "YOU ARE HERE");
   const labelSize  = N(cfg.labelSize, 10);
-  const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
-  const shade      = cfg.fillColor || rgb(251/255, 236/255, 250/255); // #FBECFA
+  const labelColor = toRGB(cfg.labelColor, rgb(0.20, 0.20, 0.20));
+  const shade      = toRGB(cfg.fillColor,  rgb(251/255, 236/255, 250/255)); // #FBECFA
   const opacity    = N(cfg.fillOpacity, 0.45);
 
   const BOXES = useAbs ? (cfg.absBoxes || {}) : computeBoxesFromGrid(cfg.grid || defaultP3Grid());
@@ -367,7 +354,7 @@ function deepMerge(base, patch) {
   return out;
 }
 
-// LOCKED page-1 + footer coords (n2..n12 supported). You can still tune via URL.
+// LOCKED page-1 + footer coords (n2..n12). Tunable via URL; we keep locked defaults.
 const LOCKED = {
   p1: {
     name: { x: 7,   y: 473,  w: 500, size: 30, align: "center" },
@@ -377,7 +364,8 @@ const LOCKED = {
     const one = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
     return {
       n2:{...one}, n3:{...one}, n4:{...one}, n5:{...one}, n6:{...one},
-      n7:{...one}, n8:{...one}, n9:{...one}, n10:{ x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n7:{...one}, n8:{...one}, n9:{...one},
+      n10:{ x: 250, y: 64, w: 400, size: 12, align: "center" },
       n11:{...one}, n12:{...one}
     };
   })()
@@ -449,7 +437,7 @@ function buildLayout(layoutV6) {
     // PAGE 6 — theme
     p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
 
-    // PAGE 7 — LOOK – colleagues (4 boxes)
+    // PAGE 7 — LOOK – colleagues
     p7: {
       header: { x: 60, y: 110, w: 650, size: 0, align: "left" }, // hidden by default
       colBoxes: [
@@ -501,8 +489,7 @@ function buildLayout(layoutV6) {
       maxLines: 9
     },
 
-    // PAGE 11 — Tips & Actions (moved here)
-    // Defaults follow your stored p7 tips/actions baseline (MSCs #87–88), now applied to p11
+    // PAGE 11 — Tips & Actions
     p11: {
       tipsHdr: { x:  30, y: 500, w: 300, size: 17, align: "left" },
       actsHdr: { x: 320, y: 500, w: 300, size: 17, align: "left" },
@@ -517,9 +504,9 @@ function buildLayout(layoutV6) {
     try {
       const merged = deepMerge(L, layoutV6);
       merged.p1     = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
-      merged.footer = { ...merged.footer, ...LOCKED.footer };
+      merged.footer = { ...merged.footer, ...LOCKED.footer }; // keep n* safe defaults
       merged.p3     = merged.p3 || {};
-      merged.p3.state = { ...L.p3.state }; // HARD LOCK the state highlight geometry + style
+      merged.p3.state = { ...L.p3.state }; // HARD LOCK
       return merged;
     } catch { /* ignore */ }
   }
@@ -612,11 +599,11 @@ function applyUrlTuners(url, L) {
   L.footer = L.footer || {};
   const tuneN = (key) => {
     if (!L.footer[key]) L.footer[key] = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
-    if (q[`${key}x`] != null) L.footer[key].x = +q[`${key}x`];
-    if (q[`${key}y`] != null) L.footer[key].y = +q[`${key}y`];
-    if (q[`${key}w`] != null) L.footer[key].w = +q[`${key}w`];
-    if (q[`${key}s`] != null) L.footer[key].size = +q[`${key}s`];
-    if (q[`${key}align"]) L.footer[key].align = String(q[`${key}align`]);
+    if (q[`${key}x`] != null)     L.footer[key].x    = +q[`${key}x`];
+    if (q[`${key}y`] != null)     L.footer[key].y    = +q[`${key}y`];
+    if (q[`${key}w`] != null)     L.footer[key].w    = +q[`${key}w`];
+    if (q[`${key}s`] != null)     L.footer[key].size = +q[`${key}s`];
+    if (q[`${key}align`])         L.footer[key].align = String(q[`${key}align`]);
   };
   ["n10","n11","n12"].forEach(tuneN);
 
@@ -624,15 +611,26 @@ function applyUrlTuners(url, L) {
 }
 
 /* ───────────────────────────── Template load ───────────────────────────── */
+// Loads from /public (your template path: ctrl-export-service/public/…)
 async function loadTemplateBytes(url) {
   const tplParam = (url && url.searchParams && url.searchParams.get("tpl")) || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
-  const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, "");
+  const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, ""); // no traversal, no folders
   const fullPath = path.join(process.cwd(), "public", safeTpl);
   try {
     return await fs.readFile(fullPath);
   } catch {
     throw new Error(`Template not found at /public/${safeTpl}`);
   }
+}
+
+/* ───────────────────────────── Footer helpers ───────────────────────────── */
+function drawPageNumber(page, font, spec, pageNumber) {
+  if (!page || !spec || !Number.isFinite(+spec.size) || +spec.size <= 0) return;
+  drawTextBox(page, font, String(pageNumber), { ...spec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+}
+function drawFooterText(page, font, text, spec) {
+  if (!page || !spec || !text) return;
+  drawTextBox(page, font, norm(text), { ...spec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 }
 
 /* ─────────────────────────────── HTTP handler ─────────────────────────────── */
@@ -672,12 +670,18 @@ export default async function handler(req, res) {
       drawTextBox(p1, Helv,  P.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
     }
 
-    /* ---------------------------- PAGE 2 footer ---------------------------- */
-    if (p2) drawTextBox(p2, Helv, P.n, { ...(L.footer.n2||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    /* ---------------------------- PAGE 2 ---------------------------- */
+    if (p2) {
+      // Optional left footer text if provided (e.g., flow label)
+      if (L.footer.f2) drawFooterText(p2, Helv, P.f || P.flow || "", L.footer.f2);
+      drawPageNumber(p2, Helv, L.footer.n2, 2);
+    }
 
     /* ---------------------------- PAGE 3 ---------------------------- */
     if (p3) {
-      drawTextBox(p3, Helv, P.n, { ...(L.footer.n3||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f3) drawFooterText(p3, Helv, P.f || P.flow || "", L.footer.f3);
+      drawPageNumber(p3, Helv, L.footer.n3, 3);
+
       if (P.domchar) drawTextBox(p3, Helv, P.domchar, { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
       drawTextBox(p3, Helv, P.domdesc, { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
       await paintStateHighlight(pdf, p3, resolvedDomKey, L);
@@ -685,14 +689,16 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 4 ---------------------------- */
     if (p4) {
-      drawTextBox(p4, Helv, P.n, { ...(L.footer.n4||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f4) drawFooterText(p4, Helv, P.f || P.flow || "", L.footer.f4);
+      drawPageNumber(p4, Helv, L.footer.n4, 4);
+
       drawTextBox(p4, Helv, P.spiderdesc, { ...L.p4.spider, color: rgb(0.15,0.14,0.22) }, { maxLines: 18, ellipsis: true });
       if (P.spiderfreq) {
         try {
           const imgRes = await fetch(P.spiderfreq);
           if (imgRes.ok) {
             const buff = await imgRes.arrayBuffer();
-            const mime = String(imgRes.headers.get("content-type") || "");
+            const mime = String(imgRes.headers.get("content-type") || "").toLowerCase();
             let img = null;
             if (mime.includes("png")) img = await pdf.embedPng(buff); else img = await pdf.embedJpg(buff);
             const ph = p4.getHeight();
@@ -704,13 +710,15 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 5 ---------------------------- */
     if (p5) {
-      drawTextBox(p5, Helv, P.n, { ...(L.footer.n5||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f5) drawFooterText(p5, Helv, P.f || P.flow || "", L.footer.f5);
+      drawPageNumber(p5, Helv, L.footer.n5, 5);
       drawTextBox(p5, Helv, P.seqpat, { ...L.p5.seqpat, color: rgb(0.15,0.14,0.22) }, { maxLines: 24, ellipsis: true });
     }
 
     /* ---------------------------- PAGE 6 ---------------------------- */
     if (p6) {
-      drawTextBox(p6, Helv, P.n, { ...(L.footer.n6||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f6) drawFooterText(p6, Helv, P.f || P.flow || "", L.footer.f6);
+      drawPageNumber(p6, Helv, L.footer.n6, 6);
       drawTextBox(p6, Helv, P.theme, { ...L.p6.theme, color: rgb(0.15,0.14,0.22) }, { maxLines: 24, ellipsis: true });
     }
 
@@ -718,7 +726,9 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 7 (LOOK – colleagues) ---------------------------- */
     if (p7) {
-      drawTextBox(p7, Helv, P.n, { ...(L.footer.n7||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f7) drawFooterText(p7, Helv, P.f || P.flow || "", L.footer.f7);
+      drawPageNumber(p7, Helv, L.footer.n7, 7);
+
       drawTextBox(p7, HelvB, "", { ...L.p7.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
       ["C","T","R","L"].forEach((k,i)=>{
         const entry = findBy(P.workwcol, k);
@@ -732,7 +742,9 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 8 (WORK – colleagues) ---------------------------- */
     if (p8) {
-      drawTextBox(p8, Helv, P.n, { ...(L.footer.n8||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f8) drawFooterText(p8, Helv, P.f || P.flow || "", L.footer.f8);
+      drawPageNumber(p8, Helv, L.footer.n8, 8);
+
       drawTextBox(p8, HelvB, "", { ...L.p8.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
       ["C","T","R","L"].forEach((k,i)=>{
         const entry = findBy(P.workwcol, k);
@@ -746,7 +758,9 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 9 (LOOK – leaders) ---------------------------- */
     if (p9) {
-      drawTextBox(p9, Helv, P.n, { ...(L.footer.n9||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f9) drawFooterText(p9, Helv, P.f || P.flow || "", L.footer.f9);
+      drawPageNumber(p9, Helv, L.footer.n9, 9);
+
       drawTextBox(p9, HelvB, "", { ...L.p9.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
       ["C","T","R","L"].forEach((k,i)=>{
         const entry = findBy(P.workwlead, k);
@@ -760,7 +774,9 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 10 (WORK – leaders) ---------------------------- */
     if (p10) {
-      drawTextBox(p10, Helv, P.n, { ...(L.footer.n10||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f10) drawFooterText(p10, Helv, P.f || P.flow || "", L.footer.f10);
+      drawPageNumber(p10, Helv, L.footer.n10, 10);
+
       drawTextBox(p10, HelvB, "", { ...L.p10.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
       ["C","T","R","L"].forEach((k,i)=>{
         const entry = findBy(P.workwlead, k);
@@ -774,7 +790,9 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 11 (Tips & Actions) ---------------------------- */
     if (p11) {
-      drawTextBox(p11, Helv, P.n, { ...(L.footer.n11||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f11) drawFooterText(p11, Helv, P.f || P.flow || "", L.footer.f11);
+      drawPageNumber(p11, Helv, L.footer.n11, 11);
+
       // Headers (set size=0 to hide)
       drawTextBox(p11, HelvB, "Tips",    { ...L.p11.tipsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
       drawTextBox(p11, HelvB, "Actions", { ...L.p11.actsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
@@ -790,7 +808,8 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 12 (footer only by default) ---------------------------- */
     if (p12) {
-      drawTextBox(p12, Helv, P.n, { ...(L.footer.n12||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (L.footer.f12) drawFooterText(p12, Helv, P.f || P.flow || "", L.footer.f12);
+      drawPageNumber(p12, Helv, L.footer.n12, 12);
     }
 
     // save
