@@ -1,10 +1,11 @@
-// /api/fill-template.js — CTRL V3 Clean Exporter
-// - Pages 7–10 re-split (look/work x colleagues/leaders)
-// - Tips & Actions moved to page 11
-// - Footer page-number coords include n11 and n12
-// - Robust WinAnsi sanitizer ("Option 1") fixes unsupported glyphs (e.g., 0x1F449 👉)
-// - All coordinates have safe defaults and remain tunable via URL
-// - Template is read from /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+// /api/fill-template.js — CTRL V3 Exporter (clean)
+// - Pages 7–10 split (LOOK/WORK × Colleagues/Leaders)
+// - Tips & Actions on page 11
+// - Footer page numbers include n11 & n12
+// - Robust WinAnsi sanitizer (Option 1)
+// - All coordinates tunable via URL (safe defaults locked)
+// - Template defaults to /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
+//   and also supports tpl=<https URL> (e.g., GitHub raw)
 
 export const config = { runtime: "nodejs" };
 
@@ -27,7 +28,7 @@ function norm(input, fb = "") {
     .replace(/[\u2013\u2014\u2212]/g, "-")
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
-    .replace(/[\u2022\u2043\u2219]/g, "•") // unify bullets (will be stripped; we render our own)
+    .replace(/[\u2022\u2043\u2219]/g, "•") // unify bullets (we render our own)
     .replace(/[\u279C\u27A1\u2192\u21AA\u21A9]/g, "->")
     .replace(/[\u2705\u2713\u2714]/g, "[check]")
     .replace(/[\u274C\u2716]/g, "[x]")
@@ -392,7 +393,7 @@ function buildLayout(layoutV6) {
         highlightRadius: 28,
         highlightInset: 6,
         fillOpacity: 0.45,
-        fillColor: rgb(251/255, 236/255, 250/255),
+        fillColor: rgb(251/255, 236/255, 250/255), // #FBECFA
         styleByState: {
           C: { radius: 28,   inset: 6  },
           T: { radius: 28,   inset: 6  },
@@ -535,7 +536,6 @@ function applyUrlTuners(url, L) {
 
   // P3 text
   setBox(L.p3?.domChar, "p3_domChar");
-  if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept typo
   setBox(L.p3?.domDesc, "p3_domDesc");
 
   // P3 highlight + labels
@@ -561,7 +561,14 @@ function applyUrlTuners(url, L) {
   setLS("C", q.labelC_x, q.labelC_y); setLS("T", q.labelT_x, q.labelT_y); setLS("R", q.labelR_x, q.labelR_y); setLS("L", q.labelL_x, q.labelL_y);
   if (Object.keys(psl).length) { S3.labelByState = S3.labelByState || {}; for (const k of Object.keys(psl)) { S3.labelByState[k] = { ...(S3.labelByState[k] || {}), ...psl[k] }; } }
   if (S3.useAbsolute || q.state_useAbs === "1") {
-    const setAbs = (key) => { S3.absBoxes = S3.absBoxes || {}; const b = S3.absBoxes[key] || {}; if (q[`abs_${key}_x`] != null) b.x = +q[`abs_${key}_x`]; if (q[`abs_${key}_y`] != null) b.y = +q[`abs_${key}_y`]; if (q[`abs_${key}_w`] != null) b.w = +q[`abs_${key}_w`]; if (q[`abs_${key}_h`] != null) b.h = +q[`abs_${key}_h`]; S3.absBoxes[key] = b; };
+    const setAbs = (key) => {
+      S3.absBoxes = S3.absBoxes || {}; const b = S3.absBoxes[key] || {};
+      if (q[`abs_${key}_x`] != null) b.x = +q[`abs_${key}_x`];
+      if (q[`abs_${key}_y`] != null) b.y = +q[`abs_${key}_y`];
+      if (q[`abs_${key}_w`] != null) b.w = +q[`abs_${key}_w`];
+      if (q[`abs_${key}_h`] != null) b.h = +q[`abs_${key}_h`];
+      S3.absBoxes[key] = b;
+    };
     ["C","T","R","L"].forEach(setAbs);
   }
 
@@ -611,15 +618,34 @@ function applyUrlTuners(url, L) {
 }
 
 /* ───────────────────────────── Template load ───────────────────────────── */
-// Loads from /public (your template path: ctrl-export-service/public/…)
+// Supports tpl in /public (default) AND full https URL (e.g., GitHub raw)
 async function loadTemplateBytes(url) {
-  const tplParam = (url && url.searchParams && url.searchParams.get("tpl")) || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
-  const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, ""); // no traversal, no folders
-  const fullPath = path.join(process.cwd(), "public", safeTpl);
+  const DEFAULT_TPL = "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
+
+  // Get and decode ?tpl=
+  let tplParam = "";
+  try { tplParam = url?.searchParams?.get("tpl") || ""; } catch { tplParam = ""; }
+  try { tplParam = decodeURIComponent(tplParam); } catch {}
+
+  // Remote template (https)
+  if (/^https?:\/\//i.test(tplParam)) {
+    const resp = await fetch(tplParam);
+    if (!resp.ok) throw new Error(`Template fetch failed: ${resp.status} ${resp.statusText}`);
+    return await resp.arrayBuffer();
+  }
+
+  // Local from /public (allow optional subfolders, block traversal)
+  const localTpl = (tplParam || DEFAULT_TPL)
+    .replace(/\\/g, "/")          // normalize slashes
+    .replace(/\0/g, "")           // strip NULs
+    .replace(/^\//, "")           // no absolute path
+    .replace(/\.\.(\/|\\)/g, ""); // block ../
+
+  const fullPath = path.join(process.cwd(), "public", localTpl);
   try {
     return await fs.readFile(fullPath);
   } catch {
-    throw new Error(`Template not found at /public/${safeTpl}`);
+    throw new Error(`Template not found at /public/${localTpl}`);
   }
 }
 
@@ -672,7 +698,6 @@ export default async function handler(req, res) {
 
     /* ---------------------------- PAGE 2 ---------------------------- */
     if (p2) {
-      // Optional left footer text if provided (e.g., flow label)
       if (L.footer.f2) drawFooterText(p2, Helv, P.f || P.flow || "", L.footer.f2);
       drawPageNumber(p2, Helv, L.footer.n2, 2);
     }
@@ -704,7 +729,7 @@ export default async function handler(req, res) {
             const ph = p4.getHeight();
             p4.drawImage(img, { x: L.p4.chart.x, y: ph - L.p4.chart.y - L.p4.chart.h, width: L.p4.chart.w, height: L.p4.chart.h });
           }
-        } catch { /* ignore */ }
+        } catch { /* ignore image errors */ }
       }
     }
 
@@ -828,9 +853,9 @@ export default async function handler(req, res) {
 
 function safeFileName(url, fullName) {
   const who = S(fullName || "report").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
+  const qName = url.searchParams.get("name");
+  if (qName) return String(qName);
   const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]; 
   const d = new Date();
-  const name = `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
-  const qName = url.searchParams.get("name");
-  return qName ? String(qName) : name;
+  return `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
 }
