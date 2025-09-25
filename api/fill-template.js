@@ -15,15 +15,27 @@
  *  p11 Tips & Actions      (two bulleted columns)
  *  p12 (footer only)
  *
- * URL tuners (examples):
- *  • Footers:  ?f7_x=80&f7_y=64&f7_size=12&f7_align=left   · ?f11_y=50
+ * URL tuners (examples; TL origin, pts):
+ *  • P1 name: ?p1_name_x=7&p1_name_y=473&p1_name_w=500&p1_name_size=30&p1_name_align=center
+ *    P1 date: ?p1_date_x=210&p1_date_y=600&p1_date_w=500&p1_date_size=25&p1_date_align=left
+ *  • Footers (name only on p2–p12): ?f2_x=200&f2_y=64&f2_size=13&f2_align=left (…f3..f12)
  *  • P3 labels: ?p3_state_labelOffsetX=0&p3_state_labelOffsetY=6
- *  • P3 boxes:  ?p3_state_abs_R_x=60&y=433&w=188&h=158     (same for C,T,L)
- *  • P3 text:   ?p3_domChar_y=182&p3_domDesc_y=214
- *  • P4 spider: ?p4_spider_x=60&y=320&w=280&size=11        (TL coords)
- *  • P4 chart:  ?p4_chart_x=360&y=320&w=260&h=260          (TL coords)
- *  • P7/P8:     ?p7_col0_x=60&y=140&w=300&h=120  (C)       (…col1..col3)
- *  • P9/P10:    ?p9_ldr1_x=410&y=140&w=300&h=120 (T)       (…ldr0..ldr3)
+ *    Text blocks: ?p3_domChar_y=182&p3_domDesc_y=214
+ *    Boxes (TL):  ?p3_state_abs_R_x=60&y=433&w=188&h=158 (C,T,L similar)
+ *    Label per state: ?p3_state_label_R_x=150&p3_state_label_R_y=612
+ *    Look & feel: ?p3_state_labelText=YOU%20ARE%20HERE&p3_state_labelSize=10
+ *                  &p3_state_fillOpacity=0.45&p3_state_highlightRadius=28&p3_state_highlightInset=6
+ *                  &p3_state_style_R_radius=1000&p3_state_style_R_inset=1
+ *  • P4 spider: ?p4_spider_x=60&y=320&w=280&size=11   · chart: ?p4_chart_x=360&y=320&w=260&h=260
+ *  • P5:        ?p5_seqpat_x=60&y=160&w=650&size=11
+ *  • P6:        ?p6_theme_x=60&y=160&w=650&size=11
+ *  • P7/P8: body size/lines: ?p7_bodySize=10&p7_maxLines=9  (same for p8)
+ *    Boxes: ?p7_col0_x=60&y=140&w=300&h=120  (indices 0..3 = C,T,R,L; same for p8_)
+ *  • P9/P10: body/lines: ?p9_bodySize=10&p9_maxLines=9 (same for p10)
+ *    Boxes: ?p9_ldr2_x=60&y=270&w=300&h=120  (indices 0..3 = C,T,R,L; same for p10_)
+ *  • P11 heads/boxes: ?p11_tipsHdr_x=30&y=500&w=300&size=17&align=left  (same keys for actsHdr)
+ *                     ?p11_tipsBox_x=30&y=530&w=300&size=11
+ *                     ?p11_maxLines=12
  *
  * WinAnsi crash fix (Option 1):
  *  - Strip surrogate pairs + Private Use + VS-16/FE0F / zero-width
@@ -405,13 +417,27 @@ function buildLayout(base) {
   }
   // Footers always start from LOCKED defaults (name only)
   L.footer = { ...(LOCKED.footer), ...((base && base.footer) || {}) };
+  // p1 uses LOCKED defaults too
+  L.p1 = { ...(LOCKED.p1), ...((base && base.p1) || {}) };
   return L;
 }
 
 function applyUrlTuners(q, L) {
   const pick = (obj, keys) => keys.reduce((o, k) => (q[k] != null ? (o[k] = q[k], o) : o), {});
 
-  // Footers f* (name only)
+  /* P1 — name & date */
+  for (const fld of ["name","date"]) {
+    const P = pick(q, [`p1_${fld}_x`,`p1_${fld}_y`,`p1_${fld}_w`,`p1_${fld}_size`,`p1_${fld}_align`]);
+    if (Object.keys(P).length) {
+      L.p1[fld] = { ...(L.p1[fld]||{}),
+        x:N(P[`p1_${fld}_x`],L.p1[fld]?.x), y:N(P[`p1_${fld}_y`],L.p1[fld]?.y),
+        w:N(P[`p1_${fld}_w`],L.p1[fld]?.w), size:N(P[`p1_${fld}_size`],L.p1[fld]?.size),
+        align:S(P[`p1_${fld}_align`],L.p1[fld]?.align)
+      };
+    }
+  }
+
+  /* Footers f* (name only) */
   for (const pn of ["f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12"]) {
     const spec = pick(q, [`${pn}_x`, `${pn}_y`, `${pn}_w`, `${pn}_size`, `${pn}_align`]);
     if (Object.keys(spec).length) {
@@ -423,7 +449,7 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p3 domChar/domDesc
+  /* p3 domChar/domDesc */
   for (const f of ["domChar","domDesc"]) {
     const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_size`,`p3_${f}_align`]);
     if (Object.keys(P).length) L.p3[f] = { ...(L.p3[f]||{}),
@@ -433,7 +459,7 @@ function applyUrlTuners(q, L) {
     };
   }
 
-  // p3 state (abs boxes + label offsets + per-state label overrides)
+  /* p3 state (abs boxes + labels + style) */
   for (const k of ["C","T","R","L"]) {
     const key = `p3_state_abs_${k}`;
     const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
@@ -445,6 +471,7 @@ function applyUrlTuners(q, L) {
         h:N(P[`${key}_h`],L.p3.state.absBoxes[k]?.h)
       };
     }
+    // Per-state label anchor override
     const lk = `p3_state_label_${k}`;
     const LP = pick(q, [`${lk}_x`,`${lk}_y`]);
     if (Object.keys(LP).length) {
@@ -453,11 +480,25 @@ function applyUrlTuners(q, L) {
         y:N(LP[`${lk}_y`],L.p3.state.labelByState[k]?.y)
       };
     }
+    // Per-state style overrides (radius/inset)
+    const sk = `p3_state_style_${k}`;
+    const SP = pick(q, [`${sk}_radius`,`${sk}_inset`]);
+    if (Object.keys(SP).length) {
+      L.p3.state.styleByState[k] = { ...(L.p3.state.styleByState[k]||{}),
+        radius:N(SP[`${sk}_radius`],L.p3.state.styleByState[k]?.radius),
+        inset:N(SP[`${sk}_inset`],L.p3.state.styleByState[k]?.inset)
+      };
+    }
   }
   if (q.p3_state_labelOffsetX != null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
   if (q.p3_state_labelOffsetY != null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
+  if (q.p3_state_labelText     != null) L.p3.state.labelText     = S(q.p3_state_labelText, L.p3.state.labelText);
+  if (q.p3_state_labelSize     != null) L.p3.state.labelSize     = N(q.p3_state_labelSize, L.p3.state.labelSize);
+  if (q.p3_state_fillOpacity   != null) L.p3.state.fillOpacity   = N(q.p3_state_fillOpacity, L.p3.state.fillOpacity);
+  if (q.p3_state_highlightRadius!=null) L.p3.state.highlightRadius= N(q.p3_state_highlightRadius, L.p3.state.highlightRadius);
+  if (q.p3_state_highlightInset !=null) L.p3.state.highlightInset = N(q.p3_state_highlightInset, L.p3.state.highlightInset);
 
-  // p4 spider + chart
+  /* p4 spider + chart */
   const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
@@ -474,8 +515,22 @@ function applyUrlTuners(q, L) {
     };
   }
 
-  // p7/p8 colleagues boxes
+  /* p5 / p6 blocks */
+  for (const p of [{k:"p5",f:"seqpat"},{k:"p6",f:"theme"}]) {
+    const P = pick(q, [`${p.k}_${p.f}_x`,`${p.k}_${p.f}_y`,`${p.k}_${p.f}_w`,`${p.k}_${p.f}_size`,`${p.k}_${p.f}_align`]);
+    if (Object.keys(P).length) {
+      L[p.k][p.f] = { ...(L[p.k][p.f]||{}),
+        x:N(P[`${p.k}_${p.f}_x`],L[p.k][p.f]?.x), y:N(P[`${p.k}_${p.f}_y`],L[p.k][p.f]?.y),
+        w:N(P[`${p.k}_${p.f}_w`],L[p.k][p.f]?.w), size:N(P[`${p.k}_${p.f}_size`],L[p.k][p.f]?.size),
+        align:S(P[`${p.k}_${p.f}_align`],L[p.k][p.f]?.align)
+      };
+    }
+  }
+
+  /* p7/p8 colleagues boxes + body sizes */
   for (const p of ["p7","p8"]) {
+    if (q[`${p}_bodySize`] != null) L[p].bodySize = N(q[`${p}_bodySize`], L[p].bodySize);
+    if (q[`${p}_maxLines`] != null) L[p].maxLines = N(q[`${p}_maxLines`], L[p].maxLines);
     for (let i=0;i<4;i++) {
       const key = `${p}_col${i}`;
       const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
@@ -490,8 +545,10 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p9/p10 leader boxes
+  /* p9/p10 leader boxes + body sizes */
   for (const p of ["p9","p10"]) {
+    if (q[`${p}_bodySize`] != null) L[p].bodySize = N(q[`${p}_bodySize`], L[p].bodySize);
+    if (q[`${p}_maxLines`] != null) L[p].maxLines = N(q[`${p}_maxLines`], L[p].maxLines);
     for (let i=0;i<4;i++) {
       const key = `${p}_ldr${i}`;
       const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
@@ -506,7 +563,8 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p11 tips/actions
+  /* p11 tips/actions */
+  if (q.p11_maxLines != null) L.p11.maxLines = N(q.p11_maxLines, L.p11.maxLines);
   for (const f of ["tipsHdr","actsHdr","tipsBox","actsBox"]) {
     const P = pick(q, [`p11_${f}_x`,`p11_${f}_y`,`p11_${f}_w`,`p11_${f}_size`,`p11_${f}_align`]);
     if (Object.keys(P).length) {
@@ -626,8 +684,6 @@ export default async function handler(req, res) {
         const pageH = page4.getHeight();
         const x = N(L.p4.chart.x), y = N(L.p4.chart.y), w = N(L.p4.chart.w), h = N(L.p4.chart.h);
         page4.drawImage(img, { x, y: pageH - y - h, width: w, height: h });
-      } else {
-        // fallback: draw nothing if fetch failed
       }
     }
 
