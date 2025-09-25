@@ -3,8 +3,8 @@
  * Template: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
  *
  * Pages:
- *  p1  cover                     (name/date are locked by template design)
- *  p3  dominant + description + state highlight  (exporter-style geometry)
+ *  p1  cover                     (name/date may be pre-rendered in template)
+ *  p3  dominant + description + state highlight (absolute geometry)
  *  p4  spider copy + chart image
  *  p5  sequence/pattern copy
  *  p6  theme pair copy
@@ -13,18 +13,17 @@
  *  p9  LOOK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].look)
  *  p10 WORK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].work)
  *  p11 Tips & Actions      (two bulleted columns)
- *  p12 (no body)           (footer only)
+ *  p12 (footer only)
  *
  * URL tuners (examples):
- *  ?p7_col0_x=60&y=140&w=300&h=120   (C box on p7)   · p7_col1..col3 for T,R,L
- *  ?p8_col2_x=60&y=270&w=300&h=120   (R box on p8)
- *  ?p9_ldr1_x=410&y=140&w=300&h=120  (T box on p9)   · p9_ldr0..ldr3 for C,T,R,L
- *  ?p10_ldr3_x=410&y=270&w=300&h=120 (L box on p10)
- *  ?p11_tipsHdr_x=30&y=500&w=300&size=17
- *  ?p11_tipsBox_x=30&y=530&w=300&size=11
- *  ?p11_actsHdr_x=320&y=500&w=300&size=17
- *  ?p11_actsBox_x=320&y=530&w=300&size=11
- *  ?n11_x=205&y=49.5&size=15&align=center  · same for n12
+ *  • Footers:  ?f7_x=80&f7_y=64&f7_size=12&f7_align=left   · ?n11_y=50
+ *  • P3 labels: ?p3_state_labelOffsetX=0&p3_state_labelOffsetY=6
+ *  • P3 boxes:  ?p3_state_abs_R_x=60&y=433&w=188&h=158     (same for C,T,L)
+ *  • P3 text:   ?p3_domChar_y=182&p3_domDesc_y=214
+ *  • P4 spider: ?p4_spider_x=60&y=320&w=280&size=11        (TL coords)
+ *  • P4 chart:  ?p4_chart_x=360&y=320&w=260&h=260          (TL coords)
+ *  • P7/P8:     ?p7_col0_x=60&y=140&w=300&h=120  (C)       (…col1..col3)
+ *  • P9/P10:    ?p9_ldr1_x=410&y=140&w=300&h=120 (T)       (…ldr0..ldr3)
  *
  * WinAnsi crash fix (Option 1):
  *  - Strip surrogate pairs + Private Use + VS-16/FE0F / zero-width
@@ -47,23 +46,23 @@ const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 /** WinAnsi “Option 1” sanitizer (remove/replace non-encodable glyphs) */
 const norm = (v, fb = "") =>
   S(v, fb)
-    // normal punctuation first (keep WinAnsi-friendly typographic chars)
+    // typographic punctuation → WinAnsi-friendly
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
-    .replace(/\u2026/g, "...")             // ellipsis
-    .replace(/\u00A0/g, " ")               // nbsp → space
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
     // kill troublesome glyphs that break WinAnsi (emoji, PUA, VS, ZW)
     .replace(/[\uD800-\uDFFF]/g, "")       // surrogate pairs (all emoji)
     .replace(/[\uE000-\uF8FF]/g, "")       // private use area
     .replace(/[\uFE0E\uFE0F]/g, "")        // variation selectors 15/16
     .replace(/[\u200B-\u200D\u2060]/g, "") // zero-width chars
-    // tidy whitespace
+    // whitespace tidy
     .replace(/\t/g, " ")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \f\v]+/g, " ")
     .replace(/[ \t]+\n/g, "\n")
-    // ASCII control cleanup (keep \n, \r stripped earlier)
+    // ASCII control cleanup (keep \n)
     .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, "")
     .trim();
 
@@ -75,7 +74,7 @@ const todayLbl = () => {
 
 const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
-/** base64url → JSON (accepts base64 or base64url) */
+/** base64url → JSON (accepts base64 or base64url, optionally URL-encoded) */
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
@@ -125,7 +124,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     : wrapped;
 
   const pageH   = page.getHeight();
-  const yTop    = pageH - y; // TL → BL
+  const yTop    = pageH - y; // TL → BL conversion baseline
   const lineH   = Math.max(1, size) + lineGap;
 
   let yCursor = yTop;
@@ -178,7 +177,17 @@ function drawTextInBox(page, font, text, box, size = 10, align = "left", opts = 
   return drawTextBox(page, font, S(text), spec, opts);
 }
 
-/* State highlight (p3). Uses absolute rects by default; tunable via URL) */
+// Convert a TL-spec rectangle {x,y,w,h} to BL for pdf-lib drawing
+const rectTLtoBL = (page, box, inset = 0) => {
+  const pageH = page.getHeight();
+  const x = N(box.x) + inset;
+  const w = Math.max(0, N(box.w) - inset * 2);
+  const h = Math.max(0, N(box.h) - inset * 2);
+  const y = pageH - N(box.y) - N(box.h) + inset; // TL → BL
+  return { x, y, w, h };
+};
+
+/* State highlight (p3). Uses absolute TL rects; returns TL label anchor */
 function paintStateHighlight(page3, dom, cfg = {}) {
   const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
   if (!b) return;
@@ -186,19 +195,16 @@ function paintStateHighlight(page3, dom, cfg = {}) {
   const radius   = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : N(cfg.highlightRadius, 28);
   const inset    = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))   ? +((cfg.styleByState||{})[dom].inset)   : N(cfg.highlightInset, 6);
   const opacity  = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
-  const blX      = N(b.x) + inset;
-  const blY      = N(b.y) + inset;
-  const ww       = N(b.w) - inset * 2;
-  const hh       = N(b.h) - inset * 2;
 
+  const boxBL = rectTLtoBL(page3, b, inset);
   const shade = rgb(251/255, 236/255, 250/255);
 
   page3.drawRectangle({
-    x: blX, y: blY, width: ww, height: hh,
+    x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h,
     borderRadius: radius, color: shade, opacity
   });
 
-  // Label
+  // Label anchor (kept in TL space so drawTextBox() can convert)
   const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
   const offX = N(cfg.labelOffsetX, 0);
   const offY = N(cfg.labelOffsetY, 0);
@@ -206,7 +212,6 @@ function paintStateHighlight(page3, dom, cfg = {}) {
   if (perState && Number.isFinite(+perState.x) && Number.isFinite(+perState.y)) {
     lx = +perState.x; ly = +perState.y;
   } else {
-    // reasonable fallback to center-top/bottom depending on quadrant
     const cx = b.x + b.w / 2;
     const py = (dom === "C" || dom === "T") ? (b.y + b.h - N(cfg.labelPadTop, 12)) : (b.y + N(cfg.labelPadBottom, 12));
     lx = cx; ly = py;
@@ -240,8 +245,8 @@ function normaliseInput(d = {}) {
   P.domChar   = norm(d.domchar || d.domChar || d.character || "");
   P.domDesc   = norm(d.domdesc || d.domDesc || d.dominantDesc || "");
 
-  P.spiderTxt = norm(d.spiderdesc || d.spiderdesc || d.spider || "");
-  P.chartUrl  = S(d.spiderfreq || d.chart || "");
+  P.spiderTxt = norm(d.spiderdesc || d.spider || "");
+  P.chartUrl  = S(d.spiderfreq || d.chart || ""); // QuickChart or similar
 
   P.seqpat    = norm(d.seqpat || d.pattern || "");
   P.theme     = norm(d.theme || "");
@@ -269,13 +274,15 @@ const LOCKED = {
     date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
   },
   footer: (() => {
-    // Same baseline for 2–9, 11–12; p10 uses different default
-    const one = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
+    // Left footer text defaults (f2..f12)
+    const f = { x: 200, y: 64, w: 400, size: 13, align: "left" };
+    // Page number defaults (n2..n12); p10 is slightly different
+    const n = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
     return {
-      n2:{...one}, n3:{...one}, n4:{...one}, n5:{...one}, n6:{...one},
-      n7:{...one}, n8:{...one}, n9:{...one},
+      f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f}, f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f},
+      n2:{...n}, n3:{...n}, n4:{...n}, n5:{...n}, n6:{...n}, n7:{...n}, n8:{...n}, n9:{...n},
       n10: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-      n11:{...one}, n12:{...one}
+      n11:{...n}, n12:{...n}
     };
   })()
 };
@@ -285,8 +292,8 @@ const DEFAULT_COORDS = {
 
   // PAGE 3 — text + state highlight
   p3: {
-    domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
-    domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
+    domChar: { x:  72, y: 182, w: 630, size: 12, align: "left"  },
+    domDesc: { x:  72, y: 214, w: 630, size: 11, align: "left"  },
     state: {
       useAbsolute: true,
       shape: "round",
@@ -397,6 +404,7 @@ function buildLayout(base) {
       L[k] = { ...(L[k] || {}), ...(base[k] || {}) };
     }
   }
+  // Footers always start from LOCKED defaults
   L.footer = { ...(LOCKED.footer), ...((base && base.footer) || {}) };
   return L;
 }
@@ -404,8 +412,8 @@ function buildLayout(base) {
 function applyUrlTuners(q, L) {
   const pick = (obj, keys) => keys.reduce((o, k) => (q[k] != null ? (o[k] = q[k], o) : o), {});
 
-  // Footers n2..n12
-  for (const pn of ["n2","n3","n4","n5","n6","n7","n8","n9","n10","n11","n12"]) {
+  // Footers f*/n*
+  for (const pn of ["f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12","n2","n3","n4","n5","n6","n7","n8","n9","n10","n11","n12"]) {
     const spec = pick(q, [`${pn}_x`, `${pn}_y`, `${pn}_w`, `${pn}_size`, `${pn}_align`]);
     if (Object.keys(spec).length) {
       L.footer[pn] = { ...(L.footer[pn]||{}),
@@ -423,6 +431,47 @@ function applyUrlTuners(q, L) {
       x:N(P[`p3_${f}_x`],L.p3[f]?.x), y:N(P[`p3_${f}_y`],L.p3[f]?.y),
       w:N(P[`p3_${f}_w`],L.p3[f]?.w), size:N(P[`p3_${f}_size`],L.p3[f]?.size),
       align:S(P[`p3_${f}_align`],L.p3[f]?.align)
+    };
+  }
+
+  // p3 state (abs boxes + label offsets + per-state label overrides)
+  for (const k of ["C","T","R","L"]) {
+    const key = `p3_state_abs_${k}`;
+    const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
+    if (Object.keys(P).length) {
+      L.p3.state.absBoxes[k] = { ...(L.p3.state.absBoxes[k]||{}),
+        x:N(P[`${key}_x`],L.p3.state.absBoxes[k]?.x),
+        y:N(P[`${key}_y`],L.p3.state.absBoxes[k]?.y),
+        w:N(P[`${key}_w`],L.p3.state.absBoxes[k]?.w),
+        h:N(P[`${key}_h`],L.p3.state.absBoxes[k]?.h)
+      };
+    }
+    const lk = `p3_state_label_${k}`;
+    const LP = pick(q, [`${lk}_x`,`${lk}_y`]);
+    if (Object.keys(LP).length) {
+      L.p3.state.labelByState[k] = { ...(L.p3.state.labelByState[k]||{}),
+        x:N(LP[`${lk}_x`],L.p3.state.labelByState[k]?.x),
+        y:N(LP[`${lk}_y`],L.p3.state.labelByState[k]?.y)
+      };
+    }
+  }
+  if (q.p3_state_labelOffsetX != null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
+  if (q.p3_state_labelOffsetY != null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
+
+  // p4 spider + chart
+  const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align"]);
+  if (Object.keys(s4).length) {
+    L.p4.spider = { ...(L.p4.spider||{}),
+      x:N(s4.p4_spider_x,L.p4.spider?.x), y:N(s4.p4_spider_y,L.p4.spider?.y),
+      w:N(s4.p4_spider_w,L.p4.spider?.w), size:N(s4.p4_spider_size,L.p4.spider?.size),
+      align:S(s4.p4_spider_align,L.p4.spider?.align)
+    };
+  }
+  const c4 = pick(q, ["p4_chart_x","p4_chart_y","p4_chart_w","p4_chart_h"]);
+  if (Object.keys(c4).length) {
+    L.p4.chart = { ...(L.p4.chart||{}),
+      x:N(c4.p4_chart_x,L.p4.chart?.x), y:N(c4.p4_chart_y,L.p4.chart?.y),
+      w:N(c4.p4_chart_w,L.p4.chart?.w), h:N(c4.p4_chart_h,L.p4.chart?.h)
     };
   }
 
@@ -473,6 +522,29 @@ function applyUrlTuners(q, L) {
   return L;
 }
 
+/* ──────────────────────── Remote image embedding ─────────────────────── */
+async function embedRemoteImage(pdfDoc, url) {
+  if (!/^https?:/i.test(url)) return null;
+  const resp = await fetch(url);
+  if (!resp.ok) return null;
+  const ab = await resp.arrayBuffer();
+  const bytes = new Uint8Array(ab);
+  try {
+    if (bytes[0] === 0x89 && String.fromCharCode(bytes[1],bytes[2],bytes[3]) === "PNG") {
+      return await pdfDoc.embedPng(bytes);
+    }
+  } catch {}
+  try {
+    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
+      return await pdfDoc.embedJpg(bytes);
+    }
+  } catch {}
+  // Fallback attempts
+  try { return await pdfDoc.embedPng(bytes); } catch {}
+  try { return await pdfDoc.embedJpg(bytes); } catch {}
+  return null;
+}
+
 /* ───────────────────────────── Template loader ───────────────────────────── */
 async function loadTemplateBytes(tplParam) {
   const raw = S(tplParam || "CTRL_Perspective_Assessment_Profile_template_slim.pdf").trim();
@@ -503,7 +575,6 @@ export default async function handler(req, res) {
 
     // Build layout (defaults + optional overrides + URL tuners)
     let L = buildLayout(rawData.layoutV6);
-    L.footer = { ...(LOCKED.footer), ...(rawData?.layoutV6?.footer || {}), ...(L.footer || {}) };
     L = applyUrlTuners(q, L);
 
     // Load template
@@ -513,6 +584,7 @@ export default async function handler(req, res) {
 
     // Page helpers (1-based in comments, 0-based indexing)
     const p  = (n) => pdfDoc.getPages()[n];
+    const pages = pdfDoc.getPages();
 
     const page1  = p(0);
     const page3  = p(2);
@@ -524,12 +596,11 @@ export default async function handler(req, res) {
     const page9  = p(8);
     const page10 = p(9);
     const page11 = p(10);
-    const page12 = p(11); // exists as footer-only
+    const page12 = p(11); // footer only
 
     /* ----------------------------- PAGE 1 ----------------------------- */
-    // (Name/Date are typically pre-rendered in the template. Only write if present.)
-    if (L.p1?.name && P.name)  drawTextBox(page1, font, norm(P.name),  L.p1.name);
-    if (L.p1?.date && P.dateLbl) drawTextBox(page1, font, norm(P.dateLbl), L.p1.date);
+    if (L.p1?.name && P.name)     drawTextBox(page1, font, norm(P.name),    L.p1.name);
+    if (L.p1?.date && P.dateLbl)  drawTextBox(page1, font, norm(P.dateLbl), L.p1.date);
 
     /* ----------------------------- PAGE 3 ----------------------------- */
     if (P.domChar) drawTextBox(page3, font, P.domChar, L.p3.domChar);
@@ -551,9 +622,14 @@ export default async function handler(req, res) {
     /* ----------------------------- PAGE 4 ----------------------------- */
     if (P.spiderTxt) drawTextBox(page4, font, P.spiderTxt, L.p4.spider);
     if (P.chartUrl) {
-      // (Leave chart embedding to your upstream if you render images externally)
-      // You can optionally draw a placeholder label.
-      drawTextBox(page4, font, "", L.p4.chart);
+      const img = await embedRemoteImage(pdfDoc, P.chartUrl);
+      if (img) {
+        const pageH = page4.getHeight();
+        const x = N(L.p4.chart.x), y = N(L.p4.chart.y), w = N(L.p4.chart.w), h = N(L.p4.chart.h);
+        page4.drawImage(img, { x, y: pageH - y - h, width: w, height: h });
+      } else {
+        // fallback: draw nothing if fetch failed
+      }
     }
 
     /* ----------------------------- PAGE 5 ----------------------------- */
@@ -569,9 +645,9 @@ export default async function handler(req, res) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k];
         const bx = L.p7.colBoxes[i];
-        // source: P.workwcol (pick .look)
-        const item = P.workwcol.find(x => S(x?.mine).toUpperCase() === "R" ? (k==="R")
-                      : S(x?.mine).toUpperCase() === k || S(x?.their).toUpperCase() === k) || P.workwcol[i] || {};
+        const item = P.workwcol.find(x =>
+          (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
+        ) || P.workwcol[i] || {};
         const txt = norm(item?.look);
         if (txt) drawTextInBox(page7, font, txt, bx, L.p7.bodySize || 10, "left", { maxLines: N(L.p7.maxLines, 9), ellipsis: true });
       }
@@ -584,8 +660,9 @@ export default async function handler(req, res) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k];
         const bx = L.p8.colBoxes[i];
-        const item = P.workwcol.find(x => S(x?.mine).toUpperCase() === "R" ? (k==="R")
-                      : S(x?.mine).toUpperCase() === k || S(x?.their).toUpperCase() === k) || P.workwcol[i] || {};
+        const item = P.workwcol.find(x =>
+          (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
+        ) || P.workwcol[i] || {};
         const txt = norm(item?.work);
         if (txt) drawTextInBox(page8, font, txt, bx, L.p8.bodySize || 10, "left", { maxLines: N(L.p8.maxLines, 9), ellipsis: true });
       }
@@ -598,8 +675,9 @@ export default async function handler(req, res) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k];
         const bx = L.p9.ldrBoxes[i];
-        const item = P.workwlead.find(x => S(x?.mine).toUpperCase() === "R" ? (k==="R")
-                      : S(x?.mine).toUpperCase() === k || S(x?.their).toUpperCase() === k) || P.workwlead[i] || {};
+        const item = P.workwlead.find(x =>
+          (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
+        ) || P.workwlead[i] || {};
         const txt = norm(item?.look);
         if (txt) drawTextInBox(page9,  font, txt, bx, L.p9.bodySize || 10, "left", { maxLines: N(L.p9.maxLines, 9), ellipsis: true });
       }
@@ -612,8 +690,9 @@ export default async function handler(req, res) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k];
         const bx = L.p10.ldrBoxes[i];
-        const item = P.workwlead.find(x => S(x?.mine).toUpperCase() === "R" ? (k==="R")
-                      : S(x?.mine).toUpperCase() === k || S(x?.their).toUpperCase() === k) || P.workwlead[i] || {};
+        const item = P.workwlead.find(x =>
+          (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
+        ) || P.workwlead[i] || {};
         const txt = norm(item?.work);
         if (txt) drawTextInBox(page10, font, txt, bx, L.p10.bodySize || 10, "left", { maxLines: N(L.p10.maxLines, 9), ellipsis: true });
       }
@@ -633,17 +712,25 @@ export default async function handler(req, res) {
     }
 
     /* ------------------------------ FOOTERS --------------------------- */
-    const pages = pdfDoc.getPages();
     const footerSpec = L.footer || LOCKED.footer;
-    const putN = (idx, key) => {
+    const footerLabel = norm([P.flow, P.name, P.dateLbl].filter(Boolean).join(" | "));
+    const put = (idx, key, text) => {
       const spec = footerSpec[key];
       if (!spec) return;
-      const pn = String(idx + 1); // human 1-based
-      drawTextBox(pages[idx], font, pn, spec, { maxLines: 1 });
+      drawTextBox(pages[idx], font, text, spec, { maxLines: 1 });
     };
-    putN(1,  "n2");   putN(2,  "n3");  putN(3,  "n4");  putN(4,  "n5");
-    putN(5,  "n6");   putN(6,  "n7");  putN(7,  "n8");  putN(8,  "n9");
-    putN(9,  "n10");  putN(10, "n11"); putN(11, "n12");
+    // 1-based page indices we draw on: 2..12 (array is 0-based)
+    put(1,  "f2",  footerLabel); put(1,  "n2",  String(2));
+    put(2,  "f3",  footerLabel); put(2,  "n3",  String(3));
+    put(3,  "f4",  footerLabel); put(3,  "n4",  String(4));
+    put(4,  "f5",  footerLabel); put(4,  "n5",  String(5));
+    put(5,  "f6",  footerLabel); put(5,  "n6",  String(6));
+    put(6,  "f7",  footerLabel); put(6,  "n7",  String(7));
+    put(7,  "f8",  footerLabel); put(7,  "n8",  String(8));
+    put(8,  "f9",  footerLabel); put(8,  "n9",  String(9));
+    put(9,  "f10", footerLabel); put(9,  "n10", String(10));
+    put(10, "f11", footerLabel); put(10, "n11", String(11));
+    put(11, "f12", footerLabel); put(11, "n12", String(12));
 
     // Save output
     const bytes = await pdfDoc.save();
