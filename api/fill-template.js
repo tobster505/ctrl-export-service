@@ -1,625 +1,817 @@
-// api/fill-template.js
-//
-// CTRL Export Service — Perspective Flow
-// - Coordinates are locked to our agreed defaults, but every position/size can be tuned via URL params.
-// - Pages 7–10 are split as requested:
-//     p7: "Look — Colleagues"
-//     p8: "Work — Colleagues"
-//     p9: "Look — Leaders"
-//    p10: "Work — Leaders"
-// - Tips & Actions moved to page 11 (p11_* params).
-// - Footer label coords (n*) extended through page 12 (n11*, n12*).
-//
-// Example (shortened):
-//   /api/fill-template?flow=Perspective&tpl=CTRL_Perspective_Assessment_Profile_template_slim.pdf
-//     &data=<base64 or json-string>
-//     &p3_domChar_x=305&...&p11_tipsHdr_x=70&...&n11x=250&n11y=64&n11w=400&n11s=12&n11align=center
-//
-// NOTE: This function is intentionally defensive: clearer error messages for template fetch / data shape,
-//       graceful text-wrapping, and bounds checks on page indexes.
-//
+// /api/fill-template.js — CTRL V3 Clean Exporter (pages 7–10 re-split + new page 11 Tips/Actions, n11/n12)
+// Runtime: Vercel Node
+// Notes:
+// - Locks in latest coordinates with safe defaults; EVERYTHING is still tunable via URL.
+// - Splits colleague/leader statements into LOOK vs WORK across p7–p10.
+// - Moves Tips & Actions to p11 (with bullet renderer + p11_* tuners).
+// - Adds WinAnsi "Option 1" sanitizer to remove/replace unsupported glyphs (e.g., emoji 👉).
+// - Adds footer page-number coords for pages 11 & 12 (n11*, n12*).
+// - "size=0" cleanly hides any text box.
 
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+export const config = { runtime: "nodejs" };
 
-// ---------- tiny utils ----------
-const num = (v, d) => (v === undefined || v === null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
-const pick = (o, k, d) => (o && o[k] !== undefined ? o[k] : d);
-const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const alignX = (x, w, textWidth, align = 'left') => {
-  if (align === 'center') return x + (w - textWidth) / 2;
-  if (align === 'right') return x + (w - textWidth);
-  return x;
+import fs from "fs/promises";
+import path from "path";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
+/* ───────────────────────────── Utilities ───────────────────────────── */
+const S = (v, fb = "") => (v == null ? String(fb) : String(v));
+const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
+
+// Robust WinAnsi-safe normaliser (Option 1)
+// - Standardises quotes/dashes/ellipsis
+// - Maps common emoji & bullets to ASCII counterparts
+// - Removes remaining non-WinAnsi (above \xFF), keeps Latin-1
+// - Trims stray control chars (except \t\n\r)
+function norm(input, fb = "") {
+  let s = S(input, fb);
+  // Common typography to ASCII
+  s = s
+    .replace(/[\u2018\u2019\u2032]/g, "'")   // curly apos, prime → '
+    .replace(/[\u201C\u201D\u2033]/g, '"')   // curly quotes, double prime → "
+    .replace(/[\u2013\u2014\u2212]/g, "-")  // en/em/minus → -
+    .replace(/[\u2026]/g, "...")             // ellipsis → ...
+    .replace(/[\u00A0]/g, " ")               // nbsp → space
+    // Bullets/arrows/checks (map before stripping)
+    .replace(/[\u2022\u2043\u2219]/g, "•")  // unify bullets
+    .replace(/[\u279C\u27A1\u2192\u21AA\u21A9]/g, "->")
+    .replace(/[\u2705\u2713\u2714]/g, "[check]")
+    .replace(/[\u274C\u2716]/g, "[x]")
+    .replace(/[\u26A0\u2757]/g, "[!]")
+    // Common hand pointers (incl. U+1F449 etc.) → "->"
+    .replace(/[\u{1F449}\u{1F448}\u{1F44D}\u{1F44E}]/gu, "->");
+
+  // Drop all codepoints above Latin-1 (WinAnsi superset), but keep tab/newline/CR
+  s = s.replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "");
+
+  // Guard against PDF control hazards
+  return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").trim();
+}
+
+const todayLbl = () => {
+  const now = new Date();
+  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][now.getMonth()];
+  return `${String(now.getDate()).padStart(2,"0")}/${MMM}/${now.getFullYear()}`;
 };
+const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
-// Decode ?data= (base64 or plain JSON)
-function decodeDataParam(raw) {
-  if (!raw) return {};
+/* base64url → JSON (accepts base64 or base64url) */
+function parseDataParam(b64ish) {
+  if (!b64ish) return {};
+  let s = String(b64ish);
+  try { s = decodeURIComponent(s); } catch {}
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
   try {
-    // base64?
-    const txt = Buffer.from(decodeURIComponent(raw), 'base64').toString('utf8');
-    return JSON.parse(txt);
-  } catch {
-    // plain JSON string?
-    try {
-      return JSON.parse(decodeURIComponent(raw));
-    } catch {
-      return {};
+    const raw = Buffer.from(s, "base64").toString("utf8");
+    return JSON.parse(raw);
+  } catch { return {}; }
+}
+
+/* ─────────────────────────── Drawing helpers ───────────────────────── */
+function drawTextBox(page, font, text, spec = {}, opts = {}) {
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0, 0, 0), align = "left",
+  } = spec;
+
+  const maxLines = opts.maxLines ?? 6;
+  const ellipsis = !!opts.ellipsis;
+
+  if (!page || !font || w <= 0 || size <= 0) {
+    const pageH = page?.getHeight?.() ?? 0;
+    return { height: 0, linesDrawn: 0, lastY: pageH - y };
+  }
+
+  const clean = norm(text);
+  if (!clean) {
+    const pageH = page.getHeight();
+    return { height: 0, linesDrawn: 0, lastY: pageH - y };
+  }
+
+  const lines = clean.split("\n");
+  const avgCharW = size * 0.55;
+  const maxChars = Math.max(8, Math.floor(w / avgCharW));
+  const wrapped = [];
+
+  for (const raw of lines) {
+    let t = raw;
+    while (t.length > maxChars) {
+      let cut = t.lastIndexOf(" ", maxChars);
+      if (cut <= 0) cut = maxChars;
+      wrapped.push(t.slice(0, cut));
+      t = t.slice(cut).trim();
     }
+    wrapped.push(t);
+    if (raw.trim() === "") wrapped.push("");
   }
+
+  const out = wrapped.length > maxLines
+    ? wrapped.slice(0, maxLines).map((s, i, a) => (i === a.length - 1 && ellipsis ? s.replace(/\.*$/, "…") : s))
+    : wrapped;
+
+  const pageH   = page.getHeight();
+  const yTop    = pageH - y; // TL → BL baseline
+  const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+  const lineH   = Math.max(1, size) + (lineGap ?? 3);
+
+  let yCursor = yTop;
+  let drawn = 0;
+
+  for (let i = 0; i < out.length; i++) {
+    const ln = out[i] ?? "";
+    if (!ln && i !== out.length - 1) { yCursor -= lineH; drawn++; continue; }
+    let xDraw = x;
+    const wLn = widthOf(ln);
+    if (align === "center") xDraw = x + (w - wLn) / 2;
+    else if (align === "right") xDraw = x + (w - wLn);
+    page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1, size), font, color });
+    yCursor -= lineH;
+    drawn++;
+  }
+  return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
-function getHostBaseUrl(req) {
-  // Try to build an absolute base URL for fetching public assets on Vercel
-  const proto =
-    (req.headers['x-forwarded-proto'] && String(req.headers['x-forwarded-proto'])) ||
-    'https';
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  if (!host) return null;
-  return `${proto}://${host}`;
-}
+function drawBulleted(page, font, items, spec = {}, opts = {}) {
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0, 0, 0), align = "left",
+    indent = 18, gap = 2, bulletRadius = 1.8,
+  } = spec;
 
-// ---------- coordinates (defaults) ----------
-// All tunable via URL, but these are the locked defaults we agreed on.
-function coordDefaults(query) {
-  // p3
-  const p3_domChar = {
-    x: num(query.p3_domChar_x, 305),
-    y: num(query.p3_domChar_y, 640),
-    w: num(query.p3_domChar_w, 630),
-    size: num(query.p3_domChar_size, 25),
-  };
-  const p3_domDesc = {
-    x: num(query.p3_domDesc_x, 25),
-    y: num(query.p3_domDesc_y, 685),
-    w: num(query.p3_domDesc_w, 630),
-    size: num(query.p3_domDesc_size, 18),
-  };
+  if (!Array.isArray(items) || !items.length || w <= 0 || size <= 0) return { height: 0 };
 
-  // p4
-  const p4_spider = {
-    x: num(query.p4_spider_x, 30),
-    y: num(query.p4_spider_y, 585),
-    w: num(query.p4_spider_w, 670),
-    size: num(query.p4_spider_size, 18),
-  };
-  const p4_chart = {
-    x: num(query.p4_chart_x, 20),
-    y: num(query.p4_chart_y, 225),
-    w: num(query.p4_chart_w, 570),
-    h: num(query.p4_chart_h, 280),
-  };
+  const pageH = page.getHeight();
+  let curY = y;
+  const blockGap = N(opts.blockGap, 6);
+  const strip = (s) => norm(s || "").replace(/^[\s•\-\u2022]*\b(Tips?|Actions?)\s*:\s*/i, "").trim();
 
-  // p5
-  const p5_seqpat = {
-    x: num(query.p5_seqpat_x, 25),
-    y: num(query.p5_seqpat_y, 260),
-    w: num(query.p5_seqpat_w, 650),
-    size: num(query.p5_seqpat_size, 18),
-  };
-
-  // p6
-  const p6_theme = {
-    x: num(query.p6_theme_x, 25),
-    y: num(query.p6_theme_y, 335),
-    w: num(query.p6_theme_w, 630),
-    size: num(query.p6_theme_size, 18),
-  };
-
-  // p7 — LOOK — COLLEAGUES
-  const p7_hCol = {
-    x: num(query.p7_hCol_x, 30),
-    y: num(query.p7_hCol_y, 135),
-    w: num(query.p7_hCol_w, 640),
-    size: num(query.p7_hCol_size, 0), // 0 => do not render header by default
-    align: String(query.p7_hCol_align || 'left'),
-  };
-  const p7_col = {
-    C: { x: num(query.p7_colC_x, 25),  y: num(query.p7_colC_y, 265), w: num(query.p7_colC_w, 300), h: num(query.p7_colC_h, 210), size: num(query.p7_colC_size, 10), max: num(query.p7_colC_max, 25) },
-    T: { x: num(query.p7_colT_x, 320), y: num(query.p7_colT_y, 265), w: num(query.p7_colT_w, 300), h: num(query.p7_colT_h, 210), size: num(query.p7_colT_size, 10), max: num(query.p7_colT_max, 25) },
-    R: { x: num(query.p7_colR_x, 25),  y: num(query.p7_colR_y, 525), w: num(query.p7_colR_w, 300), h: num(query.p7_colR_h, 210), size: num(query.p7_colR_size, 10), max: num(query.p7_colR_max, 25) },
-    L: { x: num(query.p7_colL_x, 320), y: num(query.p7_colL_y, 525), w: num(query.p7_colL_w, 300), h: num(query.p7_colL_h, 210), size: num(query.p7_colL_size, 10), max: num(query.p7_colL_max, 25) },
-  };
-
-  // p8 — WORK — COLLEAGUES
-  // Support either p8_col* (preferred) OR p8_ldr* override names if someone still uses the old ones.
-  const p8_hCol = {
-    x: num(query.p8_hCol_x ?? query.p8_hLdr_x, 30),
-    y: num(query.p8_hCol_y ?? query.p8_hLdr_y, 115),
-    w: num(query.p8_hCol_w ?? query.p8_hLdr_w, 640),
-    size: num(query.p8_hCol_size ?? query.p8_hLdr_size, 0),
-    align: String(query.p8_hCol_align || query.p8_hLdr_align || 'left'),
-  };
-  const p8_col = {
-    C: { x: num(query.p8_colC_x ?? query.p8_ldrC_x, 25),  y: num(query.p8_colC_y ?? query.p8_ldrC_y, 265), w: num(query.p8_colC_w ?? query.p8_ldrC_w, 300), h: num(query.p8_colC_h ?? query.p8_ldrC_h, 210), size: num(query.p8_colC_size ?? query.p8_ldrC_size, 10), max: num(query.p8_colC_max ?? query.p8_ldrC_max, 25) },
-    T: { x: num(query.p8_colT_x ?? query.p8_ldrT_x, 320), y: num(query.p8_colT_y ?? query.p8_ldrT_y, 265), w: num(query.p8_colT_w ?? query.p8_ldrT_w, 300), h: num(query.p8_colT_h ?? query.p8_ldrT_h, 210), size: num(query.p8_colT_size ?? query.p8_ldrT_size, 10), max: num(query.p8_colT_max ?? query.p8_ldrT_max, 25) },
-    R: { x: num(query.p8_colR_x ?? query.p8_ldrR_x, 25),  y: num(query.p8_colR_y ?? query.p8_ldrR_y, 525), w: num(query.p8_colR_w ?? query.p8_ldrR_w, 300), h: num(query.p8_colR_h ?? query.p8_ldrR_h, 210), size: num(query.p8_colR_size ?? query.p8_ldrR_size, 10), max: num(query.p8_colR_max ?? query.p8_ldrR_max, 25) },
-    L: { x: num(query.p8_colL_x ?? query.p8_ldrL_x, 320), y: num(query.p8_colL_y ?? query.p8_ldrL_y, 525), w: num(query.p8_colL_w ?? query.p8_ldrL_w, 300), h: num(query.p8_colL_h ?? query.p8_ldrL_h, 210), size: num(query.p8_colL_size ?? query.p8_ldrL_size, 10), max: num(query.p8_colL_max ?? query.p8_ldrL_max, 25) },
-  };
-
-  // p9 — LOOK — LEADERS
-  const p9_hLdr = {
-    x: num(query.p9_hLdr_x, 30),
-    y: num(query.p9_hLdr_y, 115),
-    w: num(query.p9_hLdr_w, 640),
-    size: num(query.p9_hLdr_size, 0),
-    align: String(query.p9_hLdr_align || 'left'),
-  };
-  const p9_ldr = {
-    C: { x: num(query.p9_ldrC_x, 25),  y: num(query.p9_ldrC_y, 265), w: num(query.p9_ldrC_w, 300), h: num(query.p9_ldrC_h, 95), size: num(query.p9_ldrC_size, 16), max: num(query.p9_ldrC_max, 18) },
-    T: { x: num(query.p9_ldrT_x, 320), y: num(query.p9_ldrT_y, 265), w: num(query.p9_ldrT_w, 300), h: num(query.p9_ldrT_h, 95), size: num(query.p9_ldrT_size, 16), max: num(query.p9_ldrT_max, 18) },
-    R: { x: num(query.p9_ldrR_x, 25),  y: num(query.p9_ldrR_y, 525), w: num(query.p9_ldrR_w, 300), h: num(query.p9_ldrR_h, 95), size: num(query.p9_ldrR_size, 16), max: num(query.p9_ldrR_max, 18) },
-    L: { x: num(query.p9_ldrL_x, 320), y: num(query.p9_ldrL_y, 525), w: num(query.p9_ldrL_w, 300), h: num(query.p9_ldrL_h, 95), size: num(query.p9_ldrL_size, 16), max: num(query.p9_ldrL_max, 18) },
-  };
-
-  // p10 — WORK — LEADERS
-  const p10_hLdr = {
-    x: num(query.p10_hLdr_x, 30),
-    y: num(query.p10_hLdr_y, 115),
-    w: num(query.p10_hLdr_w, 640),
-    size: num(query.p10_hLdr_size, 0),
-    align: String(query.p10_hLdr_align || 'left'),
-  };
-  const p10_ldr = {
-    C: { x: num(query.p10_ldrC_x, 25),  y: num(query.p10_ldrC_y, 265), w: num(query.p10_ldrC_w, 300), h: num(query.p10_ldrC_h, 210), size: num(query.p10_ldrC_size, 10), max: num(query.p10_ldrC_max, 25) },
-    T: { x: num(query.p10_ldrT_x, 320), y: num(query.p10_ldrT_y, 265), w: num(query.p10_ldrT_w, 300), h: num(query.p10_ldrT_h, 210), size: num(query.p10_ldrT_size, 10), max: num(query.p10_ldrT_max, 25) },
-    R: { x: num(query.p10_ldrR_x, 25),  y: num(query.p10_ldrR_y, 525), w: num(query.p10_ldrR_w, 300), h: num(query.p10_ldrR_h, 210), size: num(query.p10_ldrR_size, 10), max: num(query.p10_ldrR_max, 25) },
-    L: { x: num(query.p10_ldrL_x, 320), y: num(query.p10_ldrL_y, 525), w: num(query.p10_ldrL_w, 300), h: num(query.p10_ldrL_h, 210), size: num(query.p10_ldrL_size, 10), max: num(query.p10_ldrL_max, 25) },
-  };
-
-  // p11 — Tips & Actions (moved here)
-  const p11_tipsHdr = {
-    x: num(query.p11_tipsHdr_x, 70),
-    y: num(query.p11_tipsHdr_y, 122),
-    w: num(query.p11_tipsHdr_w, 320),
-    size: num(query.p11_tipsHdr_size, 12),
-  };
-  const p11_actsHdr = {
-    x: num(query.p11_actsHdr_x, 400),
-    y: num(query.p11_actsHdr_y, 122),
-    w: num(query.p11_actsHdr_w, 320),
-    size: num(query.p11_actsHdr_size, 12),
-  };
-  const p11_tipsBox = {
-    x: num(query.p11_tipsBox_x, 70),
-    y: num(query.p11_tipsBox_y, 155),
-    w: num(query.p11_tipsBox_w, 315),
-    size: num(query.p11_tipsBox_size, 11),
-  };
-  const p11_actsBox = {
-    x: num(query.p11_actsBox_x, 400),
-    y: num(query.p11_actsBox_y, 155),
-    w: num(query.p11_actsBox_w, 315),
-    size: num(query.p11_actsBox_size, 11),
-  };
-
-  // Footer labels (n2..n12)
-  const n = {};
-  for (let i = 2; i <= 12; i++) {
-    n[i] = {
-      x: num(query[`n${i}x`], 250),
-      y: num(query[`n${i}y`], 64),
-      w: num(query[`n${i}w`], 400),
-      s: num(query[`n${i}s`], 12),
-      align: String(query[`n${i}align`] || 'center'),
-    };
-  }
-
-  return {
-    p3_domChar, p3_domDesc,
-    p4_spider, p4_chart,
-    p5_seqpat, p6_theme,
-    p7_hCol, p7_col,
-    p8_hCol, p8_col,
-    p9_hLdr, p9_ldr,
-    p10_hLdr, p10_ldr,
-    p11_tipsHdr, p11_actsHdr, p11_tipsBox, p11_actsBox,
-    n,
-  };
-}
-
-// ---------- text + bullets ----------
-async function drawWrapped(page, font, text, { x, y, w, size, lineGap = 4, align = 'left', maxLines, color = rgb(0,0,0) }) {
-  if (!text) return y;
-  const words = String(text).split(/\s+/g);
-  let line = '';
-  let lines = [];
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    const width = font.widthOfTextAtSize(test, size);
-    if (width > w && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = test;
-    }
-  }
-  if (line) lines.push(line);
-
-  if (maxLines && lines.length > maxLines) {
-    lines = lines.slice(0, maxLines);
-    // Add ellipsis to the last line if truncated.
-    const last = lines[lines.length - 1];
-    const ell = '…';
-    let lastWidth = font.widthOfTextAtSize(last + ell, size);
-    while (lastWidth > w && last.length > 1) {
-      lines[lines.length - 1] = last.slice(0, -1);
-      lastWidth = font.widthOfTextAtSize(lines[lines.length - 1] + ell, size);
-    }
-    lines[lines.length - 1] += ell;
-  }
-
-  let cursorY = y;
-  for (const ln of lines) {
-    const txtWidth = font.widthOfTextAtSize(ln, size);
-    const drawX = alignX(x, w, txtWidth, align);
-    page.drawText(ln, { x: drawX, y: cursorY, size, font, color });
-    cursorY -= size + lineGap;
-  }
-  return cursorY;
-}
-
-async function drawBulletList(page, font, list, { x, y, w, size, lineGap = 4, bulletGap = 8, maxItems = 12 }) {
-  if (!Array.isArray(list) || !list.length) return y;
-  const bullet = '•';
-  const indent = font.widthOfTextAtSize(bullet + '  ', size) + bulletGap;
-  let cy = y;
-  let count = 0;
-
-  for (const raw of list) {
-    if (count >= maxItems) break;
-    const text = String(raw || '').trim();
+  for (const raw of items) {
+    const text = strip(raw);
     if (!text) continue;
 
-    // First line with bullet
-    const firstLineWidth = w - indent;
-    cy = drawWrappedWithPrefix(page, font, text, {
-      x, y: cy, w,
-      size, lineGap,
-      prefix: bullet,
-      prefixWidth: font.widthOfTextAtSize(bullet + ' ', size),
-      firstLineExtraIndent: indent,
-    });
-    count++;
+    const line = drawTextBox(
+      page, font, text,
+      { x: x + indent + gap, y: curY, w: w - indent - gap, size, lineGap, color, align },
+      { maxLines: opts.maxLines ?? 26, ellipsis: false }
+    );
+
+    // Bullet anchored to first line baseline
+    const baseline = (pageH - curY) - size * 0.2; // small optical tweak
+    if (page.drawCircle) {
+      page.drawCircle({ x: x + bulletRadius, y: baseline, size: bulletRadius, color });
+    } else {
+      page.drawRectangle({ x, y: baseline - bulletRadius, width: bulletRadius * 2, height: bulletRadius * 2, color });
+    }
+
+    curY += (line.height || (size + lineGap)) + blockGap;
   }
-  return cy;
+  return { height: curY - y };
 }
 
-function drawWrappedWithPrefix(page, font, text, { x, y, w, size, lineGap = 4, prefix = '•', prefixWidth = 0, firstLineExtraIndent = 0 }) {
-  const words = text.split(/\s+/g);
-  let line = '';
-  let lines = [];
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    const width = font.widthOfTextAtSize(test, size);
-    const avail = lines.length === 0 ? (w - firstLineExtraIndent) : (w - prefixWidth);
-    if (width > avail && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = test;
+/* ───────────── Superellipse helpers for Page 3 highlight ───────────── */
+function superellipseHalfWidth(a, b, yRel, n) {
+  const t = Math.min(1, Math.max(0, Math.pow(Math.abs(yRel) / b, n)));
+  const x = a * Math.pow(1 - t, 1 / n);
+  return x;
+}
+function fillSuperellipseStrips(page, xBL, yBL, w, h, n = 4, step = 2, color = rgb(1,0,0), opacity = 0.45) {
+  const a = w / 2, b = h / 2;
+  const cx = xBL + a, cy = yBL + b;
+  const dy = Math.max(1, Math.min(step, 6));
+  for (let yy = -b; yy <= b; yy += dy) {
+    const half = superellipseHalfWidth(a, b, yy, n);
+    const x0 = cx - half;
+    const y0 = cy + yy;
+    const ww = half * 2;
+    const hh = Math.min(dy, (b - yy));
+    if (ww > 0 && hh > 0) {
+      page.drawRectangle({ x: x0, y: y0, width: ww, height: hh, color, opacity });
     }
   }
-  if (line) lines.push(line);
+}
+function makeSuperellipsePath(xBL, yBL, w, h, n = 4, steps = 96) {
+  const a = w / 2, b = h / 2;
+  const cx = xBL + a, cy = yBL + b;
+  const pow = (v, p) => Math.pow(Math.abs(v), 2 / p) * Math.sign(v);
+  const pts = [];
+  for (let i = 0; i < steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const ct = Math.cos(t), st = Math.sin(t);
+    const px = cx + a * pow(ct, n);
+    const py = cy + b * pow(st, n);
+    pts.push([px, py]);
+  }
+  let d = `M ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
+  for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0].toFixed(2)} ${pts[i][1].toFixed(2)}`;
+  d += " Z";
+  return d;
+}
 
-  let cy = y;
+/* ─────────────── Page 3 highlight (round or squircle) ─────────────── */
+async function paintStateHighlight(pdf, page3, dominantKey, L) {
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const cfg  = L.p3.state || {};
 
-  lines.forEach((ln, idx) => {
-    const isFirst = idx === 0;
-    if (isFirst) {
-      // bullet
-      page.drawText(prefix, { x, y: cy, size, font });
-      page.drawText(ln, { x: x + firstLineExtraIndent, y: cy, size, font });
+  const upper = String(dominantKey || "").toUpperCase();
+  const dom = ["C","T","R","L"].includes(upper) ? upper : "R";
+
+  const styleByState = cfg.styleByState || {};
+  const dStyle = styleByState[dom] || {};
+
+  const useAbs = !!cfg.useAbsolute;
+  const inset  = Number.isFinite(+dStyle.inset)  ? +dStyle.inset  : N(cfg.highlightInset, 6);
+  const radius = Number.isFinite(+dStyle.radius) ? +dStyle.radius : N(cfg.highlightRadius, 28);
+
+  const labelText  = S(cfg.labelText || "YOU ARE HERE");
+  const labelSize  = N(cfg.labelSize, 10);
+  const labelColor = cfg.labelColor || rgb(0.20, 0.20, 0.20);
+  const shade      = cfg.fillColor || rgb(251/255, 236/255, 250/255); // #FBECFA
+  const opacity    = N(cfg.fillOpacity, 0.45);
+
+  const BOXES = useAbs ? (cfg.absBoxes || {}) : computeBoxesFromGrid(cfg.grid || defaultP3Grid());
+  const b = BOXES[dom];
+  if (!b) return;
+
+  // TL → BL for pdf-lib
+  const tlX = b.x + inset;
+  const tlY = b.y + inset;
+  const ww  = Math.max(0, b.w - inset * 2);
+  const hh  = Math.max(0, b.h - inset * 2);
+  const pageH = page3.getHeight();
+  const blX = tlX;
+  const blY = pageH - (tlY + hh);
+
+  const shape = (cfg.shape || cfg.state_shape || "round").toLowerCase();
+
+  if (shape === "squircle") {
+    if (typeof page3.drawSvgPath === "function") {
+      const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
+      const steps = Number.isFinite(+cfg.steps) ? +cfg.steps : 96;
+      const dPath = makeSuperellipsePath(blX, blY, ww, hh, Nexp, steps);
+      page3.drawSvgPath(dPath, { color: shade, opacity });
     } else {
-      // hanging indent
-      page.drawText('', { x, y: cy, size, font }); // noop for clarity
-      page.drawText(ln, { x: x + prefixWidth, y: cy, size, font });
+      const Nexp  = Number.isFinite(+cfg.n)     ? +cfg.n     : 4;
+      const step  = Number.isFinite(+cfg.steps) ? Math.max(1, Math.round(+cfg.steps / 16)) : 2;
+      fillSuperellipseStrips(page3, blX, blY, ww, hh, Nexp, step, shade, opacity);
     }
-    cy -= size + lineGap;
+  } else {
+    page3.drawRectangle({ x: blX, y: blY, width: ww, height: hh, color: shade, opacity, borderRadius: radius });
+  }
+
+  // Label anchoring
+  const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
+  const isCT = (dom === "C" || dom === "T");
+  const groupAnchor = isCT ? (cfg.labelCT || null) : (cfg.labelRL || null);
+  const offX = N(cfg.labelOffsetX, 0);
+  const offY = N(cfg.labelOffsetY, 0);
+
+  let lx, ly;
+  if (perState && Number.isFinite(+perState.x) && Number.isFinite(+perState.y)) {
+    lx = +perState.x; ly = +perState.y;
+  } else if (groupAnchor && Number.isFinite(+groupAnchor.x) && Number.isFinite(+groupAnchor.y)) {
+    lx = +groupAnchor.x; ly = +groupAnchor.y;
+  } else {
+    const cx = b.x + b.w / 2;
+    const py = isCT ? (b.y + b.h - N(cfg.labelPadTop, 12)) : (b.y + N(cfg.labelPadBottom, 12));
+    lx = cx; ly = py;
+  }
+
+  const textW = bold.widthOfTextAtSize(labelText, labelSize);
+  page3.drawText(labelText, {
+    x: lx - textW / 2 + offX,
+    y: (pageH - ly) - labelSize + offY,
+    size: labelSize,
+    font: bold,
+    color: labelColor
   });
-
-  return cy;
 }
 
-// ---------- data massaging ----------
-function normalizeData(d) {
-  const out = { ...(d || {}) };
+function defaultP3Grid() {
+  return { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 };
+}
+function computeBoxesFromGrid(g) {
+  const { marginX, marginY, gap, boxW, boxH } = { ...defaultP3Grid(), ...(g || {}) };
+  return {
+    T: { x: marginX,              y: marginY,              w: boxW, h: boxH },
+    C: { x: marginX + boxW + gap, y: marginY,              w: boxW, h: boxH },
+    R: { x: marginX,              y: marginY - boxH - gap, w: boxW, h: boxH },
+    L: { x: marginX + boxW + gap, y: marginY - boxH - gap, w: boxW, h: boxH }
+  };
+}
 
-  // Person fields
-  out.f = out.f || 'Perspective';
-  out.n = out.n || (out.person?.fullName || out.person?.preferredName || '');
-  out.d = out.d || out.dateLbl || '';
-  out.dom = out.dom || out.dom6Label || out.domchar || '';
-  out.domchar = out.domchar || out.dom6Label || out.dom || '';
-  out.domdesc = out.domdesc || out.dom6Desc || out.domDesc || out.dominationDesc || '';
-  out.dom6Key = out.dom6Key || out.domKey || 'R';
+/* ────────────────────── domKey resolution (bulletproof) ───────────────────── */
+function resolveDomKey(d) {
+  const mapLabel = { concealed: "C", triggered: "T", regulated: "R", lead: "L" };
+  const mapChar  = { art: "C", fal: "T", mika: "R", sam: "L" };
 
-  // Spider/Chart URLs (optional text placement titles)
-  out.spiderdesc = out.spiderdesc || out.spiderDesc || '';
-  out.seqpat = out.seqpatt || out.seqpAt || out.seqp || out.seqpDesc || out.seqp || out.seqp || '';
-  out.theme = out.theme || out.themeDesc || '';
+  const cand = [
+    d.domkey, d.domKey, d.dom6Key, d.dom6key,
+    d.dom, d.dom6Label, d.domlabel, d.domLabel,
+    d.domchar, d.character
+  ].map(x => String(x || "").trim());
 
-  // Work-with maps
-  out.workwcol = out.workwcol || out.workWith?.colleagues || [];
-  out.workwlead = out.workwlead || out.workWith?.leaders || [];
+  for (const c of cand) {
+    if (!c) continue;
+    const u = c.toUpperCase();
+    if (["C","T","R","L"].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
+  }
+  return "";
+}
 
-  // Tips/Actions
-  out.tips = out.tips || out.tips2 || [];
-  out.actions = out.actions || out.actions2 || [];
+/* ─────────────────────────── Input normalisation ─────────────────────────── */
+function normaliseInput(data) {
+  const d = { ...(data || {}) };
+  d.f = d.f || d.flow || "Perspective";
+  d.n = d.n || (d.person && (d.person.preferredName || d.person.fullName)) || "";
+  d.d = d.d || d.dateLbl || todayLbl();
 
+  d.dom     = d.dom     || d.dom6Label || "";
+  d.domchar = d.domchar || d.character || "";
+  d.domdesc = d.domdesc || d.dominantDesc || "";
+
+  d.spiderfreq = d.spiderfreq || d.chartUrl || "";
+  d.spiderdesc = d.spiderdesc || d.how6 || "";
+
+  const resKey = resolveDomKey(d);
+  d.domkey = resKey || d.domkey || d.dom6Key || d.domKey || "";
+
+  if (!d.seqpat || !d.theme) {
+    const b = Array.isArray(d.page7Blocks) ? d.page7Blocks : [];
+    d.seqpat = d.seqpat || (b[0] && b[0].body) || "";
+    d.theme  = d.theme  || (b[1] && b[1].body) || "";
+  }
+
+  // People pages: arrays of { their: 'C'|'T'|'R'|'L', look: string, work: string }
+  d.workwcol  = Array.isArray(d.workwcol)  ? d.workwcol  : (d.workWith && d.workWith.colleagues) || [];
+  d.workwlead = Array.isArray(d.workwlead) ? d.workwlead : (d.workWith && d.workWith.leaders)    || [];
+
+  d.tips    = ensureArray(d.tips && d.tips.length ? d.tips : (d.tips2 || []));
+  d.actions = ensureArray(d.actions && d.actions.length ? d.actions : (d.actions2 || []));
+
+  return d;
+}
+
+/* ───────────────────────── Layout defaults + locks ───────────────────────── */
+function deepMerge(base, patch) {
+  if (!patch || typeof patch !== "object") return base;
+  const out = Array.isArray(base) ? base.slice() : { ...(base || {}) };
+  for (const k of Object.keys(patch)) {
+    const pv = patch[k], bv = out[k];
+    if (pv && typeof pv === "object" && !Array.isArray(pv)) out[k] = deepMerge(bv || {}, pv);
+    else out[k] = pv;
+  }
   return out;
 }
 
-// Select statements for a given "mine" key => maps {C,T,R,L} from array of {mine,their,look,work}
-function mapByTheir(arr, mineKey, which = 'look') {
-  const map = { C: '', T: '', R: '', L: '' };
-  if (!Array.isArray(arr)) return map;
-  for (const it of arr) {
-    if (String(it.mine || '').toUpperCase() !== String(mineKey || '').toUpperCase()) continue;
-    const key = String(it.their || '').toUpperCase();
-    if (has(map, key)) map[key] = String(it[which] || '');
-  }
-  return map;
-}
+// LOCKED page-1 + footer coords (n2..n12 supported). You can still tune via URL.
+const LOCKED = {
+  p1: {
+    name: { x: 7,   y: 473,  w: 500, size: 30, align: "center" },
+    date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
+  },
+  footer: (() => {
+    const one = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
+    return {
+      n2:{...one}, n3:{...one}, n4:{...one}, n5:{...one}, n6:{...one},
+      n7:{...one}, n8:{...one}, n9:{...one}, n10:{ x: 250, y: 64, w: 400, size: 12, align: "center" },
+      n11:{...one}, n12:{...one}
+    };
+  })()
+};
 
-// Draw 4-quadrant blocks (C,T,R,L)
-async function drawQuads(page, font, contentMap, rects) {
-  const order = ['C', 'T', 'R', 'L'];
-  for (const k of order) {
-    const box = rects[k];
-    const txt = contentMap[k] || '';
-    await drawWrapped(page, font, txt, {
-      x: box.x, y: box.y, w: box.w,
-      size: box.size, lineGap: 4, maxLines: box.max,
-      align: 'left',
-    });
-  }
-}
+function buildLayout(layoutV6) {
+  const L = {
+    meta: { units: "pt", origin: "TL", pages: "1-based" },
 
-// ---------- template fetch ----------
-async function fetchTemplateBuffer(req, tplParam) {
-  if (!tplParam) throw new Error('Missing ?tpl= (template filename or URL)');
-  const tpl = decodeURIComponent(String(tplParam));
+    // PAGE 1 (locked)
+    p1: { name: LOCKED.p1.name, date: LOCKED.p1.date },
 
-  // If user passed an absolute URL, fetch that.
-  if (/^https?:\/\//i.test(tpl)) {
-    const r = await fetch(tpl);
-    if (!r.ok) throw new Error(`Failed to fetch template via absolute URL: ${tpl}`);
-    return Buffer.from(await r.arrayBuffer());
-  }
+    // FOOTERS 2–12 (locked defaults; tunable via URL)
+    footer: LOCKED.footer,
 
-  // Try to fetch from this deployment's /public (Vercel) as /<tpl> or /templates/<tpl>
-  const base = getHostBaseUrl(req);
-  const candidates = [];
-  if (base) {
-    candidates.push(`${base}/${tpl}`);
-    candidates.push(`${base}/templates/${tpl}`);
-    candidates.push(`${base}/public/${tpl}`);
-  }
+    // PAGE 3 — text + state highlight (hard-locked defaults, tunable via URL)
+    p3: {
+      domChar: { x:  60, y: 170, w: 650, size: 11, align: "left"  },
+      domDesc: { x:  60, y: 200, w: 650, size: 11, align: "left"  },
 
-  // Final fallback: known canonical host (customize if you use a different domain)
-  candidates.push(`https://ctrl-export-service.vercel.app/templates/${tpl}`);
-  candidates.push(`https://ctrl-export-service.vercel.app/${tpl}`);
+      state: {
+        useAbsolute: true,
+        shape: "round",
+        highlightRadius: 28,
+        highlightInset: 6,
+        fillOpacity: 0.45,
+        fillColor: rgb(251/255, 236/255, 250/255),
+        styleByState: {
+          C: { radius: 28,   inset: 6  },
+          T: { radius: 28,   inset: 6  },
+          R: { radius: 1000, inset: 1  }, // big rounded pill
+          L: { radius: 28,   inset: 6  }
+        },
+        labelByState: {
+          C: { x: 150, y: 245 },
+          T: { x: 390, y: 244 },
+          R: { x: 150, y: 612 },
+          L: { x: 390, y: 605 }
+        },
+        labelCT: { x: 180, y: 655 },
+        labelRL: { x: 180, y: 365 },
+        labelText: "YOU ARE HERE",
+        labelSize: 10,
+        labelColor: rgb(0.20, 0.20, 0.20),
+        labelOffsetX: 0,
+        labelOffsetY: 0,
+        labelPadTop: 12,
+        labelPadBottom: 12,
+        absBoxes: {
+          R: { x:  60, y: 433, w: 188, h: 158 },
+          C: { x:  58, y: 258, w: 188, h: 156 },
+          T: { x: 299, y: 258, w: 188, h: 156 },
+          L: { x: 298, y: 440, w: 188, h: 156 }
+        },
+        grid: { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 },
+        n: 4, steps: 128
+      }
+    },
 
-  let lastErr;
-  for (const url of candidates) {
+    // PAGE 4 — chart page
+    p4: {
+      spider: { x:  60, y: 320, w: 280, size: 11, align: "left" },
+      chart:  { x: 360, y: 320, w: 260, h: 260 }
+    },
+
+    // PAGE 5 — sequence pattern
+    p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left" } },
+
+    // PAGE 6 — theme
+    p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
+
+    // PAGE 7 — LOOK – colleagues (4 boxes)
+    p7: {
+      header: { x: 60, y: 110, w: 650, size: 0, align: "left" }, // hidden by default
+      colBoxes: [
+        { x:  60, y: 140, w: 300, h: 120 },  // C
+        { x: 410, y: 140, w: 300, h: 120 },  // T
+        { x:  60, y: 270, w: 300, h: 120 },  // R
+        { x: 410, y: 270, w: 300, h: 120 }   // L
+      ],
+      bodySize: 10,
+      maxLines: 9
+    },
+
+    // PAGE 8 — WORK – colleagues
+    p8: {
+      header: { x: 60, y: 110, w: 650, size: 0, align: "left" },
+      colBoxes: [
+        { x:  60, y: 140, w: 300, h: 120 },  // C
+        { x: 410, y: 140, w: 300, h: 120 },  // T
+        { x:  60, y: 270, w: 300, h: 120 },  // R
+        { x: 410, y: 270, w: 300, h: 120 }   // L
+      ],
+      bodySize: 10,
+      maxLines: 9
+    },
+
+    // PAGE 9 — LOOK – leaders
+    p9: {
+      header: { x: 60, y: 110, w: 650, size: 0, align: "left" },
+      ldrBoxes: [
+        { x:  60, y: 140, w: 300, h: 120 },  // C
+        { x: 410, y: 140, w: 300, h: 120 },  // T
+        { x:  60, y: 270, w: 300, h: 120 },  // R
+        { x: 410, y: 270, w: 300, h: 120 }   // L
+      ],
+      bodySize: 10,
+      maxLines: 9
+    },
+
+    // PAGE 10 — WORK – leaders
+    p10: {
+      header: { x: 60, y: 110, w: 650, size: 0, align: "left" },
+      ldrBoxes: [
+        { x:  60, y: 140, w: 300, h: 120 },  // C
+        { x: 410, y: 140, w: 300, h: 120 },  // T
+        { x:  60, y: 270, w: 300, h: 120 },  // R
+        { x: 410, y: 270, w: 300, h: 120 }   // L
+      ],
+      bodySize: 10,
+      maxLines: 9
+    },
+
+    // PAGE 11 — Tips & Actions (moved here)
+    // Defaults follow your stored p7 tips/actions baseline (MSCs #87–88), now applied to p11
+    p11: {
+      tipsHdr: { x:  30, y: 500, w: 300, size: 17, align: "left" },
+      actsHdr: { x: 320, y: 500, w: 300, size: 17, align: "left" },
+      tipsBox: { x:  30, y: 530, w: 300, size: 17, align: "left", indent: 14, gap: 2 },
+      actsBox: { x: 320, y: 530, w: 300, size: 17, align: "left", indent: 14, gap: 2 },
+      maxLines: 12
+    }
+  };
+
+  // Merge payload overrides; re-lock p1 + footer + p3.state
+  if (layoutV6 && typeof layoutV6 === "object") {
     try {
-      const r = await fetch(url);
-      if (r.ok) return Buffer.from(await r.arrayBuffer());
-      lastErr = new Error(`HTTP ${r.status} for ${url}`);
-    } catch (e) {
-      lastErr = e;
-    }
+      const merged = deepMerge(L, layoutV6);
+      merged.p1     = { ...merged.p1, name: LOCKED.p1.name, date: LOCKED.p1.date };
+      merged.footer = { ...merged.footer, ...LOCKED.footer };
+      merged.p3     = merged.p3 || {};
+      merged.p3.state = { ...L.p3.state }; // HARD LOCK the state highlight geometry + style
+      return merged;
+    } catch { /* ignore */ }
   }
-  throw new Error(`Failed to fetch template: ${tpl} (${lastErr?.message || 'no details'})`);
+  return L;
 }
 
-// ---------- main handler ----------
-export default async function handler(req, res) {
-  try {
-    const { query } = req;
+/* ───────────────────────────── URL Tuners ───────────────────────────── */
+function applyUrlTuners(url, L) {
+  const q = Object.fromEntries(url.searchParams.entries());
 
-    // Validate flow
-    const flow = String(query.flow || 'Perspective');
-    if (flow !== 'Perspective') {
-      return res.status(400).json({ error: `Unsupported flow: ${flow}` });
-    }
+  const setBox = (box, prefix, withH = false) => {
+    if (!box) return;
+    if (q[`${prefix}_x`]    != null) box.x    = +q[`${prefix}_x`];
+    if (q[`${prefix}_y`]    != null) box.y    = +q[`${prefix}_y`];
+    if (q[`${prefix}_w`]    != null) box.w    = +q[`${prefix}_w`];
+    if (withH && q[`${prefix}_h`] != null)    box.h    = +q[`${prefix}_h`];
+    if (q[`${prefix}_size`] != null) box.size = +q[`${prefix}_size`];
+    if (q[`${prefix}_align`])       box.align = String(q[`${prefix}_align`]);
+  };
+  const setBoxPlus = (box, prefix, withH = false) => {
+    setBox(box, prefix, withH);
+    if (!box) return;
+    if (q[`${prefix}_s`]    != null) box.size     = +q[`${prefix}_s`];
+    if (q[`${prefix}_max`]  != null) box.maxLines = +q[`${prefix}_max`];
+  };
 
-    // Template
-    const tplBuf = await fetchTemplateBuffer(req, query.tpl);
+  // P3 text
+  setBox(L.p3?.domChar, "p3_domChar");
+  if (q["p3_dokdesc_size"] != null) q["p3_domDesc_size"] = q["p3_dokdesc_size"]; // accept typo
+  setBox(L.p3?.domDesc, "p3_domDesc");
 
-    // Data
-    const data = normalizeData(decodeDataParam(query.data));
-
-    // Coords (defaults + URL tuning)
-    const coords = coordDefaults(query);
-
-    // Build PDF
-    const pdfDoc = await PDFDocument.load(tplBuf);
-    const pages = pdfDoc.getPages();
-    const pageCount = pages.length;
-
-    // Guard: we expect at least 12 pages
-    if (pageCount < 12) {
-      // Don’t crash — just warn in output doc (page 1 top-left tiny text)
-      const p = pages[0];
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      p.drawText(`TEMPLATE WARNING: expected ≥12 pages, found ${pageCount}.`, {
-        x: 36, y: p.getHeight() - 24, size: 8, font, color: rgb(1, 0, 0),
-      });
-    }
-
-    const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const helvBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    // Helper to get page safely (1-based index)
-    const pg = (n) => pages[clamp(n - 1, 0, pages.length - 1)];
-
-    // ---- Page 3: Dominant (label + description)
-    {
-      const p = pg(3);
-      await drawWrapped(p, helvBold, data.domchar || '', {
-        x: coords.p3_domChar.x, y: coords.p3_domChar.y, w: coords.p3_domChar.w,
-        size: coords.p3_domChar.size, lineGap: 4, align: 'left',
-      });
-      await drawWrapped(p, helv, data.domdesc || '', {
-        x: coords.p3_domDesc.x, y: coords.p3_domDesc.y, w: coords.p3_domDesc.w,
-        size: coords.p3_domDesc.size, lineGap: 4, align: 'left',
-      });
-    }
-
-    // ---- Page 4: (labels only; spider/chart are usually images in the template)
-    {
-      const p = pg(4);
-      if (data.spiderdesc) {
-        await drawWrapped(p, helv, data.spiderdesc, {
-          x: coords.p4_spider.x, y: coords.p4_spider.y, w: coords.p4_spider.w,
-          size: coords.p4_spider.size, lineGap: 3,
-        });
-      }
-      // If you want to draw a "chart" label or caption
-      // await drawWrapped(p, helv, ' ', { x: coords.p4_chart.x, y: coords.p4_chart.y, w: coords.p4_chart.w, size: 10 });
-    }
-
-    // ---- Page 5: Sequence/Pattern
-    {
-      const p = pg(5);
-      if (data.seqp || data.seqpDesc || data.seqpAt || data.seqpat) {
-        await drawWrapped(p, helv, (data.seqpat || data.seqp || data.seqpDesc || data.seqpAt), {
-          x: coords.p5_seqpat.x, y: coords.p5_seqpat.y, w: coords.p5_seqpat.w,
-          size: coords.p5_seqpat.size, lineGap: 4,
-        });
-      }
-    }
-
-    // ---- Page 6: Theme
-    {
-      const p = pg(6);
-      if (data.theme) {
-        await drawWrapped(p, helv, data.theme, {
-          x: coords.p6_theme.x, y: coords.p6_theme.y, w: coords.p6_theme.w,
-          size: coords.p6_theme.size, lineGap: 4,
-        });
-      }
-    }
-
-    // Prepare maps for pages 7–10
-    const mineKey = (data.dom6Key || 'R').toUpperCase();
-
-    const colLook = mapByTheir(data.workwcol, mineKey, 'look');
-    const colWork = mapByTheir(data.workwcol, mineKey, 'work');
-
-    const ldrLook = mapByTheir(data.workwlead, mineKey, 'look');
-    const ldrWork = mapByTheir(data.workwlead, mineKey, 'work');
-
-    // ---- Page 7: LOOK — Colleagues
-    {
-      const p = pg(7);
-      if (coords.p7_hCol.size > 0) {
-        await drawWrapped(p, helvBold, 'What to look out for — Colleagues', {
-          x: coords.p7_hCol.x, y: coords.p7_hCol.y, w: coords.p7_hCol.w,
-          size: coords.p7_hCol.size, align: coords.p7_hCol.align,
-        });
-      }
-      await drawQuads(p, helv, colLook, coords.p7_col);
-    }
-
-    // ---- Page 8: WORK — Colleagues
-    {
-      const p = pg(8);
-      if (coords.p8_hCol.size > 0) {
-        await drawWrapped(p, helvBold, 'How to work with — Colleagues', {
-          x: coords.p8_hCol.x, y: coords.p8_hCol.y, w: coords.p8_hCol.w,
-          size: coords.p8_hCol.size, align: coords.p8_hCol.align,
-        });
-      }
-      await drawQuads(p, helv, colWork, coords.p8_col);
-    }
-
-    // ---- Page 9: LOOK — Leaders
-    {
-      const p = pg(9);
-      if (coords.p9_hLdr.size > 0) {
-        await drawWrapped(p, helvBold, 'What to look out for — Leaders', {
-          x: coords.p9_hLdr.x, y: coords.p9_hLdr.y, w: coords.p9_hLdr.w,
-          size: coords.p9_hLdr.size, align: coords.p9_hLdr.align,
-        });
-      }
-      await drawQuads(p, helv, ldrLook, coords.p9_ldr);
-    }
-
-    // ---- Page 10: WORK — Leaders
-    {
-      const p = pg(10);
-      if (coords.p10_hLdr.size > 0) {
-        await drawWrapped(p, helvBold, 'How to work with — Leaders', {
-          x: coords.p10_hLdr.x, y: coords.p10_hLdr.y, w: coords.p10_hLdr.w,
-          size: coords.p10_hLdr.size, align: coords.p10_hLdr.align,
-        });
-      }
-      await drawQuads(p, helv, ldrWork, coords.p10_ldr);
-    }
-
-    // ---- Page 11: Tips & Actions (moved here)
-    {
-      const p = pg(11);
-      // Headers
-      await drawWrapped(p, helvBold, 'Tips', {
-        x: coords.p11_tipsHdr.x, y: coords.p11_tipsHdr.y, w: coords.p11_tipsHdr.w,
-        size: coords.p11_tipsHdr.size,
-      });
-      await drawWrapped(p, helvBold, 'Actions', {
-        x: coords.p11_actsHdr.x, y: coords.p11_actsHdr.y, w: coords.p11_actsHdr.w,
-        size: coords.p11_actsHdr.size,
-      });
-      // Bulleted lists
-      const leftY = coords.p11_tipsBox.y;
-      const rightY = coords.p11_actsBox.y;
-      await drawBulletList(p, helv, Array.isArray(data.tips) ? data.tips : [], {
-        x: coords.p11_tipsBox.x,
-        y: leftY,
-        w: coords.p11_tipsBox.w,
-        size: coords.p11_tipsBox.size,
-      });
-      await drawBulletList(p, helv, Array.isArray(data.actions) ? data.actions : [], {
-        x: coords.p11_actsBox.x,
-        y: rightY,
-        w: coords.p11_actsBox.w,
-        size: coords.p11_actsBox.size,
-      });
-    }
-
-    // ---- Footers (labels) n2..n12 — optional
-    const nameLbl = String(query.name || data.n || data.person?.fullName || '').trim();
-    const dateLbl = String(data.d || data.dateLbl || '').trim();
-    const footerText = nameLbl && dateLbl ? `${nameLbl} — ${dateLbl}` : (nameLbl || dateLbl || '');
-
-    for (let i = 2; i <= Math.min(12, pageCount); i++) {
-      const p = pg(i);
-      const n = coords.n[i];
-      if (!n) continue;
-      if (!footerText) continue;
-
-      const font = helv;
-      const size = n.s;
-      const width = font.widthOfTextAtSize(footerText, size);
-      const dx = alignX(n.x, n.w, width, n.align);
-      p.drawText(footerText, { x: dx, y: n.y, size, font, color: rgb(0, 0, 0) });
-    }
-
-    // Output
-    const pdfBytes = await pdfDoc.save();
-    const filename = String(query.name || 'CTRL_Perspective.pdf');
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    return res.status(200).send(Buffer.from(pdfBytes));
-  } catch (err) {
-    // Clear, actionable error instead of a generic 500
-    return res.status(400).json({
-      error: err?.message || 'Unknown error',
-      hint:
-        'Check that ?tpl= points to a reachable PDF (public file or absolute URL), and that ?data= is valid JSON/base64. All coordinates are tunable via query params.',
-    });
+  // P3 highlight + labels
+  L.p3 = L.p3 || {}; L.p3.state = L.p3.state || {}; const S3 = L.p3.state;
+  if (q.state_useAbs === "1") S3.useAbsolute = true;
+  if (q.state_useAbs === "0") S3.useAbsolute = false;
+  if (q.state_inset   != null) S3.highlightInset  = +q.state_inset;
+  if (q.state_radius  != null) S3.highlightRadius = +q.state_radius;
+  if (q.state_opacity != null) S3.fillOpacity     = +q.state_opacity;
+  if (q.state_shape)    S3.shape = String(q.state_shape);
+  if (q.state_n     != null) S3.n     = +q.state_n;
+  if (q.state_steps != null) S3.steps = +q.state_steps;
+  if (q.labelText)    S3.labelText  = String(q.labelText);
+  if (q.labelSize)    S3.labelSize  = +q.labelSize;
+  if (q.labelCTx || q.labelCTy) S3.labelCT = { x: +q.labelCTx || (S3.labelCT?.x ?? 180), y: +q.labelCTy || (S3.labelCT?.y ?? 655) };
+  if (q.labelRLx || q.labelRLy) S3.labelRL = { x: +q.labelRLx || (S3.labelRL?.x ?? 180), y: +q.labelRLy || (S3.labelRL?.y ?? 365) };
+  if (q.labelOffsetX != null) S3.labelOffsetX = +q.labelOffsetX;
+  if (q.labelOffsetY != null) S3.labelOffsetY = +q.labelOffsetY;
+  if (q.labelPadTop  != null) S3.labelPadTop  = +q.labelPadTop;
+  if (q.labelPadBottom != null) S3.labelPadBottom = +q.labelPadBottom;
+  const psl = {};
+  const setLS = (k, X, Y) => { if (X != null || Y != null) psl[k] = { x: X != null ? +X : undefined, y: Y != null ? +Y : undefined }; };
+  setLS("C", q.labelC_x, q.labelC_y); setLS("T", q.labelT_x, q.labelT_y); setLS("R", q.labelR_x, q.labelR_y); setLS("L", q.labelL_x, q.labelL_y);
+  if (Object.keys(psl).length) { S3.labelByState = S3.labelByState || {}; for (const k of Object.keys(psl)) { S3.labelByState[k] = { ...(S3.labelByState[k] || {}), ...psl[k] }; } }
+  if (S3.useAbsolute || q.state_useAbs === "1") {
+    const setAbs = (key) => { S3.absBoxes = S3.absBoxes || {}; const b = S3.absBoxes[key] || {}; if (q[`abs_${key}_x`] != null) b.x = +q[`abs_${key}_x`]; if (q[`abs_${key}_y`] != null) b.y = +q[`abs_${key}_y`]; if (q[`abs_${key}_w`] != null) b.w = +q[`abs_${key}_w`]; if (q[`abs_${key}_h`] != null) b.h = +q[`abs_${key}_h`]; S3.absBoxes[key] = b; };
+    ["C","T","R","L"].forEach(setAbs);
   }
+
+  // Page 4
+  setBox(L.p4?.spider, "p4_spider"); setBox(L.p4?.chart,  "p4_chart", true);
+  // Page 5/6
+  setBox(L.p5?.seqpat, "p5_seqpat"); setBox(L.p6?.theme,  "p6_theme");
+
+  // Page 7 (LOOK – colleagues)
+  setBox(L.p7?.header, "p7_header");
+  if (q.p7_bodySize != null)  L.p7.bodySize = +q.p7_bodySize; if (q.p7_s != null) L.p7.bodySize = +q.p7_s; if (q.p7_maxLines != null) L.p7.maxLines = +q.p7_maxLines;
+  ["C","T","R","L"].forEach((k,i)=> setBoxPlus(L.p7?.colBoxes?.[i], `p7_col${k}`, true));
+
+  // Page 8 (WORK – colleagues)
+  setBox(L.p8?.header, "p8_header");
+  if (q.p8_bodySize != null)  L.p8.bodySize = +q.p8_bodySize; if (q.p8_s != null) L.p8.bodySize = +q.p8_s; if (q.p8_maxLines != null) L.p8.maxLines = +q.p8_maxLines;
+  ["C","T","R","L"].forEach((k,i)=> setBoxPlus(L.p8?.colBoxes?.[i], `p8_col${k}`, true));
+
+  // Page 9 (LOOK – leaders)
+  setBox(L.p9?.header, "p9_header");
+  if (q.p9_bodySize != null)  L.p9.bodySize = +q.p9_bodySize; if (q.p9_s != null) L.p9.bodySize = +q.p9_s; if (q.p9_maxLines != null) L.p9.maxLines = +q.p9_maxLines;
+  ["C","T","R","L"].forEach((k,i)=> setBoxPlus(L.p9?.ldrBoxes?.[i], `p9_ldr${k}`, true));
+
+  // Page 10 (WORK – leaders)
+  setBox(L.p10?.header, "p10_header");
+  if (q.p10_bodySize != null)  L.p10.bodySize = +q.p10_bodySize; if (q.p10_s != null) L.p10.bodySize = +q.p10_s; if (q.p10_maxLines != null) L.p10.maxLines = +q.p10_maxLines;
+  ["C","T","R","L"].forEach((k,i)=> setBoxPlus(L.p10?.ldrBoxes?.[i], `p10_ldr${k}`, true));
+
+  // Page 11 (Tips & Actions)
+  setBox(L.p11?.tipsHdr, "p11_tipsHdr"); setBox(L.p11?.actsHdr, "p11_actsHdr");
+  setBox(L.p11?.tipsBox, "p11_tipsBox"); setBox(L.p11?.actsBox, "p11_actsBox");
+  if (q.p11_maxLines != null) L.p11.maxLines = +q.p11_maxLines;
+
+  // Footers n10, n11, n12
+  L.footer = L.footer || {};
+  const tuneN = (key) => {
+    if (!L.footer[key]) L.footer[key] = { x: 205, y: 49.5, w: 400, size: 15, align: "center" };
+    if (q[`${key}x`] != null) L.footer[key].x = +q[`${key}x`];
+    if (q[`${key}y`] != null) L.footer[key].y = +q[`${key}y`];
+    if (q[`${key}w`] != null) L.footer[key].w = +q[`${key}w`];
+    if (q[`${key}s`] != null) L.footer[key].size = +q[`${key}s`];
+    if (q[`${key}align"]) L.footer[key].align = String(q[`${key}align`]);
+  };
+  ["n10","n11","n12"].forEach(tuneN);
+
+  return L;
+}
+
+/* ───────────────────────────── Template load ───────────────────────────── */
+async function loadTemplateBytes(url) {
+  const tplParam = (url && url.searchParams && url.searchParams.get("tpl")) || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
+  const safeTpl  = String(tplParam).replace(/[^A-Za-z0-9._-]/g, "");
+  const fullPath = path.join(process.cwd(), "public", safeTpl);
+  try {
+    return await fs.readFile(fullPath);
+  } catch {
+    throw new Error(`Template not found at /public/${safeTpl}`);
+  }
+}
+
+/* ─────────────────────────────── HTTP handler ─────────────────────────────── */
+export default async function handler(req, res) {
+  let url;
+  try { url = new URL(req?.url || "/", "http://localhost"); } catch { url = new URL("/", "http://localhost"); }
+
+  const preview = url.searchParams.get("preview") === "1";
+  const dataB64 = url.searchParams.get("data");
+  if (!dataB64) { res.statusCode = 400; res.end("Missing ?data"); return; }
+
+  const data = parseDataParam(dataB64);
+  try {
+    const P = normaliseInput(data);
+
+    // template + fonts
+    const tplBytes = await loadTemplateBytes(url);
+    const pdf = await PDFDocument.load(tplBytes);
+    const Helv  = await pdf.embedFont(StandardFonts.Helvetica);
+    const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+    const pageCount = pdf.getPageCount();
+    const p = (i) => (i < pageCount ? pdf.getPage(i) : null);
+    const p1 = p(0), p2 = p(1), p3 = p(2), p4 = p(3), p5 = p(4),
+          p6 = p(5), p7 = p(6), p8 = p(7), p9 = p(8), p10 = p(9),
+          p11 = p(10), p12 = p(11);
+
+    // layout + URL tuners (Page-3 state hard-locked during build)
+    let L = buildLayout(P.layoutV6);
+    L = applyUrlTuners(url, L);
+
+    const resolvedDomKey = resolveDomKey(P) || "R";
+
+    /* ---------------------------- PAGE 1 (locked) ---------------------------- */
+    if (p1) {
+      drawTextBox(p1, HelvB, P.n, { ...L.p1.name, color: rgb(0.12,0.11,0.20) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p1, Helv,  P.d, { ...L.p1.date, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    }
+
+    /* ---------------------------- PAGE 2 footer ---------------------------- */
+    if (p2) drawTextBox(p2, Helv, P.n, { ...(L.footer.n2||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+
+    /* ---------------------------- PAGE 3 ---------------------------- */
+    if (p3) {
+      drawTextBox(p3, Helv, P.n, { ...(L.footer.n3||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      if (P.domchar) drawTextBox(p3, Helv, P.domchar, { ...L.p3.domChar, color: rgb(0.15,0.14,0.22) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p3, Helv, P.domdesc, { ...L.p3.domDesc, color: rgb(0.15,0.14,0.22) }, { maxLines: 16, ellipsis: true });
+      await paintStateHighlight(pdf, p3, resolvedDomKey, L);
+    }
+
+    /* ---------------------------- PAGE 4 ---------------------------- */
+    if (p4) {
+      drawTextBox(p4, Helv, P.n, { ...(L.footer.n4||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p4, Helv, P.spiderdesc, { ...L.p4.spider, color: rgb(0.15,0.14,0.22) }, { maxLines: 18, ellipsis: true });
+      if (P.spiderfreq) {
+        try {
+          const imgRes = await fetch(P.spiderfreq);
+          if (imgRes.ok) {
+            const buff = await imgRes.arrayBuffer();
+            const mime = String(imgRes.headers.get("content-type") || "");
+            let img = null;
+            if (mime.includes("png")) img = await pdf.embedPng(buff); else img = await pdf.embedJpg(buff);
+            const ph = p4.getHeight();
+            p4.drawImage(img, { x: L.p4.chart.x, y: ph - L.p4.chart.y - L.p4.chart.h, width: L.p4.chart.w, height: L.p4.chart.h });
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    /* ---------------------------- PAGE 5 ---------------------------- */
+    if (p5) {
+      drawTextBox(p5, Helv, P.n, { ...(L.footer.n5||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p5, Helv, P.seqpat, { ...L.p5.seqpat, color: rgb(0.15,0.14,0.22) }, { maxLines: 24, ellipsis: true });
+    }
+
+    /* ---------------------------- PAGE 6 ---------------------------- */
+    if (p6) {
+      drawTextBox(p6, Helv, P.n, { ...(L.footer.n6||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p6, Helv, P.theme, { ...L.p6.theme, color: rgb(0.15,0.14,0.22) }, { maxLines: 24, ellipsis: true });
+    }
+
+    const findBy = (arr, key) => (arr || []).find(v => (v?.their || v?.key || "").toUpperCase() === key);
+
+    /* ---------------------------- PAGE 7 (LOOK – colleagues) ---------------------------- */
+    if (p7) {
+      drawTextBox(p7, Helv, P.n, { ...(L.footer.n7||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p7, HelvB, "", { ...L.p7.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+      ["C","T","R","L"].forEach((k,i)=>{
+        const entry = findBy(P.workwcol, k);
+        const box = L.p7.colBoxes[i] || L.p7.colBoxes[0];
+        const txt = norm(entry?.look || "");
+        if (txt && box?.w > 0) {
+          drawTextBox(p7, Helv, txt, { x: box.x, y: box.y, w: box.w, size: (box.size ?? L.p7.bodySize), align: box.align || "left", color: rgb(0.15,0.14,0.22) }, { maxLines: (box.maxLines ?? L.p7.maxLines), ellipsis: true });
+        }
+      });
+    }
+
+    /* ---------------------------- PAGE 8 (WORK – colleagues) ---------------------------- */
+    if (p8) {
+      drawTextBox(p8, Helv, P.n, { ...(L.footer.n8||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p8, HelvB, "", { ...L.p8.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+      ["C","T","R","L"].forEach((k,i)=>{
+        const entry = findBy(P.workwcol, k);
+        const box = L.p8.colBoxes[i] || L.p8.colBoxes[0];
+        const txt = norm(entry?.work || "");
+        if (txt && box?.w > 0) {
+          drawTextBox(p8, Helv, txt, { x: box.x, y: box.y, w: box.w, size: (box.size ?? L.p8.bodySize), align: box.align || "left", color: rgb(0.15,0.14,0.22) }, { maxLines: (box.maxLines ?? L.p8.maxLines), ellipsis: true });
+        }
+      });
+    }
+
+    /* ---------------------------- PAGE 9 (LOOK – leaders) ---------------------------- */
+    if (p9) {
+      drawTextBox(p9, Helv, P.n, { ...(L.footer.n9||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p9, HelvB, "", { ...L.p9.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+      ["C","T","R","L"].forEach((k,i)=>{
+        const entry = findBy(P.workwlead, k);
+        const box = L.p9.ldrBoxes[i] || L.p9.ldrBoxes[0];
+        const txt = norm(entry?.look || "");
+        if (txt && box?.w > 0) {
+          drawTextBox(p9, Helv, txt, { x: box.x, y: box.y, w: box.w, size: (box.size ?? L.p9.bodySize), align: box.align || "left", color: rgb(0.15,0.14,0.22) }, { maxLines: (box.maxLines ?? L.p9.maxLines), ellipsis: true });
+        }
+      });
+    }
+
+    /* ---------------------------- PAGE 10 (WORK – leaders) ---------------------------- */
+    if (p10) {
+      drawTextBox(p10, Helv, P.n, { ...(L.footer.n10||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      drawTextBox(p10, HelvB, "", { ...L.p10.header, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+      ["C","T","R","L"].forEach((k,i)=>{
+        const entry = findBy(P.workwlead, k);
+        const box = L.p10.ldrBoxes[i] || L.p10.ldrBoxes[0];
+        const txt = norm(entry?.work || "");
+        if (txt && box?.w > 0) {
+          drawTextBox(p10, Helv, txt, { x: box.x, y: box.y, w: box.w, size: (box.size ?? L.p10.bodySize), align: box.align || "left", color: rgb(0.15,0.14,0.22) }, { maxLines: (box.maxLines ?? L.p10.maxLines), ellipsis: true });
+        }
+      });
+    }
+
+    /* ---------------------------- PAGE 11 (Tips & Actions) ---------------------------- */
+    if (p11) {
+      drawTextBox(p11, Helv, P.n, { ...(L.footer.n11||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+      // Headers (set size=0 to hide)
+      drawTextBox(p11, HelvB, "Tips",    { ...L.p11.tipsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+      drawTextBox(p11, HelvB, "Actions", { ...L.p11.actsHdr, color: rgb(0.24,0.23,0.35) }, { maxLines: 1 });
+
+      drawBulleted(p11, Helv, ensureArray(P.tips),
+        { ...L.p11.tipsBox, indent: (L.p11.tipsBox.indent ?? 14), gap: (L.p11.tipsBox.gap ?? 2), color: rgb(0.15,0.14,0.22) },
+        { maxLines: L.p11.maxLines, blockGap: 6 });
+
+      drawBulleted(p11, Helv, ensureArray(P.actions),
+        { ...L.p11.actsBox, indent: (L.p11.actsBox.indent ?? 14), gap: (L.p11.actsBox.gap ?? 2), color: rgb(0.15,0.14,0.22) },
+        { maxLines: L.p11.maxLines, blockGap: 6 });
+    }
+
+    /* ---------------------------- PAGE 12 (footer only by default) ---------------------------- */
+    if (p12) {
+      drawTextBox(p12, Helv, P.n, { ...(L.footer.n12||{}), color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    }
+
+    // save
+    const bytes = await pdf.save();
+    const fname = safeFileName(url, P.n);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${preview ? "inline" : "attachment"}; filename="${fname}"`);
+    res.end(Buffer.from(bytes));
+  } catch (e) {
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "text/plain");
+    res.end("fill-template error: " + (e?.message || e));
+  }
+}
+
+function safeFileName(url, fullName) {
+  const who = S(fullName || "report").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
+  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]; 
+  const d = new Date();
+  const name = `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
+  const qName = url.searchParams.get("name");
+  return qName ? String(qName) : name;
 }
