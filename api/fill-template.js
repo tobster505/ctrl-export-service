@@ -3,7 +3,7 @@
  * Template: /public/CTRL_Perspective_Assessment_Profile_template_slim.pdf
  *
  * Pages:
- *  p1  cover                     (name/date may be pre-rendered in template)
+ *  p1  cover
  *  p3  dominant + description + state highlight (absolute geometry)
  *  p4  spider copy + chart image
  *  p5  sequence/pattern copy
@@ -12,40 +12,52 @@
  *  p8  WORK — colleagues   (C/T/R/L, 4 boxes; from workwcol[*].work)
  *  p9  LOOK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].look)
  *  p10 WORK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].work)
- *  p11 Tips & Actions      (two bulleted columns)
- *  p12 (footer only)
+ *  p11 Tips & Actions      (two bulleted columns; NO titles in this version)
+ *  p12 footer only
  *
- * URL tuners (examples; TL origin, pts):
- *  • P1 name: ?p1_name_x=7&p1_name_y=473&p1_name_w=500&p1_name_size=30&p1_name_align=center
- *    P1 date: ?p1_date_x=210&p1_date_y=600&p1_date_w=500&p1_date_size=25&p1_date_align=left
- *  • Footers (name only on p2–p12): ?f2_x=200&f2_y=64&f2_size=13&f2_align=left (…f3..f12)
- *  • P3 labels: ?p3_state_labelOffsetX=0&p3_state_labelOffsetY=6
- *    Text blocks: ?p3_domChar_y=182&p3_domDesc_y=214
- *    Boxes (TL):  ?p3_state_abs_R_x=60&y=433&w=188&h=158 (C,T,L similar)
- *    Label per state: ?p3_state_label_R_x=150&p3_state_label_R_y=612
- *    Look & feel: ?p3_state_labelText=YOU%20ARE%20HERE&p3_state_labelSize=10
- *                  &p3_state_fillOpacity=0.45&p3_state_highlightRadius=28&p3_state_highlightInset=6
- *                  &p3_state_style_R_radius=1000&p3_state_style_R_inset=1
- *  • P4 spider: ?p4_spider_x=60&y=320&w=280&size=11   · chart: ?p4_chart_x=360&y=320&w=260&h=260
- *  • P5:        ?p5_seqpat_x=60&y=160&w=650&size=11
- *  • P6:        ?p6_theme_x=60&y=160&w=650&size=11
- *  • P7/P8: body size/lines: ?p7_bodySize=10&p7_maxLines=9  (same for p8)
- *    Boxes: ?p7_col0_x=60&y=140&w=300&h=120  (indices 0..3 = C,T,R,L; same for p8_)
- *  • P9/P10: body/lines: ?p9_bodySize=10&p9_maxLines=9 (same for p10)
- *    Boxes: ?p9_ldr2_x=60&y=270&w=300&h=120  (indices 0..3 = C,T,R,L; same for p10_)
- *  • P11 heads/boxes: ?p11_tipsHdr_x=30&y=500&w=300&size=17&align=left  (same keys for actsHdr)
- *                     ?p11_tipsBox_x=30&y=530&w=300&size=11
- *                     ?p11_maxLines=12
+ * Locked defaults (TL coords unless noted):
+ *  • P1 name/date
+ *      name: x=7 y=473 w=500 size=30 align=center
+ *      date: x=210 y=600 w=500 size=25 align=left
+ *  • Footers (pages 2–12): name only at x=380 y=51 size=13 align=left
+ *  • P4 chart: x=20 y=225 w=570 h=280
+ *  • P3 state abs boxes + labels:
+ *      R: box(60,433,188,158), label(150,612), radius=1000, inset=1, opacity=0.45
+ *      C: box(58,258,188,156), label(150,245), radius=28,   inset=6, opacity=0.45
+ *      T: box(299,258,188,156),label(390,244), radius=28,   inset=6, opacity=0.45
+ *      L: box(298,440,188,156),label(390,605), radius=28,   inset=6, opacity=0.45
  *
- * WinAnsi crash fix (Option 1):
- *  - Strip surrogate pairs + Private Use + VS-16/FE0F / zero-width
- *  - Normalize quotes/dashes; collapse weird whitespace
+ * URL tuners (highlights):
+ *  • P1:  p1_name_{x|y|w|size|align}   · p1_date_{…}
+ *  • Footers: f{2..12}_{x|y|w|size|align}
+ *  • P3 text blocks: p3_domChar_{x|y|w|size|align|maxLines}
+ *                    p3_domDesc_{x|y|w|size|align|maxLines}
+ *    State (verbose): p3_state_abs_[C|T|R|L]_{x|y|w|h}
+ *                      p3_state_label_[C|T|R|L]_{x|y}
+ *                      p3_state_label{Text|Size|labelOffsetX|labelOffsetY|fillOpacity|highlightRadius|highlightInset}
+ *    State (your short aliases, mapped internally):
+ *        state_useAbs=1
+ *        abs_[C|T|R|L]_{x|y|w|h}
+ *        state_shape=round&state_radius=28&state_inset=6&state_opacity=0.45
+ *        labelText=YOU+ARE+HERE&labelSize=10
+ *        labelRLx=390&labelRLy=605 (applies to R & L)
+ *        labelCTx=150&labelCTy=245 (applies to C & T)
+ *  • P4:  p4_spider_{x|y|w|size|align|maxLines}
+ *         p4_chart_{x|y|w|h}
+ *  • P5:  p5_seqpat_{x|y|w|size|align|maxLines}
+ *  • P6:  p6_theme_{x|y|w|size|align}
+ *  • P7/P8 (col0..3 = C,T,R,L):
+ *         p7_bodySize, p7_maxLines (page-level defaults)
+ *         p7_col{i}_{x|y|w|h|size|maxLines}  (per paragraph)
+ *         same for p8_col{i}_…
+ *  • P9/P10 (ldr0..3 = C,T,R,L):
+ *         p9_bodySize, p9_maxLines (page-level defaults)
+ *         p9_ldr{i}_{x|y|w|h|size|maxLines}  (per paragraph)
+ *         same for p10_ldr{i}_…
+ *  • P11: p11_tipsBox_{x|y|w|size|align|maxLines}
+ *         p11_actsBox_{x|y|w|size|align|maxLines}
  *
- * Strictly local template:
- *  - tpl must be a filename present in /public (no http(s): accepted)
- *
- * Footer policy in this version:
- *  - Footer shows **Full Name only** on pages 2–12 (no flow, no date, no page numbers).
+ * Template must be local (/public). Remote tpl URLs are not accepted.
  *********************************************************************** */
 
 export const config = { runtime: "nodejs" };
@@ -58,26 +70,22 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-/** WinAnsi “Option 1” sanitizer (remove/replace non-encodable glyphs) */
+/** WinAnsi “Option 1” sanitizer */
 const norm = (v, fb = "") =>
   S(v, fb)
-    // typographic punctuation → WinAnsi-friendly
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
-    // kill troublesome glyphs that break WinAnsi (emoji, PUA, VS, ZW)
-    .replace(/[\uD800-\uDFFF]/g, "")       // surrogate pairs (all emoji)
-    .replace(/[\uE000-\uF8FF]/g, "")       // private use area
-    .replace(/[\uFE0E\uFE0F]/g, "")        // variation selectors 15/16
-    .replace(/[\u200B-\u200D\u2060]/g, "") // zero-width chars
-    // whitespace tidy
+    .replace(/[\uD800-\uDFFF]/g, "")
+    .replace(/[\uE000-\uF8FF]/g, "")
+    .replace(/[\uFE0E\uFE0F]/g, "")
+    .replace(/[\u200B-\u200D\u2060]/g, "")
     .replace(/\t/g, " ")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \f\v]+/g, " ")
     .replace(/[ \t]+\n/g, "\n")
-    // ASCII control cleanup (keep \n)
     .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, "")
     .trim();
 
@@ -89,7 +97,7 @@ const todayLbl = () => {
 
 const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
-/** base64url → JSON (accepts base64 or base64url, optionally URL-encoded) */
+/** base64url → JSON */
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
@@ -109,7 +117,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     color = rgb(0, 0, 0), align = "left",
   } = spec;
 
-  const maxLines = opts.maxLines ?? 6;
+  const maxLines = opts.maxLines ?? spec.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
 
   const hard = S(text || "");
@@ -139,7 +147,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     : wrapped;
 
   const pageH   = page.getHeight();
-  const yTop    = pageH - y; // TL → BL conversion baseline
+  const yTop    = pageH - y; // TL → BL baseline
   const lineH   = Math.max(1, size) + lineGap;
 
   let yCursor = yTop;
@@ -166,7 +174,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     color = rgb(0, 0, 0),
   } = spec;
 
-  const maxLines = opts.maxLines ?? 12;
+  const maxLines = opts.maxLines ?? spec.maxLines ?? 12;
 
   const arr = ensureArray(items).map(s => norm(s));
   const pageH = page.getHeight();
@@ -177,10 +185,10 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     if (!raw) continue;
     const lines = raw.split(/\n/).filter(Boolean);
     const head = `${bullet} ${lines.shift()}`;
-    drawTextBox(page, font, head, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
+    drawTextBox(page, font, head, { x, y: pageH - yCursor, w, size, lineGap, align, color, maxLines: 1 }, { maxLines: 1 });
     yCursor -= lineH;
     for (const cont of lines) {
-      drawTextBox(page, font, `   ${cont}`, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
+      drawTextBox(page, font, `   ${cont}`, { x, y: pageH - yCursor, w, size, lineGap, align, color, maxLines: 1 }, { maxLines: 1 });
       yCursor -= lineH;
     }
     if ((pageH - yCursor) / lineH > maxLines) break;
@@ -188,11 +196,11 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 }
 
 function drawTextInBox(page, font, text, box, size = 10, align = "left", opts = {}) {
-  const spec = { x: N(box.x), y: N(box.y), w: N(box.w), size: N(size), align };
+  const spec = { x: N(box.x), y: N(box.y), w: N(box.w), size: N(size), align, maxLines: N(box.maxLines, undefined) };
   return drawTextBox(page, font, S(text), spec, opts);
 }
 
-// Convert a TL-spec rectangle {x,y,w,h} to BL for pdf-lib drawing
+// Convert TL {x,y,w,h} to BL for pdf-lib drawing
 const rectTLtoBL = (page, box, inset = 0) => {
   const pageH = page.getHeight();
   const x = N(box.x) + inset;
@@ -219,7 +227,7 @@ function paintStateHighlight(page3, dom, cfg = {}) {
     borderRadius: radius, color: shade, opacity
   });
 
-  // Label anchor (kept in TL space so drawTextBox() can convert)
+  // Label anchor (kept in TL space)
   const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
   const offX = N(cfg.labelOffsetX, 0);
   const offY = N(cfg.labelOffsetY, 0);
@@ -281,7 +289,7 @@ function normaliseInput(d = {}) {
   return P;
 }
 
-/* ───────────────────────── Default coordinates (safe, tunable) ───────────── */
+/* ───────────────────────── Default coordinates (tunable) ───────────── */
 
 const LOCKED = {
   p1: {
@@ -289,12 +297,9 @@ const LOCKED = {
     date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
   },
   footer: (() => {
-    // Left footer text defaults (f2..f12) — shows **name only**
-    const f = { x: 200, y: 64, w: 400, size: 13, align: "left" };
-    return {
-      f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f},
-      f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f}
-    };
+    const f = { x: 380, y: 51, w: 400, size: 13, align: "left" }; // name only
+    return { f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f},
+             f7:{...f}, f8:{...f}, f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f} };
   })()
 };
 
@@ -303,8 +308,8 @@ const DEFAULT_COORDS = {
 
   // PAGE 3 — text + state highlight
   p3: {
-    domChar: { x:  72, y: 182, w: 630, size: 12, align: "left"  },
-    domDesc: { x:  72, y: 214, w: 630, size: 11, align: "left"  },
+    domChar: { x:  72, y: 182, w: 630, size: 12, align: "left", maxLines: 6 },
+    domDesc: { x:  72, y: 214, w: 630, size: 11, align: "left", maxLines: 8 },
     state: {
       useAbsolute: true,
       shape: "round",
@@ -314,7 +319,7 @@ const DEFAULT_COORDS = {
       styleByState: {
         C: { radius: 28,   inset: 6  },
         T: { radius: 28,   inset: 6  },
-        R: { radius: 1000, inset: 1  }, // pill
+        R: { radius: 1000, inset: 1  },
         L: { radius: 28,   inset: 6  }
       },
       labelByState: {
@@ -333,17 +338,18 @@ const DEFAULT_COORDS = {
         C: { x:  58, y: 258, w: 188, h: 156 },
         T: { x: 299, y: 258, w: 188, h: 156 },
         L: { x: 298, y: 440, w: 188, h: 156 }
-      },
-      grid: { marginX: 45, marginY: 520, gap: 24, boxW: 255, boxH: 160 }
+      }
     }
   },
 
   // PAGE 4
-  p4: { spider: { x:  60, y: 320, w: 280, size: 11, align: "left" },
-        chart:  { x: 360, y: 320, w: 260, h: 260 } },
+  p4: {
+    spider: { x:  60, y: 320, w: 280, size: 11, align: "left", maxLines: 10 },
+    chart:  { x:  20, y: 225, w: 570, h: 280 }
+  },
 
   // PAGE 5
-  p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left" } },
+  p5: { seqpat: { x:  60, y: 160, w: 650, size: 11, align: "left", maxLines: 12 } },
 
   // PAGE 6
   p6: { theme:  { x:  60, y: 160, w: 650, size: 11, align: "left" } },
@@ -352,10 +358,10 @@ const DEFAULT_COORDS = {
   p7: {
     header: { x: 60, y: 110, w: 650, size: 0, align: "left" },
     colBoxes: [
-      { x:  60, y: 140, w: 300, h: 120 },  // C
-      { x: 410, y: 140, w: 300, h: 120 },  // T
-      { x:  60, y: 270, w: 300, h: 120 },  // R
-      { x: 410, y: 270, w: 300, h: 120 }   // L
+      { x:  60, y: 140, w: 300, h: 120 },  // C (col0)
+      { x: 410, y: 140, w: 300, h: 120 },  // T (col1)
+      { x:  60, y: 270, w: 300, h: 120 },  // R (col2)
+      { x: 410, y: 270, w: 300, h: 120 }   // L (col3)
     ],
     bodySize: 10, maxLines: 9
   },
@@ -376,10 +382,10 @@ const DEFAULT_COORDS = {
   p9: {
     header: { x: 60, y: 110, w: 650, size: 0, align: "left" },
     ldrBoxes: [
-      { x:  60, y: 140, w: 300, h: 120 },  // C
-      { x: 410, y: 140, w: 300, h: 120 },  // T
-      { x:  60, y: 270, w: 300, h: 120 },  // R
-      { x: 410, y: 270, w: 300, h: 120 }   // L
+      { x:  60, y: 140, w: 300, h: 120 },  // C (ldr0)
+      { x: 410, y: 140, w: 300, h: 120 },  // T (ldr1)
+      { x:  60, y: 270, w: 300, h: 120 },  // R (ldr2)
+      { x: 410, y: 270, w: 300, h: 120 }   // L (ldr3)
     ],
     bodySize: 10, maxLines: 9
   },
@@ -396,13 +402,10 @@ const DEFAULT_COORDS = {
     bodySize: 10, maxLines: 9
   },
 
-  // PAGE 11 — Tips + Actions
+  // PAGE 11 — Tips + Actions (NO headers)
   p11: {
-    tipsHdr: { x:  30, y: 500, w: 300, size: 17, align: "left" },
-    actsHdr: { x: 320, y: 500, w: 300, size: 17, align: "left" },
-    tipsBox: { x:  30, y: 530, w: 300, size: 11, align: "left" },
-    actsBox: { x: 320, y: 530, w: 300, size: 11, align: "left" },
-    maxLines: 12
+    tipsBox: { x:  30, y: 530, w: 300, size: 11, align: "left", maxLines: 12 },
+    actsBox: { x: 320, y: 530, w: 300, size: 11, align: "left", maxLines: 12 }
   }
 };
 
@@ -415,10 +418,9 @@ function buildLayout(base) {
       L[k] = { ...(L[k] || {}), ...(base[k] || {}) };
     }
   }
-  // Footers always start from LOCKED defaults (name only)
+  // Footers & p1 use locked defaults as base
   L.footer = { ...(LOCKED.footer), ...((base && base.footer) || {}) };
-  // p1 uses LOCKED defaults too
-  L.p1 = { ...(LOCKED.p1), ...((base && base.p1) || {}) };
+  L.p1     = { ...(LOCKED.p1),     ...((base && base.p1)     || {}) };
   return L;
 }
 
@@ -449,17 +451,18 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  /* p3 domChar/domDesc */
+  /* p3 domChar/domDesc (with maxLines) */
   for (const f of ["domChar","domDesc"]) {
-    const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_size`,`p3_${f}_align`]);
+    const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_size`,`p3_${f}_align`,`p3_${f}_maxLines`]);
     if (Object.keys(P).length) L.p3[f] = { ...(L.p3[f]||{}),
       x:N(P[`p3_${f}_x`],L.p3[f]?.x), y:N(P[`p3_${f}_y`],L.p3[f]?.y),
       w:N(P[`p3_${f}_w`],L.p3[f]?.w), size:N(P[`p3_${f}_size`],L.p3[f]?.size),
-      align:S(P[`p3_${f}_align`],L.p3[f]?.align)
+      align:S(P[`p3_${f}_align`],L.p3[f]?.align),
+      maxLines: N(P[`p3_${f}_maxLines`], L.p3[f]?.maxLines)
     };
   }
 
-  /* p3 state (abs boxes + labels + style) */
+  /* p3 state (verbose path) */
   for (const k of ["C","T","R","L"]) {
     const key = `p3_state_abs_${k}`;
     const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
@@ -471,22 +474,12 @@ function applyUrlTuners(q, L) {
         h:N(P[`${key}_h`],L.p3.state.absBoxes[k]?.h)
       };
     }
-    // Per-state label anchor override
     const lk = `p3_state_label_${k}`;
     const LP = pick(q, [`${lk}_x`,`${lk}_y`]);
     if (Object.keys(LP).length) {
       L.p3.state.labelByState[k] = { ...(L.p3.state.labelByState[k]||{}),
         x:N(LP[`${lk}_x`],L.p3.state.labelByState[k]?.x),
         y:N(LP[`${lk}_y`],L.p3.state.labelByState[k]?.y)
-      };
-    }
-    // Per-state style overrides (radius/inset)
-    const sk = `p3_state_style_${k}`;
-    const SP = pick(q, [`${sk}_radius`,`${sk}_inset`]);
-    if (Object.keys(SP).length) {
-      L.p3.state.styleByState[k] = { ...(L.p3.state.styleByState[k]||{}),
-        radius:N(SP[`${sk}_radius`],L.p3.state.styleByState[k]?.radius),
-        inset:N(SP[`${sk}_inset`],L.p3.state.styleByState[k]?.inset)
       };
     }
   }
@@ -498,13 +491,50 @@ function applyUrlTuners(q, L) {
   if (q.p3_state_highlightRadius!=null) L.p3.state.highlightRadius= N(q.p3_state_highlightRadius, L.p3.state.highlightRadius);
   if (q.p3_state_highlightInset !=null) L.p3.state.highlightInset = N(q.p3_state_highlightInset, L.p3.state.highlightInset);
 
-  /* p4 spider + chart */
-  const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align"]);
+  /* p3 state — short alias mapping you provided */
+  if (q.state_useAbs != null) L.p3.state.useAbsolute = !!(+q.state_useAbs || /^true$/i.test(String(q.state_useAbs)));
+  for (const k of ["C","T","R","L"]) {
+    const P = pick(q, [`abs_${k}_x`,`abs_${k}_y`,`abs_${k}_w`,`abs_${k}_h`]);
+    if (Object.keys(P).length) {
+      L.p3.state.absBoxes[k] = { ...(L.p3.state.absBoxes[k]||{}),
+        x:N(P[`abs_${k}_x`],L.p3.state.absBoxes[k]?.x),
+        y:N(P[`abs_${k}_y`],L.p3.state.absBoxes[k]?.y),
+        w:N(P[`abs_${k}_w`],L.p3.state.absBoxes[k]?.w),
+        h:N(P[`abs_${k}_h`],L.p3.state.absBoxes[k]?.h)
+      };
+    }
+  }
+  if (q.state_shape        != null) L.p3.state.shape           = S(q.state_shape, L.p3.state.shape);
+  if (q.state_radius       != null) L.p3.state.highlightRadius = N(q.state_radius, L.p3.state.highlightRadius);
+  if (q.state_inset        != null) L.p3.state.highlightInset  = N(q.state_inset,  L.p3.state.highlightInset);
+  if (q.state_opacity      != null) L.p3.state.fillOpacity     = N(q.state_opacity, L.p3.state.fillOpacity);
+  if (q.labelText          != null) L.p3.state.labelText       = S(q.labelText, L.p3.state.labelText);
+  if (q.labelSize          != null) L.p3.state.labelSize       = N(q.labelSize, L.p3.state.labelSize);
+  if (q.labelRLx != null || q.labelRLy != null) {
+    for (const k of ["R","L"]) {
+      L.p3.state.labelByState[k] = { ...(L.p3.state.labelByState[k]||{}),
+        x: N(q.labelRLx, L.p3.state.labelByState[k]?.x),
+        y: N(q.labelRLy, L.p3.state.labelByState[k]?.y)
+      };
+    }
+  }
+  if (q.labelCTx != null || q.labelCTy != null) {
+    for (const k of ["C","T"]) {
+      L.p3.state.labelByState[k] = { ...(L.p3.state.labelByState[k]||{}),
+        x: N(q.labelCTx, L.p3.state.labelByState[k]?.x),
+        y: N(q.labelCTy, L.p3.state.labelByState[k]?.y)
+      };
+    }
+  }
+
+  /* p4 spider + chart (with maxLines) */
+  const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align","p4_spider_maxLines"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
       x:N(s4.p4_spider_x,L.p4.spider?.x), y:N(s4.p4_spider_y,L.p4.spider?.y),
       w:N(s4.p4_spider_w,L.p4.spider?.w), size:N(s4.p4_spider_size,L.p4.spider?.size),
-      align:S(s4.p4_spider_align,L.p4.spider?.align)
+      align:S(s4.p4_spider_align,L.p4.spider?.align),
+      maxLines:N(s4.p4_spider_maxLines,L.p4.spider?.maxLines)
     };
   }
   const c4 = pick(q, ["p4_chart_x","p4_chart_y","p4_chart_w","p4_chart_h"]);
@@ -515,65 +545,83 @@ function applyUrlTuners(q, L) {
     };
   }
 
-  /* p5 / p6 blocks */
-  for (const p of [{k:"p5",f:"seqpat"},{k:"p6",f:"theme"}]) {
-    const P = pick(q, [`${p.k}_${p.f}_x`,`${p.k}_${p.f}_y`,`${p.k}_${p.f}_w`,`${p.k}_${p.f}_size`,`${p.k}_${p.f}_align`]);
-    if (Object.keys(P).length) {
-      L[p.k][p.f] = { ...(L[p.k][p.f]||{}),
-        x:N(P[`${p.k}_${p.f}_x`],L[p.k][p.f]?.x), y:N(P[`${p.k}_${p.f}_y`],L[p.k][p.f]?.y),
-        w:N(P[`${p.k}_${p.f}_w`],L[p.k][p.f]?.w), size:N(P[`${p.k}_${p.f}_size`],L[p.k][p.f]?.size),
-        align:S(P[`${p.k}_${p.f}_align`],L[p.k][p.f]?.align)
-      };
-    }
+  /* p5 / p6 blocks (with maxLines for p5) */
+  const p5 = pick(q, ["p5_seqpat_x","p5_seqpat_y","p5_seqpat_w","p5_seqpat_size","p5_seqpat_align","p5_seqpat_maxLines"]);
+  if (Object.keys(p5).length) {
+    L.p5.seqpat = { ...(L.p5.seqpat||{}),
+      x:N(p5.p5_seqpat_x,L.p5.seqpat?.x), y:N(p5.p5_seqpat_y,L.p5.seqpat?.y),
+      w:N(p5.p5_seqpat_w,L.p5.seqpat?.w), size:N(p5.p5_seqpat_size,L.p5.seqpat?.size),
+      align:S(p5.p5_seqpat_align,L.p5.seqpat?.align),
+      maxLines:N(p5.p5_seqpat_maxLines,L.p5.seqpat?.maxLines)
+    };
+  }
+  const p6 = pick(q, ["p6_theme_x","p6_theme_y","p6_theme_w","p6_theme_size","p6_theme_align"]);
+  if (Object.keys(p6).length) {
+    L.p6.theme = { ...(L.p6.theme||{}),
+      x:N(p6.p6_theme_x,L.p6.theme?.x), y:N(p6.p6_theme_y,L.p6.theme?.y),
+      w:N(p6.p6_theme_w,L.p6.theme?.w), size:N(p6.p6_theme_size,L.p6.theme?.size),
+      align:S(p6.p6_theme_align,L.p6.theme?.align)
+    };
   }
 
-  /* p7/p8 colleagues boxes + body sizes */
+  /* p7/p8 colleagues — per box tuners including size/maxLines */
   for (const p of ["p7","p8"]) {
     if (q[`${p}_bodySize`] != null) L[p].bodySize = N(q[`${p}_bodySize`], L[p].bodySize);
     if (q[`${p}_maxLines`] != null) L[p].maxLines = N(q[`${p}_maxLines`], L[p].maxLines);
     for (let i=0;i<4;i++) {
       const key = `${p}_col${i}`;
-      const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
+      const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`,`${key}_size`,`${key}_maxLines`]);
       if (Object.keys(P).length) {
         L[p].colBoxes[i] = { ...(L[p].colBoxes[i]||{}),
           x:N(P[`${key}_x`],L[p].colBoxes[i]?.x),
           y:N(P[`${key}_y`],L[p].colBoxes[i]?.y),
           w:N(P[`${key}_w`],L[p].colBoxes[i]?.w),
-          h:N(P[`${key}_h`],L[p].colBoxes[i]?.h)
+          h:N(P[`${key}_h`],L[p].colBoxes[i]?.h),
+          size:N(P[`${key}_size`],L[p].colBoxes[i]?.size),
+          maxLines:N(P[`${key}_maxLines`],L[p].colBoxes[i]?.maxLines)
         };
       }
     }
   }
 
-  /* p9/p10 leader boxes + body sizes */
+  /* p9/p10 leaders — per box tuners including size/maxLines */
   for (const p of ["p9","p10"]) {
     if (q[`${p}_bodySize`] != null) L[p].bodySize = N(q[`${p}_bodySize`], L[p].bodySize);
     if (q[`${p}_maxLines`] != null) L[p].maxLines = N(q[`${p}_maxLines`], L[p].maxLines);
     for (let i=0;i<4;i++) {
       const key = `${p}_ldr${i}`;
-      const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`]);
+      const P = pick(q, [`${key}_x`,`${key}_y`,`${key}_w`,`${key}_h`,`${key}_size`,`${key}_maxLines`]);
       if (Object.keys(P).length) {
         L[p].ldrBoxes[i] = { ...(L[p].ldrBoxes[i]||{}),
           x:N(P[`${key}_x`],L[p].ldrBoxes[i]?.x),
           y:N(P[`${key}_y`],L[p].ldrBoxes[i]?.y),
           w:N(P[`${key}_w`],L[p].ldrBoxes[i]?.w),
-          h:N(P[`${key}_h`],L[p].ldrBoxes[i]?.h)
+          h:N(P[`${key}_h`],L[p].ldrBoxes[i]?.h),
+          size:N(P[`${key}_size`],L[p].ldrBoxes[i]?.size),
+          maxLines:N(P[`${key}_maxLines`],L[p].ldrBoxes[i]?.maxLines)
         };
       }
     }
   }
 
-  /* p11 tips/actions */
-  if (q.p11_maxLines != null) L.p11.maxLines = N(q.p11_maxLines, L.p11.maxLines);
-  for (const f of ["tipsHdr","actsHdr","tipsBox","actsBox"]) {
-    const P = pick(q, [`p11_${f}_x`,`p11_${f}_y`,`p11_${f}_w`,`p11_${f}_size`,`p11_${f}_align`]);
-    if (Object.keys(P).length) {
-      L.p11[f] = { ...(L.p11[f]||{}),
-        x:N(P[`p11_${f}_x`],L.p11[f]?.x), y:N(P[`p11_${f}_y`],L.p11[f]?.y),
-        w:N(P[`p11_${f}_w`],L.p11[f]?.w), size:N(P[`p11_${f}_size`],L.p11[f]?.size),
-        align:S(P[`p11_${f}_align`],L.p11[f]?.align)
-      };
-    }
+  /* p11 tips/actions — NO headers; with maxLines per box */
+  const t11 = pick(q, ["p11_tipsBox_x","p11_tipsBox_y","p11_tipsBox_w","p11_tipsBox_size","p11_tipsBox_align","p11_tipsBox_maxLines"]);
+  if (Object.keys(t11).length) {
+    L.p11.tipsBox = { ...(L.p11.tipsBox||{}),
+      x:N(t11.p11_tipsBox_x,L.p11.tipsBox?.x), y:N(t11.p11_tipsBox_y,L.p11.tipsBox?.y),
+      w:N(t11.p11_tipsBox_w,L.p11.tipsBox?.w), size:N(t11.p11_tipsBox_size,L.p11.tipsBox?.size),
+      align:S(t11.p11_tipsBox_align,L.p11.tipsBox?.align),
+      maxLines:N(t11.p11_tipsBox_maxLines,L.p11.tipsBox?.maxLines)
+    };
+  }
+  const a11 = pick(q, ["p11_actsBox_x","p11_actsBox_y","p11_actsBox_w","p11_actsBox_size","p11_actsBox_align","p11_actsBox_maxLines"]);
+  if (Object.keys(a11).length) {
+    L.p11.actsBox = { ...(L.p11.actsBox||{}),
+      x:N(a11.p11_actsBox_x,L.p11.actsBox?.x), y:N(a11.p11_actsBox_y,L.p11.actsBox?.y),
+      w:N(a11.p11_actsBox_w,L.p11.actsBox?.w), size:N(a11.p11_actsBox_size,L.p11.actsBox?.size),
+      align:S(a11.p11_actsBox_align,L.p11.actsBox?.align),
+      maxLines:N(a11.p11_actsBox_maxLines,L.p11.actsBox?.maxLines)
+    };
   }
 
   return L;
@@ -586,17 +634,8 @@ async function embedRemoteImage(pdfDoc, url) {
   if (!resp.ok) return null;
   const ab = await resp.arrayBuffer();
   const bytes = new Uint8Array(ab);
-  try {
-    if (bytes[0] === 0x89 && String.fromCharCode(bytes[1],bytes[2],bytes[3]) === "PNG") {
-      return await pdfDoc.embedPng(bytes);
-    }
-  } catch {}
-  try {
-    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-      return await pdfDoc.embedJpg(bytes);
-    }
-  } catch {}
-  // Fallback attempts
+  try { if (bytes[0] === 0x89 && String.fromCharCode(bytes[1],bytes[2],bytes[3]) === "PNG") return await pdfDoc.embedPng(bytes); } catch {}
+  try { if (bytes[0] === 0xFF && bytes[1] === 0xD8) return await pdfDoc.embedJpg(bytes); } catch {}
   try { return await pdfDoc.embedPng(bytes); } catch {}
   try { return await pdfDoc.embedJpg(bytes); } catch {}
   return null;
@@ -639,7 +678,7 @@ export default async function handler(req, res) {
     const pdfDoc   = await PDFDocument.load(tplBytes);
     const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // Page helpers (1-based in comments, 0-based indexing)
+    // Page helpers (0-based)
     const p  = (n) => pdfDoc.getPages()[n];
     const pages = pdfDoc.getPages();
 
@@ -660,24 +699,22 @@ export default async function handler(req, res) {
     if (L.p1?.date && P.dateLbl)  drawTextBox(page1, font, norm(P.dateLbl), L.p1.date);
 
     /* ----------------------------- PAGE 3 ----------------------------- */
-    if (P.domChar) drawTextBox(page3, font, P.domChar, L.p3.domChar);
-    if (P.domDesc) drawTextBox(page3, font, P.domDesc, L.p3.domDesc);
+    if (P.domChar) drawTextBox(page3, font, P.domChar, L.p3.domChar, { maxLines: N(L.p3.domChar.maxLines, 6) });
+    if (P.domDesc) drawTextBox(page3, font, P.domDesc, L.p3.domDesc, { maxLines: N(L.p3.domDesc.maxLines, 8) });
 
     const dom = resolveDomKey(P.dom, P.domChar, P.domDesc);
     if (dom) {
       const anchor = paintStateHighlight(page3, dom, L.p3.state || {});
       if (anchor && (L.p3.state?.labelText || "").trim()) {
-        const spec = {
+        drawTextBox(page3, font, S(L.p3.state.labelText), {
           x: anchor.labelX, y: anchor.labelY, w: 180,
-          size: N(L.p3.state.labelSize, 10),
-          align: "center",
-        };
-        drawTextBox(page3, font, S(L.p3.state.labelText), spec, { maxLines: 1 });
+          size: N(L.p3.state.labelSize, 10), align: "center"
+        }, { maxLines: 1 });
       }
     }
 
     /* ----------------------------- PAGE 4 ----------------------------- */
-    if (P.spiderTxt) drawTextBox(page4, font, P.spiderTxt, L.p4.spider);
+    if (P.spiderTxt) drawTextBox(page4, font, P.spiderTxt, L.p4.spider, { maxLines: N(L.p4.spider.maxLines, 10) });
     if (P.chartUrl) {
       const img = await embedRemoteImage(pdfDoc, P.chartUrl);
       if (img) {
@@ -688,13 +725,12 @@ export default async function handler(req, res) {
     }
 
     /* ----------------------------- PAGE 5 ----------------------------- */
-    if (P.seqpat) drawTextBox(page5, font, P.seqpat, L.p5.seqpat);
+    if (P.seqpat) drawTextBox(page5, font, P.seqpat, L.p5.seqpat, { maxLines: N(L.p5.seqpat.maxLines, 12) });
 
     /* ----------------------------- PAGE 6 ----------------------------- */
     if (P.theme) drawTextBox(page6, font, P.theme, L.p6.theme);
 
-    /* ----------------------------- PAGE 7 ----------------------------- *
-       LOOK — colleagues                                                  */
+    /* ----------------------------- PAGE 7 ----------------------------- */
     if (L.p7?.colBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       for (const k of ["C","T","R","L"]) {
@@ -704,12 +740,12 @@ export default async function handler(req, res) {
           (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
         ) || P.workwcol[i] || {};
         const txt = norm(item?.look);
-        if (txt) drawTextInBox(page7, font, txt, bx, L.p7.bodySize || 10, "left", { maxLines: N(L.p7.maxLines, 9), ellipsis: true });
+        if (txt) drawTextInBox(page7, font, txt, bx, N(bx.size, L.p7.bodySize || 10), "left",
+          { maxLines: N(bx.maxLines, L.p7.maxLines || 9), ellipsis: true });
       }
     }
 
-    /* ----------------------------- PAGE 8 ----------------------------- *
-       WORK — colleagues                                                  */
+    /* ----------------------------- PAGE 8 ----------------------------- */
     if (L.p8?.colBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       for (const k of ["C","T","R","L"]) {
@@ -719,12 +755,12 @@ export default async function handler(req, res) {
           (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
         ) || P.workwcol[i] || {};
         const txt = norm(item?.work);
-        if (txt) drawTextInBox(page8, font, txt, bx, L.p8.bodySize || 10, "left", { maxLines: N(L.p8.maxLines, 9), ellipsis: true });
+        if (txt) drawTextInBox(page8, font, txt, bx, N(bx.size, L.p8.bodySize || 10), "left",
+          { maxLines: N(bx.maxLines, L.p8.maxLines || 9), ellipsis: true });
       }
     }
 
-    /* ----------------------------- PAGE 9 ----------------------------- *
-       LOOK — leaders                                                     */
+    /* ----------------------------- PAGE 9 ----------------------------- */
     if (L.p9?.ldrBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       for (const k of ["C","T","R","L"]) {
@@ -734,12 +770,12 @@ export default async function handler(req, res) {
           (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
         ) || P.workwlead[i] || {};
         const txt = norm(item?.look);
-        if (txt) drawTextInBox(page9,  font, txt, bx, L.p9.bodySize || 10, "left", { maxLines: N(L.p9.maxLines, 9), ellipsis: true });
+        if (txt) drawTextInBox(page9,  font, txt, bx, N(bx.size, L.p9.bodySize || 10), "left",
+          { maxLines: N(bx.maxLines, L.p9.maxLines || 9), ellipsis: true });
       }
     }
 
-    /* ----------------------------- PAGE 10 ---------------------------- *
-       WORK — leaders                                                     */
+    /* ----------------------------- PAGE 10 ---------------------------- */
     if (L.p10?.ldrBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       for (const k of ["C","T","R","L"]) {
@@ -749,21 +785,18 @@ export default async function handler(req, res) {
           (S(x?.mine).toUpperCase() === k) || (S(x?.their).toUpperCase() === k)
         ) || P.workwlead[i] || {};
         const txt = norm(item?.work);
-        if (txt) drawTextInBox(page10, font, txt, bx, L.p10.bodySize || 10, "left", { maxLines: N(L.p10.maxLines, 9), ellipsis: true });
+        if (txt) drawTextInBox(page10, font, txt, bx, N(bx.size, L.p10.bodySize || 10), "left",
+          { maxLines: N(bx.maxLines, L.p10.maxLines || 9), ellipsis: true });
       }
     }
 
     /* ----------------------------- PAGE 11 ---------------------------- *
-       Tips & Actions (bulleted)                                          */
-    if (P.tips?.length || P.actions?.length) {
-      if (L.p11?.tipsHdr) drawTextBox(page11, font, "Tips",    L.p11.tipsHdr, { maxLines: 1 });
-      if (L.p11?.actsHdr) drawTextBox(page11, font, "Actions", L.p11.actsHdr, { maxLines: 1 });
-      if (L.p11?.tipsBox && P.tips?.length) {
-        drawBulleted(page11, font, P.tips,    L.p11.tipsBox, { maxLines: N(L.p11.maxLines, 12) });
-      }
-      if (L.p11?.actsBox && P.actions?.length) {
-        drawBulleted(page11, font, P.actions, L.p11.actsBox, { maxLines: N(L.p11.maxLines, 12) });
-      }
+       Tips & Actions — NO titles                                         */
+    if (L.p11?.tipsBox && P.tips?.length) {
+      drawBulleted(page11, font, P.tips,  L.p11.tipsBox, { maxLines: N(L.p11.tipsBox.maxLines, 12) });
+    }
+    if (L.p11?.actsBox && P.actions?.length) {
+      drawBulleted(page11, font, P.actions, L.p11.actsBox, { maxLines: N(L.p11.actsBox.maxLines, 12) });
     }
 
     /* ------------------------------ FOOTERS --------------------------- *
@@ -775,7 +808,6 @@ export default async function handler(req, res) {
       if (!spec || !text) return;
       drawTextBox(pages[idx], font, text, spec, { maxLines: 1 });
     };
-    // 1-based page indices we draw on: 2..12 (array is 0-based)
     put(1,  "f2",  footerName);
     put(2,  "f3",  footerName);
     put(3,  "f4",  footerName);
