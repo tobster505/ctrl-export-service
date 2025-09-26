@@ -314,10 +314,11 @@ const DEFAULT_COORDS = {
         L: { radius: 28,   inset: 6  }
       },
       labelByState: {
-        C: { x: 150, y: 245 },
-        T: { x: 390, y: 244 },
-        R: { x: 150, y: 612 },
-        L: { x: 390, y: 605 }
+        /* UPDATED to your locked positions */
+        C: { x:  60, y: 245 },
+        T: { x: 290, y: 244 },
+        R: { x:  60, y: 605 },
+        L: { x: 290, y: 605 }
       },
       labelText: "YOU ARE HERE",
       labelSize: 10,
@@ -325,10 +326,11 @@ const DEFAULT_COORDS = {
       labelOffsetX: 0, labelOffsetY: 0,
       labelPadTop: 12, labelPadBottom: 12,
       absBoxes: {
+        /* UPDATED L box; others already matched your spec */
         R: { x:  60, y: 433, w: 188, h: 158 },
         C: { x:  58, y: 258, w: 188, h: 156 },
         T: { x: 299, y: 258, w: 188, h: 156 },
-        L: { x: 298, y: 440, w: 188, h: 156 }
+        L: { x: 298, y: 430, w: 195, h: 173 }
       }
     }
   },
