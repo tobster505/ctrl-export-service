@@ -19,18 +19,16 @@
  *  • p1:  p1_name_*  / p1_date_*    (x,y,w,size,align)
  *  • p3 text: p3_domChar_* + p3_domChar_maxLines
  *              p3_domDesc_* + p3_domDesc_maxLines
- *  • p3 state (two alias styles supported):
- *        New (requested): state_useAbs=1&state_shape=round&state_radius=28&state_inset=6&state_opacity=0.45
- *                         abs_R_x=..&abs_R_y=..&abs_R_w=..&abs_R_h=..
- *                         abs_C_* ... abs_T_* ... abs_L_*
- *                         labelRLx=..&labelRLy=.. (applies to R and L)
- *                         labelCTx=..&labelCTy=.. (applies to C and T)
- *                         labelText=YOU%20ARE%20HERE&labelSize=10
- *        Legacy: p3_state_* + p3_state_abs_R_x=.. etc.
+ *  • p3 state (aliases you asked for):
+ *        state_useAbs=1&state_shape=round&state_radius=28&state_inset=6&state_opacity=0.45
+ *        abs_R_x/y/w/h  · abs_C_*  · abs_T_*  · abs_L_*
+ *        labelRLx/labelRLy  (R & L)    ·   labelCTx/labelCTy (C & T)
+ *        labelText=YOU%20ARE%20HERE&labelSize=10
+ *        (legacy p3_state_* also supported)
  *  • p4 spider text:  p4_spider_* + p4_spider_maxLines
  *     chart img box:  p4_chart_x/y/w/h
  *  • p5 seq/pattern:  p5_seqpat_* + p5_seqpat_maxLines
- *  • p6 theme:        p6_theme_* (+ optional p6_theme_maxLines)
+ *  • p6 theme:        p6_theme_* (+ p6_theme_maxLines)
  *  • p7/p8:           p7_bodySize, p7_maxLines, p7_col0..3_(x|y|w|h)
  *                     p8_bodySize, p8_maxLines, p8_col0..3_(x|y|w|h)
  *  • p9/p10:          p9_bodySize, p9_maxLines, p9_ldr0..3_(x|y|w|h)
@@ -79,7 +77,7 @@ const todayLbl = () => {
 
 const ensureArray = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
-/** base64url → JSON (accepts base64 or base64url, optionally URL-encoded) */
+/** base64url → JSON */
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
@@ -204,7 +202,8 @@ function paintStateHighlight(page3, dom, cfg = {}) {
 
   page3.drawRectangle({
     x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h,
-    borderRadius: radius, color: shade, opacity
+    // pdf-lib doesn't natively round corners; keeping 'radius' as a hint; rectangle stays rectangular in most builds.
+    color: shade, opacity
   });
 
   const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
@@ -256,7 +255,6 @@ function normaliseInput(d = {}) {
   P.seqpat    = norm(d.seqpat || d.pattern || "");
   P.theme     = norm(d.theme || "");
 
-  // Work with colleagues/leaders: pick by "their" (C/T/R/L) for correct mapping
   P.workwcol  = ensureArray(d.workwcol).map(x => ({
     mine:  norm(x?.mine),  their: norm(x?.their),
     look:  norm(x?.look),  work:  norm(x?.work)
@@ -275,7 +273,7 @@ function normaliseInput(d = {}) {
 /* ───────────────────────── Locked defaults (as requested) ────────────────── */
 
 const LOCKED = {
-  // p1 defaults
+  // p1 defaults (locked)
   p1: {
     name: { x:  7,  y: 473, w: 500, size: 30, align: "center" },
     date: { x: 210, y: 600, w: 500, size: 25, align: "left"   },
@@ -312,7 +310,7 @@ const DEFAULT_COORDS = {
       styleByState: {
         C: { radius: 28,   inset: 6  },
         T: { radius: 28,   inset: 6  },
-        R: { radius: 1000, inset: 1  },  // pill
+        R: { radius: 1000, inset: 1  },
         L: { radius: 28,   inset: 6  }
       },
       labelByState: {
@@ -360,7 +358,7 @@ const DEFAULT_COORDS = {
     colBoxes: [
       { x:  40, y: 240, w: 300, h: 120 },  // C
       { x: 410, y: 140, w: 300, h: 120 },  // T
-      { x:  60, y: 270, w: 300, h: 120 },  // R (override via tuner if needed)
+      { x:  60, y: 270, w: 300, h: 120 },  // R
       { x: 410, y: 270, w: 300, h: 120 }   // L
     ],
     bodySize: 10, maxLines: 9
@@ -427,7 +425,7 @@ function buildLayout(base) {
   return L;
 }
 
-/* URL tuner application (supports both legacy + new aliases) */
+/* URL tuner application (supports legacy + new aliases) */
 function applyUrlTuners(q, L) {
   const pick = (obj, keys) => keys.reduce((o, k) => (obj[k] != null ? (o[k] = obj[k], o) : o), {});
 
@@ -443,13 +441,13 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // Footers f2..f12
+  // Footers f2..f12  (FIXED: removed stray bracket)
   for (const pn of ["f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12"]) {
     const spec = pick(q, [`${pn}_x`, `${pn}_y`, `${pn}_w`, `${pn}_size`, `${pn}_align`]);
     if (Object.keys(spec).length) {
       L.footer[pn] = { ...(L.footer[pn]||{}),
         x:N(spec[`${pn}_x`],L.footer[pn]?.x),
-        y:N(spec[`${pn}_y`],L.footer[pn]?.y]),
+        y:N(spec[`${pn}_y`],L.footer[pn]?.y),
         w:N(spec[`${pn}_w`],L.footer[pn]?.w),
         size:N(spec[`${pn}_size`],L.footer[pn]?.size),
         align:S(spec[`${pn}_align`],L.footer[pn]?.align)
@@ -473,7 +471,6 @@ function applyUrlTuners(q, L) {
   }
 
   // p3 state (aliases)
-  // Global flags
   if (q.state_useAbs != null) L.p3.state.useAbsolute = String(q.state_useAbs) === "1" || String(q.state_useAbs).toLowerCase() === "true";
   if (q.state_shape != null)  L.p3.state.shape = S(q.state_shape);
   if (q.state_radius != null) L.p3.state.highlightRadius = N(q.state_radius, L.p3.state.highlightRadius);
@@ -482,7 +479,6 @@ function applyUrlTuners(q, L) {
   if (q.labelText    != null) L.p3.state.labelText       = S(q.labelText);
   if (q.labelSize    != null) L.p3.state.labelSize       = N(q.labelSize, L.p3.state.labelSize);
 
-  // label RL/CT pairs
   if (q.labelRLx != null) { L.p3.state.labelByState.R = { ...(L.p3.state.labelByState.R||{}), x:N(q.labelRLx) };
                             L.p3.state.labelByState.L = { ...(L.p3.state.labelByState.L||{}), x:N(q.labelRLx) }; }
   if (q.labelRLy != null) { L.p3.state.labelByState.R = { ...(L.p3.state.labelByState.R||{}), y:N(q.labelRLy) };
@@ -492,7 +488,6 @@ function applyUrlTuners(q, L) {
   if (q.labelCTy != null) { L.p3.state.labelByState.C = { ...(L.p3.state.labelByState.C||{}), y:N(q.labelCTy) };
                             L.p3.state.labelByState.T = { ...(L.p3.state.labelByState.T||{}), y:N(q.labelCTy) }; }
 
-  // abs boxes aliases
   for (const K of ["R","C","T","L"]) {
     const base = `abs_${K}_`;
     const P = pick(q, [`${base}x`,`${base}y`,`${base}w`,`${base}h`]);
@@ -505,7 +500,6 @@ function applyUrlTuners(q, L) {
       };
     }
   }
-  // legacy p3_state_* equivalents
   if (q.p3_state_labelOffsetX != null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
   if (q.p3_state_labelOffsetY != null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
   for (const K of ["R","C","T","L"]) {
@@ -529,7 +523,7 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p4 spider/maxLines + chart
+  // p4 spider + chart
   const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align","p4_spider_maxLines"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
@@ -696,7 +690,7 @@ export default async function handler(req, res) {
     const page9  = p(8);
     const page10 = p(9);
     const page11 = p(10);
-    const page12 = p(11); // footer only
+    const page12 = p(11); // may be undefined if template has only 11 pages
 
     /* ----------------------------- PAGE 1 ----------------------------- */
     if (L.p1?.name && P.name)     drawTextBox(page1, font, norm(P.name),    L.p1.name, { maxLines: 1 });
@@ -737,8 +731,7 @@ export default async function handler(req, res) {
     /* ----------------------------- PAGE 6 ----------------------------- */
     if (P.theme) drawTextBox(page6, font, P.theme, L.p6.theme, { maxLines: N(L.p6.themeMaxLines,12) });
 
-    /* ----------------------------- PAGE 7 ----------------------------- *
-       LOOK — colleagues (pick by THEIR=C/T/R/L)                         */
+    /* ----------------------------- PAGE 7 ----------------------------- */
     if (L.p7?.colBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       const pickItem = (arr, k, idx) =>
@@ -754,8 +747,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ----------------------------- PAGE 8 ----------------------------- *
-       WORK — colleagues (THEIR=C/T/R/L)                                 */
+    /* ----------------------------- PAGE 8 ----------------------------- */
     if (L.p8?.colBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       const pickItem = (arr, k, idx) =>
@@ -771,8 +763,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ----------------------------- PAGE 9 ----------------------------- *
-       LOOK — leaders (THEIR=C/T/R/L)                                    */
+    /* ----------------------------- PAGE 9 ----------------------------- */
     if (L.p9?.ldrBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       const pickItem = (arr, k, idx) =>
@@ -788,8 +779,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ----------------------------- PAGE 10 ---------------------------- *
-       WORK — leaders (THEIR=C/T/R/L)                                    */
+    /* ----------------------------- PAGE 10 ---------------------------- */
     if (L.p10?.ldrBoxes?.length) {
       const mapIdx = { C:0, T:1, R:2, L:3 };
       const pickItem = (arr, k, idx) =>
@@ -805,8 +795,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ----------------------------- PAGE 11 ---------------------------- *
-       Tips & Actions (NO HEADERS)                                       */
+    /* ----------------------------- PAGE 11 ---------------------------- */
     if (L.p11?.tipsBox && P.tips?.length) {
       drawBulleted(page11, font, P.tips,  L.p11.tipsBox, { maxLines: N(L.p11.tipsMaxLines, 12) });
     }
@@ -814,16 +803,15 @@ export default async function handler(req, res) {
       drawBulleted(page11, font, P.actions, L.p11.actsBox, { maxLines: N(L.p11.actsMaxLines, 12) });
     }
 
-    /* ------------------------------ FOOTERS --------------------------- *
-       Name only; no page numbers                                        */
+    /* ------------------------------ FOOTERS --------------------------- */
     const footerSpec = L.footer || LOCKED.footer;
     const footerName = norm(P.name || "");
     const putName = (idx, key) => {
       const spec = footerSpec[key];
-      if (!spec || !footerName) return;
+      if (!spec || !footerName || !pages[idx]) return;
       drawTextBox(pages[idx], font, footerName, spec, { maxLines: 1 });
     };
-    // Pages 2..12
+    // Pages 2..12 (guard for shorter templates)
     putName(1,  "f2");
     putName(2,  "f3");
     putName(3,  "f4");
