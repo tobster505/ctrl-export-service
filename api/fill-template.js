@@ -206,6 +206,38 @@ function resolveDomKey(...candidates) {
   return "";
 }
 
+/* ─────────────────────────── Input normalization ─────────────────────────── */
+function normaliseInput(d = {}) {
+  const P = {};
+  P.flow    = norm(d.f || d.flow || "Perspective");
+  P.name    = norm(d.n || d.name);
+  P.dateLbl = norm(d.d || d.date || todayLbl());
+
+  P.dom     = resolveDomKey(d.dom, d.dom6Key, d.dom6Label, d.domchar, d.domdesc);
+  P.domChar = norm(d.domchar || d.domChar || d.character || "");
+  P.domDesc = norm(d.domdesc || d.domDesc || d.dominantDesc || "");
+
+  P.spiderTxt = norm(d.spiderdesc || d.spider || "");
+  P.chartUrl  = S(d.spiderfreq || d.chart || ""); // QuickChart or similar
+
+  P.seqpat  = norm(d.seqpat || d.pattern || "");
+  P.theme   = norm(d.theme || "");
+
+  P.workwcol  = ensureArray(d.workwcol).map(x => ({
+    mine:  norm(x?.mine),  their: norm(x?.their),
+    look:  norm(x?.look),  work:  norm(x?.work)
+  }));
+  P.workwlead = ensureArray(d.workwlead).map(x => ({
+    mine:  norm(x?.mine),  their: norm(x?.their),
+    look:  norm(x?.look),  work:  norm(x?.work)
+  }));
+
+  P.tips    = ensureArray(d.tips).map(norm);
+  P.actions = ensureArray(d.actions).map(norm);
+
+  return P;
+}
+
 /* ───────────────────────── Default coordinates (locked, tunable) ─────────── */
 const LOCKED = {
   p1: {
@@ -552,7 +584,7 @@ export default async function handler(req, res) {
         const bx = L.p9.ldrBoxes[i];
         const item = P.workwlead.find(x => (S(x?.mine).toUpperCase()===k) || (S(x?.their).toUpperCase()===k)) || P.workwlead[i] || {};
         const txt = norm(item?.look);
-        if (txt) drawTextInBox(page9, font, txt, bx, L.p9.bodySize || 13, "left", { maxLines: N(L.p9.maxLines, 15), ellipsis: true });
+        if (txt) drawTextInBox(page9,  font, txt, bx, L.p9.bodySize || 13, "left", { maxLines: N(L.p9.maxLines, 15), ellipsis: true });
       }
     }
 
@@ -568,10 +600,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // PAGE 11 — Tips & Actions
+    // PAGE 11 — Tips & Actions (no titles)
     if (P.tips?.length && L.p11?.tipsBox) {
       const tipsSpec = { ...L.p11.tipsBox, gap: N(L.p11.bulletGap ?? 6, 6) };
-      drawBulleted(page10 + 1 ? page11 : page11, font, P.tips, tipsSpec, { maxLines: N(L.p11.tipsMaxLines, 25) });
+      drawBulleted(page11, font, P.tips, tipsSpec, { maxLines: N(L.p11.tipsMaxLines, 25) });
     }
     if (P.actions?.length && L.p11?.actsBox) {
       const actsSpec = { ...L.p11.actsBox, gap: N(L.p11.bulletGap ?? 6, 6) };
