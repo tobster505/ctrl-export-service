@@ -322,9 +322,12 @@ const DEFAULT_COORDS = {
     }
   },
 
-  // PAGE 4
-  p4: { spider: { x:  30, y: 585, w: 550, size: 18, align: "left", maxLines: 10 },
-        chart:  { x:  20, y: 225, w: 570, h: 280 } },
+  // PAGE 4 — Spider description + chart (tunable via URL)
+  p4: {
+    // spider description text box (a.k.a. spiderdesc)
+    spider: { x: 30, y: 585, w: 550, size: 18, align: "left", maxLines: 10 },
+    chart:  { x: 20, y: 225, w: 570, h: 280 }
+  },
 
   // PAGE 5
   p5: { seqpat: { x:  25, y: 250, w: 550, size: 18, align: "left", maxLines: 12 } },
@@ -378,16 +381,17 @@ const DEFAULT_COORDS = {
 
   // PAGE 11 — Tips + Actions (SPLIT MODE DEFAULT)
   p11: {
-    // still keep combined boxes available (not used when split=true)
-    tipsBox: { x:  40, y: 175, w: 500, size: 18, align: "left", maxLines: 25 },
-    actsBox: { x:  40, y: 355, w: 500, size: 18, align: "left", maxLines: 25 },
+    // combined (fallback) — not used when split=true
+    tipsBox: { x: 40, y: 175, w: 500, size: 18, align: "left", maxLines: 25 },
+    actsBox: { x: 40, y: 355, w: 500, size: 18, align: "left", maxLines: 25 },
 
+    // spacing controls
     lineGap: 6,
     itemGap: 6,
     bulletIndent: 18,
 
+    // split mode for two tips + two actions
     split: true,
-
     tips1: { x: 30, y: 175, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
     tips2: { x: 30, y: 265, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
     acts1: { x: 30, y: 405, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
@@ -480,7 +484,7 @@ function applyUrlTuners(q, L) {
   if (q.p3_state_labelOffsetX!=null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
   if (q.p3_state_labelOffsetY!=null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
 
-  // p4 spider + chart
+  // p4 spider + chart (now tunable with p4_spider_x/y/w/size/align/maxLines)
   const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align","p4_spider_maxLines"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
