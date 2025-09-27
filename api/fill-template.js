@@ -12,24 +12,8 @@
  *  p8  WORK — colleagues   (C/T/R/L, 4 boxes; from workwcol[*].work)
  *  p9  LOOK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].look)
  *  p10 WORK — leaders      (C/T/R/L, 4 boxes; from workwlead[*].work)
- *  p11 Tips & Actions      (two bulleted columns, NO titles)
+ *  p11 Tips & Actions      (either classic two-column OR 2+2 single-item boxes)
  *  p12 (footer only)
- *
- * URL tuners (examples):
- *  • Page 1:   ?p1_name_x=7&y=473&w=500&size=30&align=center · ?p1_date_x=210&y=600&w=500&size=25&align=left
- *  • Footers:  ?f7_x=380&f7_y=51&f7_size=13&f7_align=left   (f2..f12)
- *  • P3 labels: ?p3_state_label_T_x=290&p3_state_label_T_y=244  (C/T/R/L)
- *  • P3 boxes:  ?p3_state_abs_R_x=60&y=433&w=188&h=158         (C/T/R/L)
- *               (aliases also accepted: abs_R_x, abs_T_x, etc.)
- *  • P3 text:   ?p3_domChar_y=640&...&p3_domChar_maxLines=6 · ?p3_domDesc_maxLines=12
- *  • P4 spider: ?p4_spider_x=30&y=585&w=550&size=18&p4_spider_maxLines=10
- *  • P4 chart:  ?p4_chart_x=20&y=225&w=570&h=280
- *  • P5/P6:     ?p5_seqpat_maxLines=12 · ?p6_theme_maxLines=12
- *  • P7/P8:     ?p7_bodySize=13&p7_maxLines=15  and  ?p7_col0_x=25&y=330&w=260&h=120 (…col1..col3)
- *  • P9/P10:    ?p9_bodySize=13&p9_maxLines=15  and  ?p9_ldr0_x=25&y=330&w=260&h=120 (…ldr1..ldr3)
- *  • P11:       ?p11_tipsBox_x=40&y=175&w=500&size=18&p11_tipsBox_maxLines=25
- *               ?p11_actsBox_x=40&y=355&w=500&size=18&p11_actsBox_maxLines=25
- *               ?p11_bullet_gap=6
  *********************************************************************** */
 
 export const config = { runtime: "nodejs" };
@@ -42,7 +26,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-/** WinAnsi sanitizer */
+/** WinAnsi-ish sanitizer */
 const norm = (v, fb = "") =>
   S(v, fb)
     .replace(/[\u2018\u2019]/g, "'")
@@ -86,13 +70,22 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
     color = rgb(0, 0, 0), align = "left",
   } = spec;
-  const maxLines = opts.maxLines ?? 6;
+  let maxLines = opts.maxLines ?? 6;
   const ellipsis = !!opts.ellipsis;
+
+  // If the caller gives a box height (h), derive a line-based cap
+  const h = Number.isFinite(+spec.h) ? +spec.h : null;
+  const lineH = Math.max(1, size) + lineGap;
+  if (h && h > 0) {
+    const byH = Math.max(1, Math.floor(h / lineH));
+    maxLines = Math.min(maxLines, byH);
+  }
 
   const hard = S(text || "");
   const lines = hard.split(/\n/).map((s) => s.trim());
   const wrapped = [];
   const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+
   const wrapLine = (ln) => {
     const words = ln.split(/\s+/);
     let cur = "";
@@ -111,7 +104,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 
   const pageH = page.getHeight();
   const yTop  = pageH - y;     // TL → BL baseline
-  const lineH = Math.max(1, size) + lineGap;
 
   let yCursor = yTop;
   for (let i = 0; i < out.length; i++) {
@@ -127,36 +119,112 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: out.length * lineH, lastY: yCursor };
 }
 
+/** Single bullet block with wrapping and continuation indent */
+function drawBulletBlock(page, font, text, spec = {}) {
+  const {
+    x = 40, y = 40, w = 540, size = 12,
+    lineGap = 3, bullet = "•", bulletIndent = 18, color = rgb(0,0,0),
+  } = spec;
+
+  const pageH = page.getHeight();
+  const baseY = pageH - y;
+  const lineH = Math.max(1, size) + lineGap;
+
+  const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+  const contW = Math.max(0, w - bulletIndent);
+
+  const raw = norm(text || "");
+  const words = raw.split(/\s+/);
+  const lines = [];
+
+  // First line starts with bullet + space
+  let cur = `${bullet} `;
+  for (let i = 0; i < words.length; i++) {
+    const tryFirst = cur + (cur.endsWith(" ") ? "" : " ") + words[i];
+    if (widthOf(tryFirst) <= w || cur === `${bullet} `) {
+      cur = tryFirst;
+    } else {
+      lines.push(cur.trim());
+      cur = words[i]; // the word that didn't fit becomes the start of a continuation line (no bullet)
+      // subsequent lines use continuation width (contW). We'll accumulate them below.
+      break;
+    }
+  }
+  if (!lines.length) {
+    // We may still have the first line contained fully
+    lines.push(cur.trim());
+    cur = "";
+  }
+
+  // Remaining words wrap on continuation lines (indented)
+  let cont = cur;
+  for (let i = lines.length ? words.indexOf(words.find(w => false)) : 0; i < words.length; i++) {
+    // This loop will be skipped because we already consumed words in first loop; rebuild remaining words:
+  }
+  // Rebuild remaining words properly
+  const consumed = lines[0] ? lines[0].replace(/^•\s?/, "").split(/\s+/) : [];
+  const remaining = raw.split(/\s+/).slice(consumed.length);
+  let cc = "";
+  for (const wtok of remaining) {
+    const candidate = cc ? `${cc} ${wtok}` : wtok;
+    if (widthOf(candidate) <= contW || !cc) cc = candidate;
+    else { lines.push(cc); cc = wtok; }
+  }
+  if (cc) lines.push(cc);
+
+  // Draw lines
+  let yCursor = baseY;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    const isFirst = i === 0;
+    const xDraw = isFirst ? x : (x + bulletIndent);
+    const wAvail = isFirst ? w : contW;
+    const align = "left";
+    // drawTextBox for a single line (no extra wrapping)
+    const width = widthOf(ln);
+    let xAligned = xDraw;
+    if (align === "center") xAligned = xDraw + (wAvail - width)/2;
+    else if (align === "right") xAligned = xDraw + (wAvail - width);
+    page.drawText(ln, { x: xAligned, y: yCursor - size, size: Math.max(1, size), font, color });
+    yCursor -= lineH;
+  }
+
+  return { height: lines.length * lineH, lastY: yCursor };
+}
+
 function drawBulleted(page, font, items, spec = {}, opts = {}) {
   const {
-    x = 40, y = 40, w = 540, size = 11, lineGap = 3,
-    bullet = "•", gap = 6, align = "left", color = rgb(0, 0, 0),
+    x = 40, y = 40, w = 540, size = 11,
+    lineGap = 3, gap = 6, bullet = "•", bulletIndent = 18, color = rgb(0, 0, 0),
   } = spec;
-  const maxLines = opts.maxLines ?? 12;
+
+  // If a box height (h) is given, cap lines by height heuristics:
+  const lineH = Math.max(1, size) + lineGap;
+  let maxLines = opts.maxLines ?? 12;
+  if (spec.h && spec.h > 0) {
+    const byH = Math.floor(spec.h / (lineH + gap));
+    if (byH > 0) maxLines = Math.min(maxLines, byH);
+  }
 
   const arr = ensureArray(items).map(s => norm(s));
   const pageH = page.getHeight();
   let yCursor = pageH - y;
-  const lineH = Math.max(1, size) + lineGap + gap;
 
   let linesDrawn = 0;
   for (const raw of arr) {
     if (linesDrawn >= maxLines) break;
     if (!raw) continue;
-    const lines = raw.split(/\n/).filter(Boolean);
-    const head = `${bullet} ${lines.shift() ?? ""}`;
-    drawTextBox(page, font, head, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
-    yCursor -= lineH; linesDrawn++;
-    for (const cont of lines) {
-      if (linesDrawn >= maxLines) break;
-      drawTextBox(page, font, `   ${cont}`, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
-      yCursor -= lineH; linesDrawn++;
-    }
+    // Render one bullet block; estimate its line count to keep spacing
+    const before = yCursor;
+    const res = drawBulletBlock(page, font, raw, { x, y: pageH - yCursor, w, size, lineGap, bullet, bulletIndent, color });
+    const used = (before - res.lastY) / (Math.max(1,size) + lineGap);
+    linesDrawn += Math.max(1, Math.round(used));
+    yCursor = res.lastY - gap; // item gap between bullets
   }
 }
 
 function drawTextInBox(page, font, text, box, size = 10, align = "left", opts = {}) {
-  const spec = { x: N(box.x), y: N(box.y), w: N(box.w), size: N(size), align };
+  const spec = { x: N(box.x), y: N(box.y), w: N(box.w), h: box.h != null ? N(box.h) : undefined, size: N(size), align };
   return drawTextBox(page, font, S(text), spec, opts);
 }
 
@@ -270,7 +338,16 @@ const DEFAULT_COORDS = {
   p8: { header:{x:60,y:110,w:650,size:0,align:"left"}, colBoxes:[{x:25,y:330,w:260,h:120},{x:320,y:330,w:260,h:120},{x:25,y:595,w:260,h:120},{x:320,y:595,w:260,h:120}], bodySize:13, maxLines:15 },
   p9: { header:{x:60,y:110,w:650,size:0,align:"left"}, ldrBoxes:[{x:25,y:330,w:260,h:120},{x:320,y:330,w:260,h:120},{x:25,y:595,w:260,h:120},{x:320,y:595,w:260,h:120}], bodySize:13, maxLines:15 },
   p10:{ header:{x:60,y:110,w:650,size:0,align:"left"}, ldrBoxes:[{x:25,y:330,w:260,h:120},{x:320,y:330,w:260,h:120},{x:25,y:595,w:260,h:120},{x:320,y:595,w:260,h:120}], bodySize:13, maxLines:15 },
-  p11:{ tipsBox:{x:40,y:175,w:500,size:18,align:"left"}, actsBox:{x:40,y:355,w:500,size:18,align:"left"}, tipsMaxLines:25, actsMaxLines:25, bulletGap:6 }
+
+  /* Page 11 defaults: classic boxes; itemized boxes are opt-in via URL */
+  p11:{
+    tipsBox:{x:40,y:175,w:500,size:18,align:"left"},
+    actsBox:{x:40,y:355,w:500,size:18,align:"left"},
+    // optional heights; leave undefined by default
+    tipsMaxLines:25, actsMaxLines:25,
+    lineGap:3, itemGap:6, bulletIndent:18
+    // tips1Box/tips2Box/acts1Box/acts2Box get injected if provided via URL
+  }
 };
 
 /* Merge defaults + optional payload layout + URL tuners */
@@ -287,16 +364,18 @@ function buildLayout(base) {
   return L;
 }
 
-function applyUrlTuners(q, L) {
-  const pick = (obj, keys) => keys.reduce((o, k) => (obj[k] != null ? (o[k] = obj[k], o) : o), {});
+/* Safe prop copier */
+const pick = (obj, keys) => keys.reduce((o, k) => (obj[k] != null ? (o[k] = obj[k], o) : o), {});
 
+function applyUrlTuners(q, L) {
   // p1 cover
   for (const f of ["name","date"]) {
-    const P = pick(q, [`p1_${f}_x`,`p1_${f}_y`,`p1_${f}_w`,`p1_${f}_size`,`p1_${f}_align`]);
+    const P = pick(q, [`p1_${f}_x`,`p1_${f}_y`,`p1_${f}_w`,`p1_${f}_h`,`p1_${f}_size`,`p1_${f}_align`]);
     if (Object.keys(P).length) {
       L.p1[f] = { ...(L.p1[f]||{}),
         x:N(P[`p1_${f}_x`],L.p1[f]?.x), y:N(P[`p1_${f}_y`],L.p1[f]?.y),
-        w:N(P[`p1_${f}_w`],L.p1[f]?.w), size:N(P[`p1_${f}_size`],L.p1[f]?.size),
+        w:N(P[`p1_${f}_w`],L.p1[f]?.w), h:P[`p1_${f}_h`]!=null?N(P[`p1_${f}_h`]):L.p1[f]?.h,
+        size:N(P[`p1_${f}_size`],L.p1[f]?.size),
         align:S(P[`p1_${f}_align`],L.p1[f]?.align)
       };
     }
@@ -318,11 +397,12 @@ function applyUrlTuners(q, L) {
 
   // p3 text
   for (const f of ["domChar","domDesc"]) {
-    const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_size`,`p3_${f}_align`]);
+    const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_h`,`p3_${f}_size`,`p3_${f}_align`]);
     if (Object.keys(P).length) {
       L.p3[f] = { ...(L.p3[f]||{}),
         x:N(P[`p3_${f}_x`],L.p3[f]?.x), y:N(P[`p3_${f}_y`],L.p3[f]?.y),
-        w:N(P[`p3_${f}_w`],L.p3[f]?.w), size:N(P[`p3_${f}_size`],L.p3[f]?.size),
+        w:N(P[`p3_${f}_w`],L.p3[f]?.w), h:P[`p3_${f}_h`]!=null?N(P[`p3_${f}_h`]):L.p3[f]?.h,
+        size:N(P[`p3_${f}_size`],L.p3[f]?.size),
         align:S(P[`p3_${f}_align`],L.p3[f]?.align)
       };
     }
@@ -372,43 +452,49 @@ function applyUrlTuners(q, L) {
   if (q.labelSize != null)  state.labelSize = N(q.labelSize, state.labelSize);
 
   // p4
-  const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align"]);
-  if (Object.keys(s4).length) {
-    L.p4.spider = { ...(L.p4.spider||{}),
-      x:N(s4.p4_spider_x,L.p4.spider?.x), y:N(s4.p4_spider_y,L.p4.spider?.y),
-      w:N(s4.p4_spider_w,L.p4.spider?.w), size:N(s4.p4_spider_size,L.p4.spider?.size),
-      align:S(s4.p4_spider_align,L.p4.spider?.align)
-    };
+  {
+    const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_h","p4_spider_size","p4_spider_align"]);
+    if (Object.keys(s4).length) {
+      L.p4.spider = { ...(L.p4.spider||{}),
+        x:N(s4.p4_spider_x,L.p4.spider?.x), y:N(s4.p4_spider_y,L.p4.spider?.y),
+        w:N(s4.p4_spider_w,L.p4.spider?.w), h:s4.p4_spider_h!=null?N(s4.p4_spider_h):L.p4.spider?.h,
+        size:N(s4.p4_spider_size,L.p4.spider?.size),
+        align:S(s4.p4_spider_align,L.p4.spider?.align)
+      };
+    }
+    const c4 = pick(q, ["p4_chart_x","p4_chart_y","p4_chart_w","p4_chart_h"]);
+    if (Object.keys(c4).length) {
+      L.p4.chart = { ...(L.p4.chart||{}),
+        x:N(c4.p4_chart_x,L.p4.chart?.x), y:N(c4.p4_chart_y,L.p4.chart?.y),
+        w:N(c4.p4_chart_w,L.p4.chart?.w), h:N(c4.p4_chart_h,L.p4.chart?.h)
+      };
+    }
+    if (q.p4_spider_maxLines != null) L.p4.spiderMaxLines = N(q.p4_spider_maxLines, L.p4.spiderMaxLines);
   }
-  const c4 = pick(q, ["p4_chart_x","p4_chart_y","p4_chart_w","p4_chart_h"]);
-  if (Object.keys(c4).length) {
-    L.p4.chart = { ...(L.p4.chart||{}),
-      x:N(c4.p4_chart_x,L.p4.chart?.x), y:N(c4.p4_chart_y,L.p4.chart?.y),
-      w:N(c4.p4_chart_w,L.p4.chart?.w), h:N(c4.p4_chart_h,L.p4.chart?.h)
-    };
-  }
-  if (q.p4_spider_maxLines != null) L.p4.spiderMaxLines = N(q.p4_spider_maxLines, L.p4.spiderMaxLines);
 
   // p5 / p6
-  const p5 = pick(q, ["p5_seqpat_x","p5_seqpat_y","p5_seqpat_w","p5_seqpat_size","p5_seqpat_align"]);
-  if (Object.keys(p5).length) {
-    L.p5.seqpat = { ...(L.p5.seqpat||{}),
-      x:N(p5.p5_seqpat_x,L.p5.seqpat?.x), y:N(p5.p5_seqpat_y,L.p5.seqpat?.y),
-      w:N(p5.p5_seqpat_w,L.p5.seqpat?.w), size:N(p5.p5_seqpat_size,L.p5.seqpat?.size),
-      align:S(p5.p5_seqpat_align,L.p5.seqpat?.align)
-    };
+  {
+    const p5 = pick(q, ["p5_seqpat_x","p5_seqpat_y","p5_seqpat_w","p5_seqpat_h","p5_seqpat_size","p5_seqpat_align"]);
+    if (Object.keys(p5).length) {
+      L.p5.seqpat = { ...(L.p5.seqpat||{}),
+        x:N(p5.p5_seqpat_x,L.p5.seqpat?.x), y:N(p5.p5_seqpat_y,L.p5.seqpat?.y),
+        w:N(p5.p5_seqpat_w,L.p5.seqpat?.w), h:p5.p5_seqpat_h!=null?N(p5.p5_seqpat_h):L.p5.seqpat?.h,
+        size:N(p5.p5_seqpat_size,L.p5.seqpat?.size),
+        align:S(p5.p5_seqpat_align,L.p5.seqpat?.align)
+      };
+    }
+    if (q.p5_seqpat_maxLines != null) L.p5.seqpatMaxLines = N(q.p5_seqpat_maxLines, L.p5.seqpatMaxLines);
+    const p6 = pick(q, ["p6_theme_x","p6_theme_y","p6_theme_w","p6_theme_h","p6_theme_size","p6_theme_align"]);
+    if (Object.keys(p6).length) {
+      L.p6.theme = { ...(L.p6.theme||{}),
+        x:N(p6.p6_theme_x,L.p6.theme?.x), y:N(p6.p6_theme_y,L.p6.theme?.y),
+        w:N(p6.p6_theme_w,L.p6.theme?.w), h:p6.p6_theme_h!=null?N(p6.p6_theme_h):L.p6.theme?.h,
+        size:N(p6.p6_theme_size,L.p6.theme?.size),
+        align:S(p6.p6_theme_align,L.p6.theme?.align)
+      };
+    }
+    if (q.p6_theme_maxLines != null) L.p6.themeMaxLines = N(q.p6_theme_maxLines, L.p6.themeMaxLines);
   }
-  if (q.p5_seqpat_maxLines != null) L.p5.seqpatMaxLines = N(q.p5_seqpat_maxLines, L.p5.seqpatMaxLines);
-
-  const p6 = pick(q, ["p6_theme_x","p6_theme_y","p6_theme_w","p6_theme_size","p6_theme_align"]);
-  if (Object.keys(p6).length) {
-    L.p6.theme = { ...(L.p6.theme||{}),
-      x:N(p6.p6_theme_x,L.p6.theme?.x), y:N(p6.p6_theme_y,L.p6.theme?.y),
-      w:N(p6.p6_theme_w,L.p6.theme?.w), size:N(p6.p6_theme_size,L.p6.theme?.size),
-      align:S(p6.p6_theme_align,L.p6.theme?.align)
-    };
-  }
-  if (q.p6_theme_maxLines != null) L.p6.themeMaxLines = N(q.p6_theme_maxLines, L.p6.themeMaxLines);
 
   // p7/p8
   for (const p of ["p7","p8"]) {
@@ -446,20 +532,41 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p11
+  // p11 (classic boxes)
   for (const f of ["tipsBox","actsBox"]) {
-    const P = pick(q, [`p11_${f}_x`,`p11_${f}_y`,`p11_${f}_w`,`p11_${f}_size`,`p11_${f}_align`]);
+    const P = pick(q, [`p11_${f}_x`,`p11_${f}_y`,`p11_${f}_w`,`p11_${f}_h`,`p11_${f}_size`,`p11_${f}_align`]);
     if (Object.keys(P).length) {
       L.p11[f] = { ...(L.p11[f]||{}),
         x:N(P[`p11_${f}_x`],L.p11[f]?.x), y:N(P[`p11_${f}_y`],L.p11[f]?.y),
-        w:N(P[`p11_${f}_w`],L.p11[f]?.w), size:N(P[`p11_${f}_size`],L.p11[f]?.size),
+        w:N(P[`p11_${f}_w`],L.p11[f]?.w), h:P[`p11_${f}_h`]!=null?N(P[`p11_${f}_h`]):L.p11[f]?.h,
+        size:N(P[`p11_${f}_size`],L.p11[f]?.size),
         align:S(P[`p11_${f}_align`],L.p11[f]?.align)
       };
     }
   }
   if (q.p11_tipsBox_maxLines != null) L.p11.tipsMaxLines = N(q.p11_tipsBox_maxLines, L.p11.tipsMaxLines);
   if (q.p11_actsBox_maxLines != null) L.p11.actsMaxLines = N(q.p11_actsBox_maxLines, L.p11.actsMaxLines);
-  if (q.p11_bullet_gap != null) L.p11.bulletGap = N(q.p11_bullet_gap, L.p11.bulletGap ?? 6);
+
+  // p11 — global spacing tuners
+  if (q.p11_line_gap != null)      L.p11.lineGap = N(q.p11_line_gap, L.p11.lineGap ?? 3);
+  if (q.p11_item_gap != null)      L.p11.itemGap = N(q.p11_item_gap, L.p11.itemGap ?? 6);
+  if (q.p11_bullet_indent != null) L.p11.bulletIndent = N(q.p11_bullet_indent, L.p11.bulletIndent ?? 18);
+
+  // p11 — NEW per-item boxes (Tips 1&2, Actions 1&2)
+  for (const key of ["tips1Box","tips2Box","acts1Box","acts2Box"]) {
+    const P = pick(q, [`p11_${key}_x`,`p11_${key}_y`,`p11_${key}_w`,`p11_${key}_h`,`p11_${key}_size`,`p11_${key}_align`]);
+    if (Object.keys(P).length) {
+      L.p11[key] = {
+        ...(L.p11[key] || {}),
+        x:N(P[`p11_${key}_x`], L.p11[key]?.x),
+        y:N(P[`p11_${key}_y`], L.p11[key]?.y),
+        w:N(P[`p11_${key}_w`], L.p11[key]?.w),
+        h:P[`p11_${key}_h`]!=null ? N(P[`p11_${key}_h`]) : L.p11[key]?.h,
+        size:N(P[`p11_${key}_size`], L.p11[key]?.size ?? L.p11.tipsBox?.size ?? 18),
+        align:S(P[`p11_${key}_align`], L.p11[key]?.align ?? "left")
+      };
+    }
+  }
 
   return L;
 }
@@ -482,7 +589,7 @@ async function embedRemoteImage(pdfDoc, url) {
 async function loadTemplateBytes(tplParam) {
   const raw = S(tplParam || "CTRL_Perspective_Assessment_Profile_template_slim.pdf").trim();
   if (/^https?:/i.test(raw)) throw new Error("Remote templates are not allowed. Put the PDF in /public and pass its filename.");
-  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "");
+  const safe = raw.replace(/[^A-Za-z0-9._-]+/g, "");
   if (!safe || !/\.pdf$/i.test(safe)) throw new Error("Invalid tpl. Provide a .pdf filename that exists in /public.");
   const full = path.resolve(process.cwd(), "public", safe);
   try { return await fs.readFile(full); }
@@ -600,13 +707,31 @@ export default async function handler(req, res) {
       }
     }
 
-    // PAGE 11 — Tips & Actions (no titles)
-    if (P.tips?.length && L.p11?.tipsBox) {
-      const tipsSpec = { ...L.p11.tipsBox, gap: N(L.p11.bulletGap ?? 6, 6) };
+    // PAGE 11 — Tips & Actions
+    const lineGap = N(L.p11.lineGap ?? 3, 3);
+    const itemGap = N(L.p11.itemGap ?? 6, 6);
+    const bulletIndent = N(L.p11.bulletIndent ?? 18, 18);
+
+    const hasItemizedTips   = !!(L.p11.tips1Box || L.p11.tips2Box);
+    const hasItemizedActs   = !!(L.p11.acts1Box || L.p11.acts2Box);
+
+    if (hasItemizedTips) {
+      if (P.tips[0] && L.p11.tips1Box)
+        drawBulletBlock(page11, font, P.tips[0], { ...L.p11.tips1Box, lineGap, bulletIndent });
+      if (P.tips[1] && L.p11.tips2Box)
+        drawBulletBlock(page11, font, P.tips[1], { ...L.p11.tips2Box, lineGap, bulletIndent });
+    } else if (P.tips?.length && L.p11?.tipsBox) {
+      const tipsSpec = { ...L.p11.tipsBox, gap: itemGap, lineGap, bulletIndent };
       drawBulleted(page11, font, P.tips, tipsSpec, { maxLines: N(L.p11.tipsMaxLines, 25) });
     }
-    if (P.actions?.length && L.p11?.actsBox) {
-      const actsSpec = { ...L.p11.actsBox, gap: N(L.p11.bulletGap ?? 6, 6) };
+
+    if (hasItemizedActs) {
+      if (P.actions[0] && L.p11.acts1Box)
+        drawBulletBlock(page11, font, P.actions[0], { ...L.p11.acts1Box, lineGap, bulletIndent });
+      if (P.actions[1] && L.p11.acts2Box)
+        drawBulletBlock(page11, font, P.actions[1], { ...L.p11.acts2Box, lineGap, bulletIndent });
+    } else if (P.actions?.length && L.p11?.actsBox) {
+      const actsSpec = { ...L.p11.actsBox, gap: itemGap, lineGap, bulletIndent };
       drawBulleted(page11, font, P.actions, actsSpec, { maxLines: N(L.p11.actsMaxLines, 25) });
     }
 
