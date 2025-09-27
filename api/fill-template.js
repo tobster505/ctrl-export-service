@@ -113,6 +113,10 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   return { height: drawn * lineH, linesDrawn: drawn, lastY: yCursor };
 }
 
+/**
+ * Bulleted list with automatic wrapping + hanging indent.
+ * Each item can span multiple wrapped lines (no need for \n in the content).
+ */
 function drawBulleted(page, font, items, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 11, lineGap = 3,
@@ -127,30 +131,49 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
   let yCursor = pageH - y;
   const lineH = Math.max(1, size) + lineGap;
 
-  const indentSpaces = Math.max(0, Math.floor(bulletIndent / Math.max(1, size) * 1.7));
-  const indentStr = indentSpaces ? " ".repeat(indentSpaces) : "  ";
+  const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+  // spaces that approximately equal bulletIndent visually
+  const indentSpaces = Math.max(2, Math.round(bulletIndent / Math.max(1, size) * 2));
+  const indentStr = " ".repeat(indentSpaces);
 
   let usedLines = 0;
+
   for (const raw of arr) {
     if (!raw) continue;
-    const lines = raw.split(/\n/).filter(Boolean);
-    // head
-    drawTextBox(page, font, `${bullet} ${lines.shift() || ""}`, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
-    yCursor -= lineH; usedLines++;
-    if (usedLines >= maxLines) break;
 
-    // continuations
-    for (const cont of lines) {
-      drawTextBox(page, font, `${indentStr}${cont}`, { x, y: pageH - yCursor, w, size, lineGap, align, color }, { maxLines: 1 });
-      yCursor -= lineH; usedLines++;
+    // Wrap the whole item with a hanging indent
+    const words = raw.split(/\s+/).filter(Boolean);
+    let prefix = `${bullet} `;
+    let current = "";
+    const lines = [];
+
+    while (words.length) {
+      const candidate = (current ? `${current} ${words[0]}` : `${prefix}${words[0]}`);
+      if (widthOf(candidate) <= w || !current) {
+        current = candidate;
+        words.shift();
+      } else {
+        lines.push(current);
+        // next line starts with indent prefix
+        prefix = indentStr;
+        current = "";
+      }
+    }
+    if (current) lines.push(current);
+
+    for (const ln of lines) {
+      // Stop if we've reached the allowed lines for this list
       if (usedLines >= maxLines) break;
+      page.drawText(ln, {
+        x, y: yCursor - size, size: Math.max(1, size), font, color
+      });
+      yCursor -= lineH;
+      usedLines++;
     }
     if (usedLines >= maxLines) break;
 
     // gap between items
-    if (itemGap > 0) {
-      yCursor -= itemGap;
-    }
+    if (itemGap > 0) yCursor -= itemGap;
   }
 }
 
@@ -255,11 +278,9 @@ const LOCKED = {
     date: { x: 210, y: 600,  w: 500, size: 25, align: "left"   }
   },
   footer: (() => {
-    // visible footer text only (name/flow/date composed elsewhere)
     const f = { x: 380, y: 51, w: 400, size: 13, align: "left" };
     return {
       f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f}, f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f}
-      // page numbers intentionally omitted per spec
     };
   })()
 };
@@ -267,7 +288,7 @@ const LOCKED = {
 const DEFAULT_COORDS = {
   meta:  { units: "pt", origin: "TL", pages: "1-based" },
 
-  // PAGE 3 — text + state highlight
+  // PAGE 3
   p3: {
     domChar: { x: 272, y: 640, w: 630, size: 23, align: "left", maxLines: 6 },
     domDesc: { x:  25, y: 685, w: 550, size: 18, align: "left", maxLines: 12 },
@@ -280,7 +301,7 @@ const DEFAULT_COORDS = {
       styleByState: {
         C: { radius: 28,   inset: 6  },
         T: { radius: 28,   inset: 6  },
-        R: { radius: 1000, inset: 1  }, // pill
+        R: { radius: 1000, inset: 1  },
         L: { radius: 28,   inset: 6  }
       },
       labelByState: {
@@ -357,14 +378,14 @@ const DEFAULT_COORDS = {
     bodySize: 13, maxLines: 15
   },
 
-  // PAGE 11 — Tips + Actions (default combined boxes)
+  // PAGE 11 — Tips + Actions (combined by default; split via tuners)
   p11: {
     tipsBox: { x:  40, y: 175, w: 500, size: 18, align: "left", maxLines: 25 },
     actsBox: { x:  40, y: 355, w: 500, size: 18, align: "left", maxLines: 25 },
     lineGap: 6,
     itemGap: 0,
     bulletIndent: 18,
-    split: false, // when true, use tips1/tips2/acts1/acts2
+    split: false, // when true, use tips1/tips2/acts1/acts2 below
     tips1: { x: 40, y: 175, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
     tips2: { x: 40, y: 240, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
     acts1: { x: 40, y: 355, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
@@ -381,9 +402,7 @@ function buildLayout(base) {
       L[k] = { ...(L[k] || {}), ...(base[k] || {}) };
     }
   }
-  // Footers always start from LOCKED defaults
   L.footer = { ...(LOCKED.footer), ...((base && base.footer) || {}) };
-  // Page 1 name/date start from LOCKED too
   L.p1 = { ...(LOCKED.p1), ...((base && base.p1) || {}) };
   return L;
 }
@@ -415,7 +434,7 @@ function applyUrlTuners(q, L) {
     }
   }
 
-  // p3 domChar/domDesc (+maxLines)
+  // p3 domChar/domDesc
   for (const f of ["domChar","domDesc"]) {
     const P = pick(q, [`p3_${f}_x`,`p3_${f}_y`,`p3_${f}_w`,`p3_${f}_size`,`p3_${f}_align`,`p3_${f}_maxLines`]);
     if (Object.keys(P).length) L.p3[f] = { ...(L.p3[f]||{}),
@@ -426,7 +445,7 @@ function applyUrlTuners(q, L) {
     };
   }
 
-  // p3 state (accept both long and short keys)
+  // p3 state
   const states = ["C","T","R","L"];
   for (const k of states) {
     const absA = pick(q, [`p3_state_abs_${k}_x`,`p3_state_abs_${k}_y`,`p3_state_abs_${k}_w`,`p3_state_abs_${k}_h`]);
@@ -459,7 +478,7 @@ function applyUrlTuners(q, L) {
   if (q.p3_state_labelOffsetX!=null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
   if (q.p3_state_labelOffsetY!=null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
 
-  // p4 spider + chart (with maxLines)
+  // p4 spider + chart
   const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align","p4_spider_maxLines"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
@@ -539,11 +558,11 @@ function applyUrlTuners(q, L) {
       };
     }
   }
-  if (q.p11_line_gap != null)     L.p11.lineGap      = N(q.p11_line_gap, L.p11.lineGap);
-  if (q.p11_item_gap != null)     L.p11.itemGap      = N(q.p11_item_gap, L.p11.itemGap);
+  if (q.p11_line_gap != null)      L.p11.lineGap      = N(q.p11_line_gap, L.p11.lineGap);
+  if (q.p11_item_gap != null)      L.p11.itemGap      = N(q.p11_item_gap, L.p11.itemGap);
   if (q.p11_bullet_indent != null) L.p11.bulletIndent = N(q.p11_bullet_indent, L.p11.bulletIndent);
 
-  // p11 split mode (tips1/tips2/acts1/acts2) — now accepts _w updates
+  // p11 split mode (tips1/tips2/acts1/acts2) — accepts _w updates
   if (q.p11_split != null) L.p11.split = String(q.p11_split) !== "0";
   for (const key of ["tips1","tips2","acts1","acts2"]) {
     const P = pick(q, [
@@ -736,7 +755,6 @@ export default async function handler(req, res) {
 
     /* ----------------------------- PAGE 11 ---------------------------- */
     if (!L.p11.split) {
-      // Combined two-column lists
       if (P.tips?.length) {
         drawBulleted(page11, font, P.tips, {
           x:L.p11.tipsBox.x, y:L.p11.tipsBox.y, w:L.p11.tipsBox.w,
@@ -752,7 +770,6 @@ export default async function handler(req, res) {
         }, { maxLines:N(L.p11.actsBox.maxLines, 25) });
       }
     } else {
-      // Split: Tips[0]→tips1, Tips[1]→tips2; Actions[0]→acts1, Actions[1]→acts2
       const T1 = ensureArray(P.tips)[0] ?? "";
       const T2 = ensureArray(P.tips)[1] ?? "";
       const A1 = ensureArray(P.actions)[0] ?? "";
@@ -785,13 +802,12 @@ export default async function handler(req, res) {
 
     /* ------------------------------ FOOTERS --------------------------- */
     const footerSpec = L.footer || LOCKED.footer;
-    const footerLabel = norm([P.name].filter(Boolean).join("")); // name only (per spec)
+    const footerLabel = norm([P.name].filter(Boolean).join(""));
     const put = (idx, key, text) => {
       const spec = footerSpec[key];
       if (!spec) return;
       drawTextBox(pages[idx], font, text, spec, { maxLines: 1 });
     };
-    // Draw f2..f12, no page numbers
     put(1,  "f2",  footerLabel);
     put(2,  "f3",  footerLabel);
     put(3,  "f4",  footerLabel);
