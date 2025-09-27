@@ -162,7 +162,6 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     if (current) lines.push(current);
 
     for (const ln of lines) {
-      // Stop if we've reached the allowed lines for this list
       if (usedLines >= maxLines) break;
       page.drawText(ln, {
         x, y: yCursor - size, size: Math.max(1, size), font, color
@@ -172,7 +171,6 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
     }
     if (usedLines >= maxLines) break;
 
-    // gap between items
     if (itemGap > 0) yCursor -= itemGap;
   }
 }
@@ -378,18 +376,22 @@ const DEFAULT_COORDS = {
     bodySize: 13, maxLines: 15
   },
 
-  // PAGE 11 — Tips + Actions (combined by default; split via tuners)
+  // PAGE 11 — Tips + Actions (SPLIT MODE DEFAULT)
   p11: {
+    // still keep combined boxes available (not used when split=true)
     tipsBox: { x:  40, y: 175, w: 500, size: 18, align: "left", maxLines: 25 },
     actsBox: { x:  40, y: 355, w: 500, size: 18, align: "left", maxLines: 25 },
+
     lineGap: 6,
-    itemGap: 0,
+    itemGap: 6,
     bulletIndent: 18,
-    split: false, // when true, use tips1/tips2/acts1/acts2 below
-    tips1: { x: 40, y: 175, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
-    tips2: { x: 40, y: 240, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
-    acts1: { x: 40, y: 355, w: 500, h: 60, size: 18, align: "left", maxLines: 3 },
-    acts2: { x: 40, y: 420, w: 500, h: 60, size: 18, align: "left", maxLines: 3 }
+
+    split: true,
+
+    tips1: { x: 30, y: 175, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    tips2: { x: 30, y: 265, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    acts1: { x: 30, y: 405, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    acts2: { x: 30, y: 495, w: 530, h: 80, size: 18, align: "left", maxLines: 4 }
   }
 };
 
