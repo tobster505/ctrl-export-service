@@ -2,7 +2,7 @@
  * CTRL Export Service · fill-template (Perspective flow)
  * Router: Next.js Pages — place this file at: /pages/api/fill-template.js
  *
- * Coordinates are TL-origin (Top-Left), units = pt, pages are 1-based (in comments).
+ * Coordinates are TL-origin (Top-Left), units = pt, pages are 1-based.
  * pdf-lib uses BL-origin internally; this file converts correctly.
  */
 
@@ -12,22 +12,38 @@ import fs from "fs/promises";
 import path from "path";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-/* ───────────────────────────── Small utils ─────────────────────────── */
+/* ───────────────────────────── Utilities ─────────────────────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-/** WinAnsi-safe normalization (prunes emoji/zero-width, normalizes quotes/dashes) */
+/** WinAnsi-safe normalization (quotes, dashes, bullets, arrows, emoji, zero-width) */
 const norm = (v, fb = "") =>
-  S(v, fb)
+  String(v ?? fb)
+    .normalize("NFKC")
+    // quotes / dashes / ellipsis / nbsp
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-")
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
-    .replace(/[\uD800-\uDFFF]/g, "")       // surrogate pairs (emoji)
-    .replace(/[\uE000-\uF8FF]/g, "")       // private use area
-    .replace(/[\uFE0E\uFE0F]/g, "")        // variation selectors
-    .replace(/[\u200B-\u200D\u2060]/g, "") // zero-width chars
+    // bullets & middot
+    .replace(/[•·]/g, "-")
+    // arrows (Helvetica WinAnsi cannot encode these)
+    .replace(/\u2194/g, "<->") // ↔
+    .replace(/\u2192/g, "->")  // →
+    .replace(/\u2190/g, "<-")  // ←
+    .replace(/\u2191/g, "^")   // ↑
+    .replace(/\u2193/g, "v")   // ↓
+    .replace(/[\u2196-\u2199]/g, "->") // ↖↗↘↙
+    .replace(/\u21A9/g, "<-")  // ↩
+    .replace(/\u21AA/g, "->")  // ↪
+    // misc
+    .replace(/\u00D7/g, "x")   // ×
+    // zero-width & emoji / PUA
+    .replace(/[\u200B-\u200D\u2060]/g, "")
+    .replace(/[\uD800-\uDFFF]/g, "")   // surrogate pairs (emoji)
+    .replace(/[\uE000-\uF8FF]/g, "")   // private use area
+    // whitespace tidy
     .replace(/\t/g, " ")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \f\v]+/g, " ")
@@ -51,7 +67,7 @@ function parseDataParam(b64ish) {
   catch { return {}; }
 }
 
-/* ───────────────────────── Drawing helpers ─────────────────────────── */
+/* ───────────────────────── Drawing helpers ───────────────────────── */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
     x = 40, y = 40, w = 540, size = 12, lineGap = 3,
@@ -59,7 +75,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   } = spec;
 
   const maxLines = opts.maxLines ?? 6;
-  const hard = S(text || "");
+  const hard = norm(text || ""); // <- ensure WinAnsi safety here too
   const lines = hard.split(/\n/).map((s) => s.trim());
   const wrapped = [];
 
@@ -137,8 +153,8 @@ function resolveDomKey(...candidates) {
   return "";
 }
 
-/* ───────────────────── Locked coordinates (TL, 1-based) ────────────── */
-/* Matches your “Co-ordinates locked in 30092025” sheet. */
+/* ─────────────── Locked coordinates (TL, 1-based) ─────────────── */
+/* Matches your “Co-ordinates locked in 30092025” set. */
 const LOCKED = {
   meta:  { units: "pt", origin: "TL", pages: "1-based" },
 
@@ -208,7 +224,7 @@ const LOCKED = {
   })()
 };
 
-/* ─────────────────────—— Rendering (locked layout) ─────────────────── */
+/* ─────────────────────—— Rendering helpers ─────────────────────── */
 async function embedRemoteImage(pdfDoc, url) {
   try {
     if (!url || !/^https?:/i.test(url)) return null;
@@ -222,13 +238,26 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
+/** Sanitize & normalize all inputs (including nested arrays) */
 function normaliseInput(d = {}) {
-  // Expect keys coming from your Assemble card.
+  const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({
+    look: norm(x?.look || ""),
+    work: norm(x?.work || "")
+  })) : [];
+
+  const wldr = Array.isArray(d.workwlead) ? d.workwlead.map(x => ({
+    look: norm(x?.look || ""),
+    work: norm(x?.work || "")
+  })) : [];
+
+  const tips    = Array.isArray(d.tips)    ? d.tips.map(norm)    : [];
+  const actions = Array.isArray(d.actions) ? d.actions.map(norm) : [];
+
   return {
     name:    norm(d.name || d.fullName || d.preferredName || "Perspective"),
     dateLbl: norm(d.dateLbl || d.d || todayLbl()),
 
-    dom:     S(d.dom || d.domLabel || ""),
+    dom:     String(d.dom || d.domLabel || ""),
     domChar: norm(d.domchar || d.domChar || d.character || ""),
     domDesc: norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
 
@@ -236,14 +265,13 @@ function normaliseInput(d = {}) {
     seqpat:     norm(d.seqpAt || d.seqat || d.seqpat || d.pattern || ""),
     theme:      norm(d.theme || ""),
 
-    // colleagues/leaders optional content
-    workwcol: Array.isArray(d.workwcol) ? d.workwcol : [],
-    workwlead: Array.isArray(d.workwlead) ? d.workwlead : [],
+    workwcol: wcol,
+    workwlead: wldr,
+    tips,
+    actions,
 
-    // chart (optional)
-    chartUrl: S(d.chart || d.chartUrl || ""),
+    chartUrl: String(d.chart || d.chartUrl || ""),
 
-    // layout
     layoutV6: d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
   };
 }
@@ -263,7 +291,7 @@ function layoutFromPayload(payloadLayout) {
   return L;
 }
 
-/* ───────────────────────────────── Handler ─────────────────────────── */
+/* ───────────────────────────────── Handler ───────────────────────── */
 export default async function handler(req, res) {
   try {
     const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
@@ -274,7 +302,7 @@ export default async function handler(req, res) {
     const P   = normaliseInput(src);
     const L   = layoutFromPayload(src.layoutV6);
 
-    // Load template
+    // Load template (local /public only)
     const tplPath = path.resolve(process.cwd(), "public", String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
     const pdfBytes = await fs.readFile(tplPath);
     const pdfDoc   = await PDFDocument.load(pdfBytes);
@@ -314,7 +342,6 @@ export default async function handler(req, res) {
     }
 
     // p5
-    if (L.p5?.seqpat && P.seqat) { /* legacy key */ }
     if (L.p5?.seqpat && P.seqpat) drawTextBox(p(4), font, P.seqpat, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
 
     // p6
@@ -353,8 +380,8 @@ export default async function handler(req, res) {
 
     // p11 (split: 2 tips + 2 actions)
     if (L.p11?.split) {
-      const tips = Array.isArray(src.tips) ? src.tips.map(norm) : [];
-      const acts = Array.isArray(src.actions) ? src.actions.map(norm) : [];
+      const tips = Array.isArray(P.tips) ? P.tips.map(norm) : [];
+      const acts = Array.isArray(P.actions) ? P.actions.map(norm) : [];
       const pairs = [
         { txt: tips[0] || "", box: L.p11.tips1 },
         { txt: tips[1] || "", box: L.p11.tips2 },
@@ -363,8 +390,8 @@ export default async function handler(req, res) {
       ];
       for (const { txt, box } of pairs) {
         if (!txt) continue;
-        // simple bullet with "• " prefix, single item per box
-        drawTextBox(p(10), font, `• ${txt}`, { x:box.x, y:box.y, w:box.w, size:box.size||18, align:box.align||"left" }, { maxLines: box.maxLines || 4 });
+        // simple bullet with "- " prefix (WinAnsi-safe)
+        drawTextBox(p(10), font, `- ${txt}`, { x:box.x, y:box.y, w:box.w, size:box.size||18, align:box.align||"left" }, { maxLines: box.maxLines || 4 });
       }
     }
 
