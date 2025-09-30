@@ -56,7 +56,7 @@ const todayLbl = () => {
   return `${String(now.getDate()).padStart(2,"0")}/${MMM}/${now.getFullYear()}`;
 };
 
-/** base64url → JSON (accepts base64 or base64url, optionally URL-encoded) */
+/** base64/base64url → JSON (accepts url-encoded) */
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
@@ -154,7 +154,7 @@ function resolveDomKey(...candidates) {
 }
 
 /* ─────────────── Locked coordinates (TL, 1-based) ─────────────── */
-/* Matches your “Co-ordinates locked in 30092025” set. */
+/* Matches the “Co-ordinates locked in 30092025” set. */
 const LOCKED = {
   meta:  { units: "pt", origin: "TL", pages: "1-based" },
 
@@ -302,6 +302,9 @@ export default async function handler(req, res) {
     const P   = normaliseInput(src);
     const L   = layoutFromPayload(src.layoutV6);
 
+    // If a ?chart= URL was passed and payload had none, adopt it
+    if (!P.chartUrl && q.chart) P.chartUrl = String(q.chart);
+
     // Load template (local /public only)
     const tplPath = path.resolve(process.cwd(), "public", String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
     const pdfBytes = await fs.readFile(tplPath);
@@ -378,7 +381,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 (split: 2 tips + 2 actions)
+    // p11 (split: 2 tips + 2 actions) — with bullet indent
     if (L.p11?.split) {
       const tips = Array.isArray(P.tips) ? P.tips.map(norm) : [];
       const acts = Array.isArray(P.actions) ? P.actions.map(norm) : [];
@@ -388,10 +391,23 @@ export default async function handler(req, res) {
         { txt: acts[0] || "", box: L.p11.acts1 },
         { txt: acts[1] || "", box: L.p11.acts2 },
       ];
+
       for (const { txt, box } of pairs) {
         if (!txt) continue;
-        // simple bullet with "- " prefix (WinAnsi-safe)
-        drawTextBox(p(10), font, `- ${txt}`, { x:box.x, y:box.y, w:box.w, size:box.size||18, align:box.align||"left" }, { maxLines: box.maxLines || 4 });
+        const indent = Number.isFinite(+L.p11.bulletIndent) ? +L.p11.bulletIndent : 18;
+        const size   = box.size || 18;
+
+        // bullet cell (1 line)
+        drawTextBox(p(10), font, "-", { x: box.x, y: box.y, w: indent, size, align: "left" }, { maxLines: 1 });
+
+        // text cell (wrapped)
+        drawTextBox(
+          p(10),
+          font,
+          txt,
+          { x: box.x + indent, y: box.y, w: Math.max(10, box.w - indent), size, align: box.align || "left" },
+          { maxLines: box.maxLines || 4 }
+        );
       }
     }
 
