@@ -1,336 +1,390 @@
 /**
- * CTRL Export Service · /api/fill-template  (Pages Router)
- * Renders CTRL Perspective PDF using layoutV6 (TL-origin, pt, pages 1-based)
+ * CTRL Export Service · fill-template (Perspective flow)
+ * Router: Next.js Pages — place this file at: /pages/api/fill-template.js
+ *
+ * Coordinates are TL-origin (Top-Left), units = pt, pages are 1-based (in comments).
+ * pdf-lib uses BL-origin internally; this file converts correctly.
  */
 
 export const config = { runtime: "nodejs" };
 
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import path from "path";
 import fs from "fs/promises";
+import path from "path";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-/* ───────────────────────────── Utilities ───────────────────────────── */
+/* ───────────────────────────── Small utils ─────────────────────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
-const norm = (s) => S(s).trim();
+const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-function todayLbl(d = new Date()) {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][d.getMonth()];
-  const yyyy = d.getFullYear();
-  return `${dd}${MMM}${yyyy}`;
+/** WinAnsi-safe normalization (prunes emoji/zero-width, normalizes quotes/dashes) */
+const norm = (v, fb = "") =>
+  S(v, fb)
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\uD800-\uDFFF]/g, "")       // surrogate pairs (emoji)
+    .replace(/[\uE000-\uF8FF]/g, "")       // private use area
+    .replace(/[\uFE0E\uFE0F]/g, "")        // variation selectors
+    .replace(/[\u200B-\u200D\u2060]/g, "") // zero-width chars
+    .replace(/\t/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \f\v]+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+const todayLbl = () => {
+  const now = new Date();
+  const MMM = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][now.getMonth()];
+  return `${String(now.getDate()).padStart(2,"0")}/${MMM}/${now.getFullYear()}`;
+};
+
+/** base64url → JSON (accepts base64 or base64url, optionally URL-encoded) */
+function parseDataParam(b64ish) {
+  if (!b64ish) return {};
+  let s = String(b64ish);
+  try { s = decodeURIComponent(s); } catch {}
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+  catch { return {}; }
 }
 
-function decodeBase64Json(b64) {
-  try {
-    if (!b64) return {};
-    const bin = Buffer.from(String(b64), "base64").toString("binary");
-    const json = decodeURIComponent(Array.prototype.map.call(bin, c => {
-      return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(""));
-    return JSON.parse(json);
-  } catch {
-    return {};
+/* ───────────────────────── Drawing helpers ─────────────────────────── */
+function drawTextBox(page, font, text, spec = {}, opts = {}) {
+  const {
+    x = 40, y = 40, w = 540, size = 12, lineGap = 3,
+    color = rgb(0, 0, 0), align = "left",
+  } = spec;
+
+  const maxLines = opts.maxLines ?? 6;
+  const hard = S(text || "");
+  const lines = hard.split(/\n/).map((s) => s.trim());
+  const wrapped = [];
+
+  const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+  const wrapLine = (ln) => {
+    const words = ln.split(/\s+/);
+    let cur = "";
+    for (let i = 0; i < words.length; i++) {
+      const nxt = cur ? `${cur} ${words[i]}` : words[i];
+      if (widthOf(nxt) <= w || !cur) cur = nxt;
+      else { wrapped.push(cur); cur = words[i]; }
+    }
+    wrapped.push(cur);
+  };
+
+  for (const ln of lines) wrapLine(ln);
+
+  const out = wrapped.slice(0, maxLines);
+  const pageH = page.getHeight();
+  const baselineY = pageH - y;          // TL → BL (baseline for first line)
+  const lineH = Math.max(1, size) + lineGap;
+
+  let yCursor = baselineY;
+  for (const ln of out) {
+    let xDraw = x;
+    const wLn = widthOf(ln);
+    if (align === "center") xDraw = x + (w - wLn) / 2;
+    else if (align === "right") xDraw = x + (w - wLn);
+    page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1,size), font, color });
+    yCursor -= lineH;
   }
 }
 
-/* ───────────── Template loader (with fallback to non-slim) ─────────── */
-async function loadTemplateBytes(tplParam) {
-  const raw = S(tplParam || "CTRL_Perspective_Assessment_Profile_template_slim.pdf").trim();
-  if (/^https?:/i.test(raw)) throw new Error("Remote templates are not allowed. Put the PDF in /public.");
-  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "");
-  if (!safe || !/\.pdf$/i.test(safe)) throw new Error("Invalid 'tpl' (provide a .pdf filename in /public).");
+const rectTLtoBL = (page, box, inset = 0) => {
+  const pageH = page.getHeight();
+  const x = N(box.x) + inset;
+  const w = Math.max(0, N(box.w) - inset * 2);
+  const h = Math.max(0, N(box.h) - inset * 2);
+  const y = pageH - N(box.y) - N(box.h) + inset; // TL → BL
+  return { x, y, w, h };
+};
 
-  const primary = path.resolve(process.cwd(), "public", safe);
-  const fallback = path.resolve(process.cwd(), "public", "CTRL_Perspective_Assessment_Profile_template.pdf");
+/* Highlight the quadrant on p3 and place the label if configured */
+function paintStateHighlight(page3, dom, cfg = {}) {
+  const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
+  if (!b) return;
 
-  for (const p of [primary, fallback]) {
-    try { return { bytes: await fs.readFile(p), used: p }; } catch {}
-  }
-  throw new Error(`Template not found. Tried: ${primary} and ${fallback}`);
+  const radius  = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : (cfg.highlightRadius ?? 28);
+  const inset   = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))  ? +((cfg.styleByState||{})[dom].inset)  : (cfg.highlightInset  ?? 6);
+  const opacity = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
+
+  const boxBL = rectTLtoBL(page3, b, inset);
+  const shade = rgb(251/255, 236/255, 250/255);
+
+  page3.drawRectangle({ x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h, borderRadius: radius, color: shade, opacity });
+
+  const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
+  if (!perState || cfg.labelText == null || cfg.labelSize == null) return;
+
+  return { labelX: perState.x, labelY: perState.y };
 }
 
-/* ─────────── Optional: embed remote chart (guard fetch) ────────────── */
+function resolveDomKey(...candidates) {
+  const mapLabel = { concealed: "C", triggered: "T", regulated: "R", lead: "L" };
+  const mapChar  = { art: "C", fal: "T", mika: "R", sam: "L" };
+  const cand = candidates.flat().map(x => String(x || "").trim());
+  for (const c of cand) {
+    if (!c) continue;
+    const u = c.toUpperCase();
+    if (["C","T","R","L"].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
+  }
+  return "";
+}
+
+/* ───────────────────── Locked coordinates (TL, 1-based) ────────────── */
+/* Matches your “Co-ordinates locked in 30092025” sheet. */
+const LOCKED = {
+  meta:  { units: "pt", origin: "TL", pages: "1-based" },
+
+  /* PAGE 1 */
+  p1: {
+    name: { x:  7,  y: 473, w: 500, size: 30, align: "center" },
+    date: { x: 210, y: 600, w: 500, size: 25, align: "left"   }
+  },
+
+  /* PAGE 3 */
+  p3: {
+    domChar: { x: 272, y: 640, w: 630, size: 23, align: "left",  maxLines: 6  },
+    domDesc: { x:  25, y: 685, w: 550, size: 18, align: "left",  maxLines: 12 },
+    state: {
+      useAbsolute: true,
+      shape: "round",
+      highlightInset: 6,
+      highlightRadius: 28,
+      fillOpacity: 0.45,
+      styleByState: { C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
+      labelByState: { C:{x: 60,y:245}, T:{x:290,y:244}, R:{x: 60,y:605}, L:{x:290,y:605} },
+      labelText: "YOU ARE HERE",
+      labelSize: 10,
+      labelColor: { r:0.20,g:0.20,b:0.20 },
+      labelOffsetX: 0, labelOffsetY: 0,
+      labelPadTop: 12, labelPadBottom: 12,
+      absBoxes: {
+        C: { x:  58, y: 258, w: 188, h: 156 },
+        T: { x: 299, y: 258, w: 188, h: 156 },
+        R: { x:  60, y: 433, w: 188, h: 158 },
+        L: { x: 298, y: 430, w: 195, h: 173 }
+      }
+    }
+  },
+
+  /* PAGE 4 */
+  p4: {
+    spider: { x:  30, y: 585, w: 550, size: 18, align: "left", maxLines: 10 },
+    chart:  { x:  20, y: 225, w: 570, h: 280 }
+  },
+
+  /* PAGE 5 */
+  p5: { seqpat: { x: 25, y: 250, w: 550, size: 18, align: "left", maxLines: 12 } },
+
+  /* PAGE 6 */
+  p6: { theme:  { x: 25, y: 350, w: 550, size: 18, align: "left", maxLines: 12 } },
+
+  /* PAGE 7–10: fixed boxes for colleagues/leaders */
+  p7: { colBoxes: [ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize: 13, maxLines: 15 },
+  p8: { colBoxes: [ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize: 13, maxLines: 15 },
+  p9: { ldrBoxes: [ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize: 13, maxLines: 15 },
+  p10:{ ldrBoxes: [ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize: 13, maxLines: 15 },
+
+  /* PAGE 11 (split) */
+  p11: {
+    lineGap: 6, itemGap: 6, bulletIndent: 18, split: true,
+    tips1: { x: 30, y: 175, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    tips2: { x: 30, y: 265, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    acts1: { x: 30, y: 405, w: 530, h: 80, size: 18, align: "left", maxLines: 4 },
+    acts2: { x: 30, y: 495, w: 530, h: 80, size: 18, align: "left", maxLines: 4 }
+  },
+
+  /* FOOTERS (pages 2–12): name only, fixed spot */
+  footer: (() => {
+    const f = { x: 380, y: 51, w: 400, size: 13, align: "left" };
+    return { f2:{...f}, f3:{...f}, f4:{...f}, f5:{...f}, f6:{...f}, f7:{...f}, f8:{...f}, f9:{...f}, f10:{...f}, f11:{...f}, f12:{...f} };
+  })()
+};
+
+/* ─────────────────────—— Rendering (locked layout) ─────────────────── */
 async function embedRemoteImage(pdfDoc, url) {
   try {
     if (!url || !/^https?:/i.test(url)) return null;
-    if (typeof fetch === "undefined") return null; // Node < 18 guard
+    if (typeof fetch === "undefined") return null;
     const res = await fetch(url);
     if (!res.ok) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    const isPNG = buf[0] === 0x89 && buf[1] === 0x50;
-    const isJPG = buf[0] === 0xff && buf[1] === 0xd8;
-    if (isPNG) return await pdfDoc.embedPng(buf);
-    if (isJPG) return await pdfDoc.embedJpg(buf);
-    return null;
-  } catch {
-    return null;
-  }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes[0] === 0x89 && bytes[1] === 0x50) return await pdfDoc.embedPng(bytes);
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) return await pdfDoc.embedJpg(bytes);
+    try { return await pdfDoc.embedPng(bytes); } catch { return await pdfDoc.embedJpg(bytes); }
+  } catch { return null; }
 }
 
-/* ─────── Hydration from Botpress-ish payload/query (no q.name leak) ─ */
-function tryHydrate(q = {}, src = {}) {
-  const P = {};
+function normaliseInput(d = {}) {
+  // Expect keys coming from your Assemble card.
+  return {
+    name:    norm(d.name || d.fullName || d.preferredName || "Perspective"),
+    dateLbl: norm(d.dateLbl || d.d || todayLbl()),
 
-  // Source object first (authoritative)
-  if (src && typeof src === "object") for (const [k, v] of Object.entries(src)) P[k] = v;
+    dom:     S(d.dom || d.domLabel || ""),
+    domChar: norm(d.domchar || d.domChar || d.character || ""),
+    domDesc: norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
 
-  // Name / Date (DO NOT accept q.name as person name)
-  if (!P.name) {
-    P.name = norm(src.name || src.fullName || src.preferredName || q.fullName || q.preferredName) || "Perspective";
-  }
-  if (!P.dateLbl) {
-    P.dateLbl = norm(src.d || src.dateLbl || q.dateLbl || q.d) || todayLbl();
-  }
+    spiderdesc: norm(d.spiderdesc || d.spider || ""),
+    seqpat:     norm(d.seqpAt || d.seqat || d.seqpat || d.pattern || ""),
+    theme:      norm(d.theme || ""),
 
-  // Common text fields
-  const keys = [
-    "dom","domLabel","domchar","character","domdesc","dominantDesc",
-    "spiderdesc","spiderfreq","seqpat","pattern","theme","chart","chartUrl"
-  ];
-  for (const k of keys) if (P[k] == null && src[k] != null) P[k] = src[k];
-  for (const k of keys) if (P[k] == null && q[k]   != null) P[k] = q[k];
+    // colleagues/leaders optional content
+    workwcol: Array.isArray(d.workwcol) ? d.workwcol : [],
+    workwlead: Array.isArray(d.workwlead) ? d.workwlead : [],
 
-  // layoutV6 (coordinates passed by client)
-  if (src.layoutV6) P.layoutV6 = src.layoutV6;
+    // chart (optional)
+    chartUrl: S(d.chart || d.chartUrl || ""),
 
-  return P;
+    // layout
+    layoutV6: d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
+  };
 }
 
-/* ─────────────────────── Text layout helpers ──────────────────────── */
-function TL(page, yTop) {
-  // Convert Top-Left y to pdf-lib baseline y (Bottom-Left)
-  const H = page.getHeight();
-  return (yt, lineH = 0) => H - yt - lineH; // returns baseline y for first line
-}
-
-function lineWrap(font, text, size, maxWidth) {
-  // Simple greedy wrapper (supports basic ASCII & spaces)
-  const words = String(text || "").split(/\s+/);
-  const lines = [];
-  let cur = "";
-  const width = (s) => font.widthOfTextAtSize(s, size);
-  for (const w of words) {
-    const trial = cur ? cur + " " + w : w;
-    if (width(trial) <= maxWidth || !cur) {
-      cur = trial;
+function layoutFromPayload(payloadLayout) {
+  // Exact locked defaults; allow payload to override specific boxes if provided.
+  const L = JSON.parse(JSON.stringify(LOCKED));
+  if (!payloadLayout) return L;
+  for (const k of Object.keys(payloadLayout)) {
+    if (!L[k]) { L[k] = payloadLayout[k]; continue; }
+    if (typeof payloadLayout[k] === "object" && !Array.isArray(payloadLayout[k])) {
+      L[k] = { ...L[k], ...payloadLayout[k] };
     } else {
-      lines.push(cur);
-      cur = w;
+      L[k] = payloadLayout[k];
     }
   }
-  if (cur) lines.push(cur);
-  // if a single word is too long, hard-break it
-  const splitLong = [];
-  for (const ln of lines) {
-    if (width(ln) <= maxWidth) { splitLong.push(ln); continue; }
-    let buf = "";
-    for (const ch of ln) {
-      const t = buf + ch;
-      if (width(t) <= maxWidth) buf = t;
-      else { splitLong.push(buf); buf = ch; }
-    }
-    if (buf) splitLong.push(buf);
-  }
-  return splitLong;
+  return L;
 }
 
-function drawTextBlock(page, font, text, box, opts = {}) {
-  const {
-    size = 12,
-    color = rgb(0,0,0),
-    align = "left",
-    maxLines = 4,
-    leading = 1.25,
-    boldFont
-  } = opts;
-
-  const tx = Number(box.x)||0, ty = Number(box.y)||0, tw = Number(box.w)||300;
-  const makeY = TL(page);
-  const lineH = size * leading;
-
-  let usedFont = font;
-  if (opts.bold === true && boldFont) usedFont = boldFont;
-
-  const lines = lineWrap(usedFont, text, size, tw).slice(0, maxLines);
-  let y = makeY(ty, size); // baseline y for first line (TL origin)
-
-  for (const ln of lines) {
-    const w = usedFont.widthOfTextAtSize(ln, size);
-    let x = tx;
-    if (align === "center") x = tx + (tw - w) / 2;
-    else if (align === "right") x = tx + tw - w;
-    page.drawText(ln, { x, y, size, font: usedFont, color });
-    y -= lineH;
-  }
-  return { lines, lineH };
-}
-
-/* ────────────────────────── V6 Renderer ───────────────────────────── */
-async function renderV6(pdfDoc, P) {
-  const pages = pdfDoc.getPages();
-  const H = pages[0].getHeight(); // for quick reference
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-  const L = P.layoutV6 || {};
-  const meta = L.meta || { units: "pt", origin: "TL", pages: "1-based" };
-
-  // Page 1 — name + date
-  if (L.p1 && pages[0]) {
-    if (L.p1.name && P.name) {
-      drawTextBlock(pages[0], bold, P.name, L.p1.name, {
-        size: Number(L.p1.name.size || 24),
-        align: String(L.p1.name.align || "left")
-      });
-    }
-    if (L.p1.date && P.dateLbl) {
-      drawTextBlock(pages[0], font, P.dateLbl, L.p1.date, {
-        size: Number(L.p1.date.size || 14),
-        align: String(L.p1.date.align || "left")
-      });
-    }
-  }
-
-  // Page 3 — dominant state character + description (your debug shows these are populated)
-  // Assuming page index 2 (1-based "3")
-  const p3 = L.p3;
-  if (p3 && pages[2]) {
-    if (p3.domChar && (P.domchar || P.character)) {
-      drawTextBlock(pages[2], bold, P.domchar || P.character, p3.domChar, {
-        size: Number(p3.domChar.size || 20),
-        align: String(p3.domChar.align || "left")
-      });
-    }
-    if (p3.domDesc && (P.domdesc || P.dominantDesc)) {
-      drawTextBlock(pages[2], font, P.domdesc || P.dominantDesc, p3.domDesc, {
-        size: Number(p3.domDesc.size || 12),
-        align: String(p3.domDesc.align || "left"),
-        maxLines: Number(p3.domDescMaxLines || p3.domDesc.maxLines || 12)
-      });
-    }
-    // Optional: label the state in the quadrant, if layout provides labelByState
-    if (p3.state && p3.labelByState && P.dom) {
-      const key = String(P.dom).charAt(0).toUpperCase(); // C/T/R/L
-      const labelBox = p3.labelByState[key];
-      if (labelBox) {
-        drawTextBlock(pages[2], bold, "YOU ARE HERE", labelBox, {
-          size: Number(p3.labelSize || 10),
-          align: "left"
-        });
-      }
-    }
-  }
-
-  // Page 4 — spider chart + description/frequency
-  const p4 = L.p4;
-  if (p4 && pages[3]) {
-    if (p4.spider && P.spiderdesc) {
-      drawTextBlock(pages[3], font, P.spiderdesc, p4.spider, {
-        size: Number(p4.spider.size || 12),
-        align: String(p4.spider.align || "left"),
-        maxLines: Number(p4.spiderMaxLines || 10)
-      });
-    }
-    // Optional: print frequency line near spider block if you prefer
-    if (p4.spider && P.spiderfreq) {
-      const freqBox = { ...p4.spider, y: (Number(p4.spider.y) + 16) }; // small shift down under desc
-      drawTextBlock(pages[3], bold, P.spiderfreq, freqBox, {
-        size: Number(p4.spider.size || 12),
-        align: String(p4.spider.align || "left"),
-        maxLines: 1
-      });
-    }
-    // Chart image
-    if (p4.chart) {
-      const chartUrl = P.chart || P.chartUrl;
-      const img = await embedRemoteImage(pdfDoc, chartUrl);
-      if (img) {
-        const { x, y, w, h } = p4.chart;
-        const Y = pages[3].getHeight() - Number(y) - Number(h); // TL to BL
-        pages[3].drawImage(img, { x: Number(x), y: Y, width: Number(w), height: Number(h) });
-      }
-    }
-  }
-
-  // Page 5 — sequence pattern text
-  const p5 = L.p5;
-  if (p5 && p5.seqpat && pages[4] && P.seqpat) {
-    drawTextBlock(pages[4], font, P.seqpat, p5.seqpAt || p5.seqpat, {
-      size: Number((p5.seqpAt || p5.seqpat).size || 12),
-      align: String((p5.seqpAt || p5.seqpat).align || "left"),
-      maxLines: Number(p5.seqpatMaxLines || 12)
-    });
-  }
-
-  // Page 6 — top theme
-  const p6 = L.p6;
-  if (p6 && p6.theme && pages[5] && P.theme) {
-    drawTextBlock(pages[5], bold, P.theme, p6.theme, {
-      size: Number(p6.theme.size || 12),
-      align: String(p6.theme.align || "left"),
-      maxLines: Number(p6.themeMaxLines || 12)
-    });
-  }
-
-  // Page 7/8/9/10 — headers/boxes exist in your layout, but your current flow outputs
-  // mainly p1/p3/p4/p5/p6 text. You can extend below when you begin sending
-  // the detailed tips/actions blocks into the payload.
-}
-
-/* ───────────────────────── Simple debug overlay ────────────────────── */
-async function drawDebugAlive(pdfDoc, label = "alive ✓") {
-  try {
-    const pages = pdfDoc.getPages();
-    if (!pages.length) return;
-    const first = pages[0];
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    first.drawText(label, { x: 24, y: first.getHeight() - 24, size: 9, color: rgb(0.25,0.25,0.25), font });
-  } catch { /* noop */ }
-}
-
-/* ─────────────────────────── Finalize & send ───────────────────────── */
-async function finalizeAndSendPdf(res, pdfDoc, P, q) {
-  const bytes = await pdfDoc.save();
-  const outName = S(q.out || q.name || `CTRL_${P.name || "Perspective"}_${P.dateLbl || todayLbl()}.pdf`)
-    .replace(/[^\w.-]+/g, "_");
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
-  res.status(200).send(Buffer.from(bytes));
-}
-
-/* ────────────────────────────── Handler ────────────────────────────── */
+/* ───────────────────────────────── Handler ─────────────────────────── */
 export default async function handler(req, res) {
   try {
     const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
+    const tpl = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
 
-    // Quick health check
-    if (String(q.diag) === "1") {
-      const rawTpl = String(q.tpl || "");
-      const safe = rawTpl.replace(/[^A-Za-z0-9._-]/g, "");
-      return res.status(200).json({
-        ok: true,
-        node: process.version,
-        hasFetch: typeof fetch !== "undefined",
-        tpl: safe,
-        tplPath: path.resolve(process.cwd(), "public", safe)
-      });
+    // Decode payload
+    const src = parseDataParam(q.data);
+    const P   = normaliseInput(src);
+    const L   = layoutFromPayload(src.layoutV6);
+
+    // Load template
+    const tplPath = path.resolve(process.cwd(), "public", String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
+    const pdfBytes = await fs.readFile(tplPath);
+    const pdfDoc   = await PDFDocument.load(pdfBytes);
+    const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    const pages = pdfDoc.getPages();
+    const p = (i) => pages[i];
+
+    // p1
+    if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
+    if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
+
+    // p3
+    if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
+    if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
+
+    const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
+    if (domKey && L.p3?.state?.useAbsolute) {
+      const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
+      if (anchor && L.p3.state.labelText) {
+        drawTextBox(p(2), font, String(L.p3.state.labelText), {
+          x: anchor.labelX, y: anchor.labelY, w: 180,
+          size: L.p3.state.labelSize || 10, align: "center"
+        }, { maxLines: 1 });
+      }
     }
 
-    // Hydrate payload
-    const src = decodeBase64Json(q.data);
-    const P = tryHydrate(q, src);
+    // p4 (description + chart)
+    if (L.p4?.spider && P.spiderdesc) drawTextBox(p(3), font, P.spiderdesc, L.p4.spider, { maxLines: L.p4.spider.maxLines });
+    if (L.p4?.chart && P.chartUrl) {
+      const img = await embedRemoteImage(pdfDoc, P.chartUrl);
+      if (img) {
+        const H = p(3).getHeight();
+        const { x, y, w, h } = L.p4.chart;
+        p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+      }
+    }
 
-    // Load template and render
-    const { bytes: tplBytes } = await loadTemplateBytes(q.tpl);
-    const pdfDoc = await PDFDocument.load(tplBytes);
+    // p5
+    if (L.p5?.seqpat && P.seqat) { /* legacy key */ }
+    if (L.p5?.seqpat && P.seqpat) drawTextBox(p(4), font, P.seqpat, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
 
-    if (String(q.debug) === "1") await drawDebugAlive(pdfDoc, "alive ✓");
+    // p6
+    if (L.p6?.theme && P.theme) drawTextBox(p(5), font, P.theme, L.p6.theme, { maxLines: L.p6.theme.maxLines });
 
-    // 🔴 Core: render with your layoutV6 and text values
-    await renderV6(pdfDoc, P);
+    // p7–p10 (optional content arrays)
+    const mapIdx = { C:0, T:1, R:2, L:3 };
+    if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p7.colBoxes[i], item = P.workwcol[i] || {};
+        const txt = norm(item?.look || "");
+        if (txt) drawTextBox(p(6), font, txt, { x:bx.x,y:bx.y,w:bx.w,size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
+      }
+    }
+    if (L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p8.colBoxes[i], item = P.workwcol[i] || {};
+        const txt = norm(item?.work || "");
+        if (txt) drawTextBox(p(7), font, txt, { x:bx.x,y:bx.y,w:bx.w,size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
+      }
+    }
+    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p9.ldrBoxes[i], item = P.workwlead[i] || {};
+        const txt = norm(item?.look || "");
+        if (txt) drawTextBox(p(8), font, txt, { x:bx.x,y:bx.y,w:bx.w,size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+      }
+    }
+    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
+        const txt = norm(item?.work || "");
+        if (txt) drawTextBox(p(9), font, txt, { x:bx.x,y:bx.y,w:bx.w,size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
+      }
+    }
 
-    await finalizeAndSendPdf(res, pdfDoc, P, q);
+    // p11 (split: 2 tips + 2 actions)
+    if (L.p11?.split) {
+      const tips = Array.isArray(src.tips) ? src.tips.map(norm) : [];
+      const acts = Array.isArray(src.actions) ? src.actions.map(norm) : [];
+      const pairs = [
+        { txt: tips[0] || "", box: L.p11.tips1 },
+        { txt: tips[1] || "", box: L.p11.tips2 },
+        { txt: acts[0] || "", box: L.p11.acts1 },
+        { txt: acts[1] || "", box: L.p11.acts2 },
+      ];
+      for (const { txt, box } of pairs) {
+        if (!txt) continue;
+        // simple bullet with "• " prefix, single item per box
+        drawTextBox(p(10), font, `• ${txt}`, { x:box.x, y:box.y, w:box.w, size:box.size||18, align:box.align||"left" }, { maxLines: box.maxLines || 4 });
+      }
+    }
+
+    // Footers (name only)
+    const footerLabel = norm(P.name);
+    const putFooter = (pageIdx, key) => {
+      const spec = L.footer?.[key];
+      if (!spec) return;
+      drawTextBox(p(pageIdx), font, footerLabel, spec, { maxLines: 1 });
+    };
+    putFooter(1,"f2");  putFooter(2,"f3");  putFooter(3,"f4");  putFooter(4,"f5");  putFooter(5,"f6");
+    putFooter(6,"f7");  putFooter(7,"f8");  putFooter(8,"f9");  putFooter(9,"f10"); putFooter(10,"f11"); putFooter(11,"f12");
+
+    // Send
+    const bytes = await pdfDoc.save();
+    const outName = S(q.out || q.name || `CTRL_${P.name || "Perspective"}_${P.dateLbl || todayLbl()}.pdf`).replace(/[^\w.-]+/g, "_");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
+    res.end(Buffer.from(bytes));
   } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
+    res.status(400).json({ ok:false, error: `fill-template error: ${err.message || String(err)}` });
   }
 }
