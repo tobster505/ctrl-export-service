@@ -56,6 +56,19 @@ function parseDataParam(b64ish) {
   } catch { return {}; }
 }
 
+/** Small helpers for robust digging + fallback selection */
+const dig = (obj, path) => {
+  if (!obj || !path) return undefined;
+  return String(path).split(".").reduce((o, k) => (o && o[k] != null ? o[k] : undefined), obj);
+};
+const firstNonEmpty = (...vals) => {
+  for (const v of vals) {
+    const s = v == null ? "" : String(v).trim();
+    if (s) return v;
+  }
+  return "";
+};
+
 /* ─────────────────────────── Drawing helpers ───────────────────────── */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const {
@@ -238,32 +251,68 @@ function resolveDomKey(...candidates) {
 }
 
 /* ─────────────────────────── Input normalisation ─────────────────────────── */
-function normaliseInput(d = {}) {
+/** Accepts Final Score (RPT_MIN + workWith + tips/actions) or legacy V3 payload */
+function normaliseInputV7(d = {}) {
   const P = {};
-  P.flow      = norm(d.f || d.flow || "Perspective");
-  P.name      = norm(d.n || d.name);
-  P.dateLbl   = norm(d.d || d.date || todayLbl());
-  P.dom       = resolveDomKey(d.dom, d.dom6Key, d.dom6Label, d.domchar, d.domdesc);
-  P.domChar   = norm(d.domchar || d.domChar || d.character || "");
-  P.domDesc   = norm(d.domdesc || d.domDesc || d.dominantDesc || "");
+  const MIN   = d.RPT_MIN || d.rpt_min || d.min || d.MIN || {};
+  const V3    = d.V3_Payload || d.V3 || {};
+  const FROZ  = d.frozen?.shortKeys || d.v3_frozen?.shortKeys || {};
 
-  P.spiderTxt = norm(d.spiderdesc || d.spider || "");
-  P.chartUrl  = S(d.spiderfreq || d.chart || ""); // QuickChart or similar
+  // name/date
+  P.flow    = norm(d.f || d.flow || dig(MIN, "path") || "Perspective");
+  P.name    = norm(firstNonEmpty(d.name,
+                                 dig(MIN, "person.fullName"),
+                                 dig(MIN, "person.preferredName")));
+  P.dateLbl = norm(firstNonEmpty(d.date, d.dateLbl, dig(d, "dateLbl"), dig(MIN, "dateLbl"), todayLbl()));
 
-  P.seqpat    = norm(d.seqpat || d.pattern || "");
-  P.theme     = norm(d.theme || "");
+  // dominant
+  P.dom     = S(firstNonEmpty(d.dom, d.dom6Key, dig(MIN, "dominant.key"), dig(V3, "dom"), FROZ["p3:dom"])).toUpperCase();
+  P.domChar = norm(firstNonEmpty(d.domchar, d.domChar, d.character, dig(MIN, "dominant.char"), dig(V3, "domchar"), FROZ["p3:domchar"]));
+  P.domDesc = norm(firstNonEmpty(d.domdesc, d.domDesc, d.dominantDesc,
+                                 dig(MIN, "dominant.text"), dig(V3, "domdesc"), FROZ["p3:domdesc"]));
 
-  P.workwcol  = ensureArray(d.workwcol).map(x => ({
-    mine:  norm(x?.mine),  their: norm(x?.their),
-    look:  norm(x?.look),  work:  norm(x?.work)
-  }));
-  P.workwlead = ensureArray(d.workwlead).map(x => ({
-    mine:  norm(x?.mine),  their: norm(x?.their),
-    look:  norm(x?.look),  work:  norm(x?.work)
-  }));
+  // spider narrative + chart
+  P.spiderTxt = norm(firstNonEmpty(d.spiderTxt, d.spiderdesc, dig(MIN, "spider.text")));
+  P.chartUrl  = S(firstNonEmpty(d.chartUrl, d.spiderfreq, d.chart, dig(MIN, "spider.chartUrl")));
 
-  P.tips      = ensureArray(d.tips).map(norm);
-  P.actions   = ensureArray(d.actions).map(norm);
+  // pattern + theme
+  P.seqpat = norm(firstNonEmpty(d.seqpat, d.pattern, dig(MIN, "pattern.label"), dig(MIN, "pattern.text")));
+  P.theme  = norm(firstNonEmpty(d.theme, d.themeExpl, dig(MIN, "themes.text"), dig(MIN, "themes.pairKey")));
+
+  // work-with (either arrays or nested workWith.col/ldr objects)
+  const order = ["C", "T", "R", "L"];
+  const coerceWorkGrid = (node) => {
+    if (!node || typeof node !== "object") return [];
+    return order.map(my => ({
+      mine: my,
+      their: "",
+      look: norm(dig(node, `${my}.look`)),
+      work: norm(dig(node, `${my}.work`))
+    }));
+  };
+
+  if (Array.isArray(d.workwcol) || Array.isArray(d.workwlead)) {
+    P.workwcol  = ensureArray(d.workwcol).map(x => ({ mine: norm(x?.mine), their: norm(x?.their), look: norm(x?.look), work: norm(x?.work) }));
+    P.workwlead = ensureArray(d.workwlead).map(x => ({ mine: norm(x?.mine), their: norm(x?.their), look: norm(x?.look), work: norm(x?.work) }));
+  } else if (d.workWith && (d.workWith.col || d.workWith.ldr)) {
+    P.workwcol  = coerceWorkGrid(d.workWith.col);
+    P.workwlead = coerceWorkGrid(d.workWith.ldr);
+  } else {
+    P.workwcol  = [];
+    P.workwlead = [];
+  }
+
+  // tips/actions (accept arrays or single strings; strip "Tip:"/"Action:")
+  const stripLead = s => norm(s).replace(/^(\s*👉\s*)?\s*(Tip|Action)\s*:\s*/i, "");
+  const toList = (x) => {
+    if (Array.isArray(x)) return x.map(stripLead).filter(Boolean);
+    const s = norm(x);
+    if (!s) return [];
+    return s.split(/(?:^|\n)\s*•\s*|\n+/g).map(stripLead).filter(Boolean);
+  };
+
+  P.tips    = toList(firstNonEmpty(d.tips, dig(MIN, "tips.dominant"), dig(MIN, "tips.spider"), d.tipsList));
+  P.actions = toList(firstNonEmpty(d.actions, dig(MIN, "actions.pattern"), dig(MIN, "actions.theme"), d.actionsList));
 
   return P;
 }
@@ -324,7 +373,6 @@ const DEFAULT_COORDS = {
 
   // PAGE 4 — Spider description + chart (tunable via URL)
   p4: {
-    // spider description text box (a.k.a. spiderdesc)
     spider: { x: 30, y: 585, w: 550, size: 18, align: "left", maxLines: 10 },
     chart:  { x: 20, y: 225, w: 570, h: 280 }
   },
@@ -484,7 +532,7 @@ function applyUrlTuners(q, L) {
   if (q.p3_state_labelOffsetX!=null) L.p3.state.labelOffsetX = N(q.p3_state_labelOffsetX, L.p3.state.labelOffsetX);
   if (q.p3_state_labelOffsetY!=null) L.p3.state.labelOffsetY = N(q.p3_state_labelOffsetY, L.p3.state.labelOffsetY);
 
-  // p4 spider + chart (now tunable with p4_spider_x/y/w/size/align/maxLines)
+  // p4 spider + chart (tunable with p4_spider_x/y/w/size/align/maxLines)
   const s4 = pick(q, ["p4_spider_x","p4_spider_y","p4_spider_w","p4_spider_size","p4_spider_align","p4_spider_maxLines"]);
   if (Object.keys(s4).length) {
     L.p4.spider = { ...(L.p4.spider||{}),
@@ -591,23 +639,33 @@ function applyUrlTuners(q, L) {
   return L;
 }
 
-/* ──────────────────────── Remote image embedding ─────────────────────── */
+/* ──────────────────────── Image embedding (http & data:) ─────────────────── */
 async function embedRemoteImage(pdfDoc, url) {
-  if (!/^https?:/i.test(url)) return null;
-  const resp = await fetch(url);
+  if (!url) return null;
+  const s = String(url);
+
+  // data: URL support
+  const m = /^data:image\/(png|jpe?g);base64,(.+)$/i.exec(s);
+  if (m) {
+    const bytes = Buffer.from(m[2], "base64");
+    try {
+      if (/^jpe?g$/i.test(m[1])) return await pdfDoc.embedJpg(bytes);
+      return await pdfDoc.embedPng(bytes);
+    } catch {}
+    return null;
+  }
+
+  // remote (http/https)
+  if (!/^https?:/i.test(s)) return null;
+  const resp = await fetch(s);
   if (!resp.ok) return null;
   const ab = await resp.arrayBuffer();
   const bytes = new Uint8Array(ab);
   try {
-    if (bytes[0] === 0x89 && String.fromCharCode(bytes[1],bytes[2],bytes[3]) === "PNG") {
-      return await pdfDoc.embedPng(bytes);
-    }
+    if (bytes[0] === 0xFF && bytes[1] === 0xD8) return await pdfDoc.embedJpg(bytes);
+    if (bytes[0] === 0x89 && String.fromCharCode(bytes[1],bytes[2],bytes[3]) === "PNG") return await pdfDoc.embedPng(bytes);
   } catch {}
-  try {
-    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-      return await pdfDoc.embedJpg(bytes);
-    }
-  } catch {}
+  // last attempts
   try { return await pdfDoc.embedPng(bytes); } catch {}
   try { return await pdfDoc.embedJpg(bytes); } catch {}
   return null;
@@ -639,7 +697,7 @@ export default async function handler(req, res) {
 
     // Parse & sanitize payload
     const rawData = parseDataParam(q.data);
-    const P = normaliseInput(rawData);
+    const P = normaliseInputV7(rawData);
 
     // Build layout (defaults + optional overrides + URL tuners)
     let L = buildLayout(rawData.layoutV6);
