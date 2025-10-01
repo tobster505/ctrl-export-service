@@ -233,19 +233,33 @@ export default async function handler(req, res) {
       }
     }
 
-    // p4 (spider explanation + transparent chart)
-    if (L.p4?.spider && P.spiderdesc) {
-      const maxLines = (L.p4.spider.maxLines ?? L.p4.spiderMaxLines ?? 10);
-      drawTextBox(p(3), font, P.spiderdesc, { ...L.p4.spider, maxLines }, { maxLines });
+// p4 (spider explanation + transparent chart)
+if (L.p4?.spider) {
+  // accept either key: "p4:spiderdesc" (colon) or "spiderdesc" (dot)
+  const rawSpiderDesc =
+    (P && P["p4:spiderdesc"]) ??
+    (P && P.spiderdesc) ??
+    "";
+
+  const desc = S(rawSpiderDesc).trim();
+  if (desc) {
+    const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
+    drawTextBox(p(3), font, desc, { ...L.p4.spider, maxLines }, { maxLines });
+  }
+}
+
+if (L.p4?.chart && (P?.chartUrl || q.chart)) {
+  const chartUrl = String(P?.chartUrl || q.chart || "");
+  if (chartUrl) {
+    const img = await embedRemoteImage(pdfDoc, chartUrl);
+    if (img) {
+      const H = p(3).getHeight();
+      const { x, y, w, h } = L.p4.chart;
+      p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
     }
-    if (L.p4?.chart && (P.chartUrl || q.chart)) {
-      const img = await embedRemoteImage(pdfDoc, P.chartUrl || String(q.chart||""));
-      if (img) {
-        const H = p(3).getHeight();
-        const { x, y, w, h } = L.p4.chart;
-        p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
-      }
-    }
+  }
+}
+
 
     // p5
     if (L.p5?.seqpat && P.seqpat) {
