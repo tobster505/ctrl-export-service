@@ -22,11 +22,18 @@ const norm = (v, fb = "") =>
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
     .replace(/[•·]/g, "-")
-    .replace(/\u2194/g, "<->").replace(/\u2192/g, "->").replace(/\u2190/g, "<-").replace(/\u2191/g, "^").replace(/\u2193/g, "v")
-    .replace(/[\u2196-\u2199]/g, "->").replace(/\u21A9/g, "<-").replace(/\u21AA/g, "->")
+    // arrows → WinAnsi-safe
+    .replace(/\u2194/g, "<->").replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
+    .replace(/\u2191/g, "^").replace(/\u2193/g, "v").replace(/[\u2196-\u2199]/g, "->")
+    .replace(/\u21A9/g, "<-").replace(/\u21AA/g, "->")
     .replace(/\u00D7/g, "x")
-    .replace(/[\u200B-\u200D\u2060]/g, "").replace(/[\uD800-\uDFFF]/g, "").replace(/[\uE000-\uF8FF]/g, "")
-    .replace(/\t/g, " ").replace(/\r\n?/g, "\n").replace(/[ \f\v]+/g, " ").replace(/[ \t]+\n/g, "\n").trim();
+    // zero-width, emoji/PUA
+    .replace(/[\u200B-\u200D\u2060]/g, "")
+    .replace(/[\uD800-\uDFFF]/g, "")
+    .replace(/[\uE000-\uF8FF]/g, "")
+    // tidy
+    .replace(/\t/g, " ").replace(/\r\n?/g, "\n")
+    .replace(/[ \f\v]+/g, " ").replace(/[ \t]+\n/g, "\n").trim();
 
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
@@ -34,13 +41,14 @@ function parseDataParam(b64ish) {
   try { s = decodeURIComponent(s); } catch {}
   s = s.replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
-  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); } catch { return {}; }
+  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+  catch { return {}; }
 }
 
 /* word wrap draw helper (TL → BL conversion inside) */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const { x=40, y=40, w=540, size=12, lineGap=3, color=rgb(0,0,0), align="left" } = spec;
-  const maxLines = opts.maxLines ?? spec.maxLines ?? 6;
+  const maxLines = (opts.maxLines ?? spec.maxLines ?? 6);
   const hard = norm(text || "");
   const lines = hard.split(/\n/).map(s=>s.trim());
   const wrapped = [];
@@ -48,7 +56,11 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
   const wrapLine = (ln) => {
     const words = ln.split(/\s+/); let cur="";
-    for (let i=0;i<words.length;i++){ const nxt = cur ? `${cur} ${words[i]}` : words[i]; if (widthOf(nxt) <= w || !cur) cur=nxt; else { wrapped.push(cur); cur=words[i]; } }
+    for (let i=0;i<words.length;i++){
+      const nxt = cur ? `${cur} ${words[i]}` : words[i];
+      if (widthOf(nxt) <= w || !cur) cur = nxt;
+      else { wrapped.push(cur); cur = words[i]; }
+    }
     wrapped.push(cur);
   };
   for (const ln of lines) wrapLine(ln);
@@ -91,7 +103,23 @@ function paintStateHighlight(page3, dom, cfg = {}) {
   return { labelX: perState.x, labelY: perState.y };
 }
 
-/* locked coordinates */
+/* robust resolver for C/T/R/L from label/char */
+function resolveDomKey(...candidates) {
+  const mapLabel = { concealed:"C", triggered:"T", regulated:"R", lead:"L" };
+  const mapChar  = { art:"C", fal:"T", mika:"R", sam:"L" };
+  for (const c0 of candidates.flat()) {
+    const c = String(c0 || "").trim();
+    if (!c) continue;
+    const u = c.toUpperCase();
+    if (["C","T","R","L"].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
+  }
+  return "";
+}
+
+/* locked coordinates (TL, 1-based) */
 const LOCKED = {
   meta: { units: "pt", origin: "TL", pages: "1-based" },
   p1: { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
@@ -190,19 +218,26 @@ export default async function handler(req, res) {
     if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
     if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
 
-    // p3
+    // p3 (dominant highlight + label)
     if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
     if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
-    const domKey = (String(P.dom||"").match(/\b[CTRL]\b/i) || [])[0]?.toUpperCase() || "";
+
+    const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
     if (domKey && L.p3?.state?.useAbsolute) {
       const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
       if (anchor && L.p3.state.labelText) {
-        drawTextBox(p(2), font, String(L.p3.state.labelText), { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" }, { maxLines: 1 });
+        drawTextBox(p(2), font, String(L.p3.state.labelText), {
+          x: anchor.labelX, y: anchor.labelY, w: 180,
+          size: L.p3.state.labelSize || 10, align: "center"
+        }, { maxLines: 1 });
       }
     }
 
-    // p4
-    if (L.p4?.spider && P.spiderdesc) drawTextBox(p(3), font, P.spiderdesc, L.p4.spider, { maxLines: L.p4.spider.maxLines });
+    // p4 (spider explanation + transparent chart)
+    if (L.p4?.spider && P.spiderdesc) {
+      const maxLines = (L.p4.spider.maxLines ?? L.p4.spiderMaxLines ?? 10);
+      drawTextBox(p(3), font, P.spiderdesc, { ...L.p4.spider, maxLines }, { maxLines });
+    }
     if (L.p4?.chart && (P.chartUrl || q.chart)) {
       const img = await embedRemoteImage(pdfDoc, P.chartUrl || String(q.chart||""));
       if (img) {
@@ -213,10 +248,16 @@ export default async function handler(req, res) {
     }
 
     // p5
-    if (L.p5?.seqpat && P.seqpat) drawTextBox(p(4), font, P.seqpat, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
+    if (L.p5?.seqpat && P.seqpat) {
+      const maxLines = (L.p5.seqpat.maxLines ?? L.p5.seqpatMaxLines ?? 12);
+      drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
+    }
 
     // p6
-    if (L.p6?.theme && P.theme) drawTextBox(p(5), font, P.theme, L.p6.theme, { maxLines: L.p6.theme.maxLines });
+    if (L.p6?.theme && P.theme) {
+      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 12);
+      drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
+    }
 
     // p7–p10
     const mapIdx = { C:0, T:1, R:2, L:3 };
@@ -249,17 +290,18 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 (split with indent)
+    // p11 (indent bullets)
     if (L.p11?.split) {
       const pairs = [
-        { txt: (P.tips?.[0]||""),  box: L.p11.tips1 },
-        { txt: (P.tips?.[1]||""),  box: L.p11.tips2 },
+        { txt: (P.tips?.[0]||""),   box: L.p11.tips1 },
+        { txt: (P.tips?.[1]||""),   box: L.p11.tips2 },
         { txt: (P.actions?.[0]||""), box: L.p11.acts1 },
         { txt: (P.actions?.[1]||""), box: L.p11.acts2 }
       ];
       for (const { txt, box } of pairs) {
         const t = norm(txt); if (!t) continue;
         const indent = N(L.p11.bulletIndent, 18);
+        // draw as "- " + text but with a visible indent
         drawTextBox(p(10), font, `- ${t}`, { x: box.x + indent, y: box.y, w: box.w - indent, size: box.size||18, align: box.align||"left" }, { maxLines: box.maxLines||4 });
       }
     }
