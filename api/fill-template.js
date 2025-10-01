@@ -262,7 +262,7 @@ function normaliseInput(d = {}) {
     domDesc: norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
 
     spiderdesc: norm(d.spiderdesc || d.spider || ""),
-    seqpat:     norm(d.seqpAt || d.seqat || d.seqpat || d.pattern || ""),
+    seqpat:     norm(d.seqpat ?? d.seqat ?? d.pattern ?? ""),  // <- accepts seqpat or seqat
     theme:      norm(d.theme || ""),
 
     workwcol: wcol,
