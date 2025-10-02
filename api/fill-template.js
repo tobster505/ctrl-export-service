@@ -172,53 +172,36 @@ function tuneQuickChartUrl(originalUrl) {
     let cParam = u.searchParams.get("c");
     if (!cParam) return originalUrl;
 
-    // Parse config (handles encoded or plain)
     let cfg = null;
     try { cfg = JSON.parse(cParam); }
     catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
 
     if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
 
-    // Pull dataset values
     const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
       ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
       : [];
 
-    // Infer shape by sorted counts; normalize 5 → "5.0"
     const shape = (() => {
       const s = d.slice().sort((a,b)=>b-a).join(".");
       return s === "5" ? "5.0" : s;
     })();
 
-    // Round the polygon for all Chart.js versions
     cfg.options = cfg.options || {};
     cfg.options.elements = cfg.options.elements || {};
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 }; // v3/v4 + works for v2's line element
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
     if (cfg.data && Array.isArray(cfg.data.datasets)) {
-      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 })); // dataset-level for v2/v3/v4
+      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 }));
     }
 
-    // Compute min/max by shape
     let min = 0, max = Math.max(4, ...d);
     if (shape === "2.1.1.1") { max = 3; }
     else if (shape === "3.2") { max = 4; }
     else if (shape === "4.1" || shape === "5.0" || shape === "5") { max = 5; }
 
-    // v3/v4 path
     cfg.options.scales = cfg.options.scales || {};
-    cfg.options.scales.r = {
-      min,
-      max,
-      ticks: { stepSize: 1 },
-      grid: { circular: true }
-    };
-
-    // v2 fallback path (Chart.js 2.x uses "scale" instead of "scales.r")
-    cfg.options.scale = {
-      ticks: { min, max, stepSize: 1, beginAtZero: true },
-      gridLines: { circular: true },
-      angleLines: { display: true }
-    };
+    cfg.options.scales.r = { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
+    cfg.options.scale    = { ticks: { min, max, stepSize: 1, beginAtZero: true }, gridLines: { circular: true }, angleLines: { display: true } };
 
     u.searchParams.set("c", JSON.stringify(cfg));
     return u.toString();
@@ -227,13 +210,93 @@ function tuneQuickChartUrl(originalUrl) {
   }
 }
 
+/* ───────── SpiderDesc tuner helpers ───────── */
+function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
+  const out = { C:0, T:0, R:0, L:0 };
+  const s = String(freqStr || "");
+  const re = /([CTRL]):\s*([0-9]+)/gi;
+  let m;
+  while ((m = re.exec(s))) {
+    const k = m[1].toUpperCase();
+    out[k] = Number(m[2]) || 0;
+  }
+  for (const k of ["C","T","R","L"]) if (!out[k] && Number(fb[k])) out[k] = Number(fb[k]);
+  return out;
+}
+
+function canonicalFromCounts(cnt) {
+  const CTRL = ["C","T","R","L"];
+  const orderIdx = k => CTRL.indexOf(k);
+  const arr = CTRL.map(k => ({ k, n: Number(cnt[k]||0) }))
+    .filter(x => x.n > 0)
+    .sort((a,b) => (b.n - a.n) || (orderIdx(a.k) - orderIdx(b.k)));
+  if (!arr.length) return { shape: "", states: [] };
+  const pos = arr.map(x => x.n);
+  let shape = pos.join(".");
+  if (pos[0] === 5) shape = "5.0";
+  else if (pos[0] === 4 && pos[1] === 1) shape = "4.1";
+  else if (pos[0] === 3 && pos[1] === 2) shape = "3.2";
+  else if (pos[0] === 3 && pos[1] === 1 && pos[2] === 1) shape = "3.1.1";
+  else if (pos[0] === 2 && pos[1] === 2 && pos[2] === 1) shape = "2.2.1";
+  else if (pos[0] === 2 && pos[1] === 1 && pos[2] === 1 && pos[3] === 1) shape = "2.1.1.1";
+
+  let states = [];
+  if (shape === "5.0")               states = [arr[0].k];
+  else if (shape === "4.1" ||
+           shape === "3.2")          states = [arr[0].k, arr[1].k];
+  else if (shape === "3.1.1" ||
+           shape === "2.2.1")        states = [arr[0].k, arr[1].k, arr[2].k];
+  else if (shape === "2.1.1.1")      states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
+  else                               states = arr.map(x=>x.k);
+
+  return { shape, states };
+}
+
+function scaleMaxForShape(shape) {
+  if (shape === "2.1.1.1") return 3;
+  if (shape === "3.2")     return 4;
+  if (shape === "4.1")     return 5;
+  if (shape === "5.0" || shape === "5") return 5;
+  return 4;
+}
+
+function tuneSpiderDesc(rawDesc, q, P) {
+  // Priority: explicit URL override if provided
+  let base = q && typeof q.spiderdesc === "string" && q.spiderdesc.trim().length ? q.spiderdesc : (rawDesc || "");
+  if (!base) return "";
+
+  // Derive counts/shape/order from spiderfreq
+  const counts = parseCountsFromFreq(P?.spiderfreq);
+  const { shape, states } = canonicalFromCounts(counts);
+  const orderArrow = states.join(" \u2192 "); // "R → C → T → L"
+  const max = scaleMaxForShape(shape);
+  const countsStr = String(P?.spiderfreq || "");
+
+  // Token replacement
+  base = String(base).replace(/\{\{\s*(shape|states|order|counts|max)\s*\}\}/gi, (_, key) => {
+    const k = key.toLowerCase();
+    if (k === "shape")  return shape || "";
+    if (k === "states" || k === "order") return orderArrow || "";
+    if (k === "counts") return countsStr || "";
+    if (k === "max")    return String(max);
+    return "";
+  });
+
+  // Optional prefix/suffix/append via query
+  if (q && typeof q.spiderdesc_prefix === "string") base = String(q.spiderdesc_prefix) + base;
+  if (q && typeof q.spiderdesc_suffix === "string") base = base + String(q.spiderdesc_suffix);
+  if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
+
+  return base;
+}
+
+/* normalize inbound payload */
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
   const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
 
-  // >>> Fix: prefer person.fullName, then short key "p1:n", then others; avoid defaulting to the path label unless truly empty.
   const nameCand =
     (d.person && d.person.fullName) ||
     d["p1:n"] ||
@@ -244,7 +307,6 @@ function normaliseInput(d = {}) {
 
   return {
     name:    norm(nameCand || "Perspective"),
-    // >>> Small robustness: also accept short key "p1:d" if present (non-breaking).
     dateLbl: norm(d.dateLbl || d["p1:d"] || d.d || ""),
     dom:     String(d.dom || d.domLabel || ""),
     domChar: norm(d.domchar || d.domChar || d.character || ""),
@@ -261,7 +323,6 @@ function normaliseInput(d = {}) {
     layoutV6: d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
   };
 }
-
 
 function layoutFromPayload(payloadLayout) {
   const L = JSON.parse(JSON.stringify(LOCKED));
@@ -304,34 +365,27 @@ export default async function handler(req, res) {
     if (domKey && L.p3?.state?.useAbsolute) {
       const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
       if (anchor && L.p3.state.labelText) {
-        drawTextBox(p(2), font, String(L.p3.state.labelText), {
-          x: anchor.labelX, y: anchor.labelY, w: 180,
-          size: L.p3.state.labelSize || 10, align: "center"
-        }, { maxLines: 1 });
+        drawTextBox(p(2), font, String(L.p3.state.labelText), { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" }, { maxLines: 1 });
       }
     }
 
     // p4 (spider explanation + transparent chart)
     if (L.p4?.spider) {
-      // accept either key: "p4:spiderdesc" (colon) or "spiderdesc" (dot)
       const rawSpiderDesc =
         (P && P["p4:spiderdesc"]) ??
         (P && P.spiderdesc) ??
         "";
 
-      const desc = S(rawSpiderDesc).trim();
-      if (desc) {
+      const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
+      if (tuned) {
         const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
-        drawTextBox(p(3), font, desc, { ...L.p4.spider, maxLines }, { maxLines });
+        drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
       }
     }
 
     if (L.p4?.chart && (P?.chartUrl || q.chart)) {
       let chartUrl = String(P?.chartUrl || q.chart || "");
-
-      // Enforce shape-based scale + rounded radar even when caller passed &chart=
       chartUrl = tuneQuickChartUrl(chartUrl);
-
       if (chartUrl) {
         const img = await embedRemoteImage(pdfDoc, chartUrl);
         if (img) {
@@ -389,7 +443,7 @@ export default async function handler(req, res) {
     if (L.p11?.split) {
       const clean = s =>
         norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "") // remove leading bullet + "Tip:"
+          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "")
           .trim();
 
       const pairs = [
@@ -405,11 +459,9 @@ export default async function handler(req, res) {
         const size   = box.size || 18;
         const maxL   = box.maxLines || 4;
 
-        // draw the dash in a narrow gutter (so wrapped lines align)
-        const dashX = box.x + Math.max(2, indent - 10); // 10pt gutter; tweak if needed
+        const dashX = box.x + Math.max(2, indent - 10);
         drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-        // draw the text block starting at the indent
         drawTextBox(
           p(10), font, txt,
           { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
