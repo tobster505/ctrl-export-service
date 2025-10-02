@@ -164,6 +164,62 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
+/* ───────────── QuickChart tuner (shape-based scale + rounded radar) ───────────── */
+function tuneQuickChartUrl(originalUrl) {
+  try {
+    if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
+    const u = new URL(originalUrl);
+    let cParam = u.searchParams.get("c");
+    if (!cParam) return originalUrl;
+
+    // Parse possible encoded config
+    let cfg = null;
+    try { cfg = JSON.parse(cParam); }
+    catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
+
+    if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
+
+    // Dataset values
+    const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
+      ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
+      : [];
+
+    // Infer shape by sorted counts (desc); normalize 5 → "5.0"
+    const shape = (() => {
+      const s = d.slice().sort((a,b)=>b-a).join(".");
+      return s === "5" ? "5.0" : s;
+    })();
+
+    // Round the polygon
+    cfg.options = cfg.options || {};
+    cfg.options.elements = cfg.options.elements || {};
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
+    if (cfg.data && Array.isArray(cfg.data.datasets)) {
+      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35 }));
+    }
+
+    // Apply requested scale per shape
+    cfg.options.scales = cfg.options.scales || {};
+    const r = {};
+    if (shape === "2.1.1.1") {
+      Object.assign(r, { min: 0, max: 3, ticks: { stepSize: 1 }, grid: { circular: true } });
+    } else if (shape === "3.2") {
+      Object.assign(r, { min: 0, max: 4, ticks: { stepSize: 1 }, grid: { circular: true } });
+    } else if (shape === "4.1" || shape === "5.0" || shape === "5") {
+      Object.assign(r, { min: 0, max: 5, ticks: { stepSize: 1 }, grid: { circular: true } });
+    } else {
+      const maxVal = Math.max(4, ...d);
+      Object.assign(r, { beginAtZero: true, suggestedMax: maxVal, ticks: { stepSize: 1 }, grid: { circular: true } });
+    }
+    cfg.options.scales.r = r;
+
+    u.searchParams.set("c", JSON.stringify(cfg));
+    return u.toString();
+  } catch {
+    return originalUrl;
+  }
+}
+
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
@@ -248,33 +304,36 @@ export default async function handler(req, res) {
       }
     }
 
-// p4 (spider explanation + transparent chart)
-if (L.p4?.spider) {
-  // accept either key: "p4:spiderdesc" (colon) or "spiderdesc" (dot)
-  const rawSpiderDesc =
-    (P && P["p4:spiderdesc"]) ??
-    (P && P.spiderdesc) ??
-    "";
+    // p4 (spider explanation + transparent chart)
+    if (L.p4?.spider) {
+      // accept either key: "p4:spiderdesc" (colon) or "spiderdesc" (dot)
+      const rawSpiderDesc =
+        (P && P["p4:spiderdesc"]) ??
+        (P && P.spiderdesc) ??
+        "";
 
-  const desc = S(rawSpiderDesc).trim();
-  if (desc) {
-    const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
-    drawTextBox(p(3), font, desc, { ...L.p4.spider, maxLines }, { maxLines });
-  }
-}
-
-if (L.p4?.chart && (P?.chartUrl || q.chart)) {
-  const chartUrl = String(P?.chartUrl || q.chart || "");
-  if (chartUrl) {
-    const img = await embedRemoteImage(pdfDoc, chartUrl);
-    if (img) {
-      const H = p(3).getHeight();
-      const { x, y, w, h } = L.p4.chart;
-      p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+      const desc = S(rawSpiderDesc).trim();
+      if (desc) {
+        const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
+        drawTextBox(p(3), font, desc, { ...L.p4.spider, maxLines }, { maxLines });
+      }
     }
-  }
-}
 
+    if (L.p4?.chart && (P?.chartUrl || q.chart)) {
+      let chartUrl = String(P?.chartUrl || q.chart || "");
+
+      // Enforce shape-based scale + rounded radar even when caller passed &chart=
+      chartUrl = tuneQuickChartUrl(chartUrl);
+
+      if (chartUrl) {
+        const img = await embedRemoteImage(pdfDoc, chartUrl);
+        if (img) {
+          const H = p(3).getHeight();
+          const { x, y, w, h } = L.p4.chart;
+          p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+        }
+      }
+    }
 
     // p5
     if (L.p5?.seqpat && P.seqpat) {
@@ -319,39 +378,38 @@ if (L.p4?.chart && (P?.chartUrl || q.chart)) {
       }
     }
 
-// p11 (hanging-indent bullets + strip "Tip:" prefix)
-if (L.p11?.split) {
-  const clean = s =>
-    norm(String(s || ""))
-      .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "") // remove leading bullet + "Tip:"
-      .trim();
+    // p11 (hanging-indent bullets + strip "Tip:" prefix)
+    if (L.p11?.split) {
+      const clean = s =>
+        norm(String(s || ""))
+          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "") // remove leading bullet + "Tip:"
+          .trim();
 
-  const pairs = [
-    { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
-    { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
-    { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
-    { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
-  ];
+      const pairs = [
+        { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
+        { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
+        { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
+        { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
+      ];
 
-  for (const { txt, box } of pairs) {
-    if (!txt) continue;
-    const indent = N(L.p11.bulletIndent, 18);
-    const size   = box.size || 18;
-    const maxL   = box.maxLines || 4;
+      for (const { txt, box } of pairs) {
+        if (!txt) continue;
+        const indent = N(L.p11.bulletIndent, 18);
+        const size   = box.size || 18;
+        const maxL   = box.maxLines || 4;
 
-    // draw the dash in a narrow gutter (so wrapped lines align)
-    const dashX = box.x + Math.max(2, indent - 10); // 10pt gutter; tweak if needed
-    drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+        // draw the dash in a narrow gutter (so wrapped lines align)
+        const dashX = box.x + Math.max(2, indent - 10); // 10pt gutter; tweak if needed
+        drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-    // draw the text block starting at the indent
-    drawTextBox(
-      p(10), font, txt,
-      { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
-      { maxLines: maxL }
-    );
-  }
-}
-
+        // draw the text block starting at the indent
+        drawTextBox(
+          p(10), font, txt,
+          { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
+          { maxLines: maxL }
+        );
+      }
+    }
 
     // footers
     const footerLabel = norm(P.name);
