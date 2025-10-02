@@ -319,21 +319,39 @@ if (L.p4?.chart && (P?.chartUrl || q.chart)) {
       }
     }
 
-    // p11 (indent bullets)
-    if (L.p11?.split) {
-      const pairs = [
-        { txt: (P.tips?.[0]||""),   box: L.p11.tips1 },
-        { txt: (P.tips?.[1]||""),   box: L.p11.tips2 },
-        { txt: (P.actions?.[0]||""), box: L.p11.acts1 },
-        { txt: (P.actions?.[1]||""), box: L.p11.acts2 }
-      ];
-      for (const { txt, box } of pairs) {
-        const t = norm(txt); if (!t) continue;
-        const indent = N(L.p11.bulletIndent, 18);
-        // draw as "- " + text but with a visible indent
-        drawTextBox(p(10), font, `- ${t}`, { x: box.x + indent, y: box.y, w: box.w - indent, size: box.size||18, align: box.align||"left" }, { maxLines: box.maxLines||4 });
-      }
-    }
+// p11 (hanging-indent bullets + strip "Tip:" prefix)
+if (L.p11?.split) {
+  const clean = s =>
+    norm(String(s || ""))
+      .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "") // remove leading bullet + "Tip:"
+      .trim();
+
+  const pairs = [
+    { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
+    { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
+    { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
+    { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
+  ];
+
+  for (const { txt, box } of pairs) {
+    if (!txt) continue;
+    const indent = N(L.p11.bulletIndent, 18);
+    const size   = box.size || 18;
+    const maxL   = box.maxLines || 4;
+
+    // draw the dash in a narrow gutter (so wrapped lines align)
+    const dashX = box.x + Math.max(2, indent - 10); // 10pt gutter; tweak if needed
+    drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+
+    // draw the text block starting at the indent
+    drawTextBox(
+      p(10), font, txt,
+      { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
+      { maxLines: maxL }
+    );
+  }
+}
+
 
     // footers
     const footerLabel = norm(P.name);
