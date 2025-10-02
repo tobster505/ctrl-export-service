@@ -164,7 +164,7 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* ───────────── QuickChart tuner (shape-based scale + rounded radar) ───────────── */
+/* ───────── QuickChart tuner (shape-based scale + rounded radar, v2/v3/v4) ───────── */
 function tuneQuickChartUrl(originalUrl) {
   try {
     if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
@@ -172,46 +172,53 @@ function tuneQuickChartUrl(originalUrl) {
     let cParam = u.searchParams.get("c");
     if (!cParam) return originalUrl;
 
-    // Parse possible encoded config
+    // Parse config (handles encoded or plain)
     let cfg = null;
     try { cfg = JSON.parse(cParam); }
     catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
 
     if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
 
-    // Dataset values
+    // Pull dataset values
     const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
       ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
       : [];
 
-    // Infer shape by sorted counts (desc); normalize 5 → "5.0"
+    // Infer shape by sorted counts; normalize 5 → "5.0"
     const shape = (() => {
       const s = d.slice().sort((a,b)=>b-a).join(".");
       return s === "5" ? "5.0" : s;
     })();
 
-    // Round the polygon
+    // Round the polygon for all Chart.js versions
     cfg.options = cfg.options || {};
     cfg.options.elements = cfg.options.elements || {};
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 }; // v3/v4 + works for v2's line element
     if (cfg.data && Array.isArray(cfg.data.datasets)) {
-      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35 }));
+      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 })); // dataset-level for v2/v3/v4
     }
 
-    // Apply requested scale per shape
+    // Compute min/max by shape
+    let min = 0, max = Math.max(4, ...d);
+    if (shape === "2.1.1.1") { max = 3; }
+    else if (shape === "3.2") { max = 4; }
+    else if (shape === "4.1" || shape === "5.0" || shape === "5") { max = 5; }
+
+    // v3/v4 path
     cfg.options.scales = cfg.options.scales || {};
-    const r = {};
-    if (shape === "2.1.1.1") {
-      Object.assign(r, { min: 0, max: 3, ticks: { stepSize: 1 }, grid: { circular: true } });
-    } else if (shape === "3.2") {
-      Object.assign(r, { min: 0, max: 4, ticks: { stepSize: 1 }, grid: { circular: true } });
-    } else if (shape === "4.1" || shape === "5.0" || shape === "5") {
-      Object.assign(r, { min: 0, max: 5, ticks: { stepSize: 1 }, grid: { circular: true } });
-    } else {
-      const maxVal = Math.max(4, ...d);
-      Object.assign(r, { beginAtZero: true, suggestedMax: maxVal, ticks: { stepSize: 1 }, grid: { circular: true } });
-    }
-    cfg.options.scales.r = r;
+    cfg.options.scales.r = {
+      min,
+      max,
+      ticks: { stepSize: 1 },
+      grid: { circular: true }
+    };
+
+    // v2 fallback path (Chart.js 2.x uses "scale" instead of "scales.r")
+    cfg.options.scale = {
+      ticks: { min, max, stepSize: 1, beginAtZero: true },
+      gridLines: { circular: true },
+      angleLines: { display: true }
+    };
 
     u.searchParams.set("c", JSON.stringify(cfg));
     return u.toString();
