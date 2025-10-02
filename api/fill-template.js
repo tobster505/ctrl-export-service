@@ -169,21 +169,36 @@ function normaliseInput(d = {}) {
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
   const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
+
+  // >>> Fix: prefer person.fullName, then short key "p1:n", then others; avoid defaulting to the path label unless truly empty.
+  const nameCand =
+    (d.person && d.person.fullName) ||
+    d["p1:n"] ||
+    d.fullName ||
+    (d.person && d.person.preferredName) ||
+    d.preferredName ||
+    d.name;
+
   return {
-    name: norm(d.name || d.fullName || d.preferredName || "Perspective"),
-    dateLbl: norm(d.dateLbl || d.d || ""),
-    dom: String(d.dom || d.domLabel || ""),
+    name:    norm(nameCand || "Perspective"),
+    // >>> Small robustness: also accept short key "p1:d" if present (non-breaking).
+    dateLbl: norm(d.dateLbl || d["p1:d"] || d.d || ""),
+    dom:     String(d.dom || d.domLabel || ""),
     domChar: norm(d.domchar || d.domChar || d.character || ""),
     domDesc: norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
     spiderdesc: norm(d.spiderdesc || d.spider || ""),
     spiderfreq: norm(d.spiderfreq || ""),
-    seqpat: norm(d.seqpat || d.pattern || d.seqat || ""),
-    theme: norm(d.theme || ""),
-    workwcol: wcol, workwlead: wldr, tips, actions,
+    seqpat:  norm(d.seqpat || d.pattern || d.seqat || ""),
+    theme:   norm(d.theme || ""),
+    workwcol: wcol,
+    workwlead: wldr,
+    tips,
+    actions,
     chartUrl: String(d.chart || d.chartUrl || ""),
     layoutV6: d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
   };
 }
+
 
 function layoutFromPayload(payloadLayout) {
   const L = JSON.parse(JSON.stringify(LOCKED));
