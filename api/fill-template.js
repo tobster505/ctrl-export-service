@@ -136,7 +136,11 @@ const LOCKED = {
   },
   p4: { spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 }, chart:{ x:20,y:225,w:570,h:280 } },
   p5: { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
-  p6: { theme: { x:25,y:350,w:550,size:18,align:"left", maxLines:12 } },
+  // V3.2: include a dedicated paragraph slot for theme explanation
+  p6: {
+    theme:     { x:25,y:330,w:550,size:18,align:"left", maxLines:2 },
+    themeExpl: { x:25,y:360,w:550,size:18,align:"left", maxLines:12 }
+  },
   p7: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
   p8: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
   p9: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
@@ -306,21 +310,22 @@ function normaliseInput(d = {}) {
     d.name;
 
   return {
-    name:    norm(nameCand || "Perspective"),
-    dateLbl: norm(d.dateLbl || d["p1:d"] || d.d || ""),
-    dom:     String(d.dom || d.domLabel || ""),
-    domChar: norm(d.domchar || d.domChar || d.character || ""),
-    domDesc: norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
-    spiderdesc: norm(d.spiderdesc || d.spider || ""),
-    spiderfreq: norm(d.spiderfreq || ""),
-    seqpat:  norm(d.seqpat || d.pattern || d.seqat || ""),
-    theme:   norm(d.theme || ""),
-    workwcol: wcol,
+    name:      norm(nameCand || "Perspective"),
+    dateLbl:   norm(d.dateLbl || d["p1:d"] || d.d || ""),
+    dom:       String(d.dom || d.domLabel || ""),
+    domChar:   norm(d.domchar || d.domChar || d.character || ""),
+    domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
+    spiderdesc:norm(d.spiderdesc || d.spider || ""),
+    spiderfreq:norm(d.spiderfreq || ""),
+    seqpat:    norm(d.seqpat || d.pattern || d.seqat || ""),
+    theme:     norm(d.theme || d["p6:theme"] || ""),
+    themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
+    workwcol:  wcol,
     workwlead: wldr,
     tips,
     actions,
-    chartUrl: String(d.chart || d.chartUrl || ""),
-    layoutV6: d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
+    chartUrl:  String(d.chart || d.chartUrl || ""),
+    layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
   };
 }
 
@@ -372,7 +377,7 @@ export default async function handler(req, res) {
     // p4 (spider explanation + transparent chart)
     if (L.p4?.spider) {
       const rawSpiderDesc =
-        (P && P["p4:spiderdesc"]) ??
+        (src && src["p4:spiderdesc"]) ??
         (P && P.spiderdesc) ??
         "";
 
@@ -402,10 +407,14 @@ export default async function handler(req, res) {
       drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
     }
 
-    // p6
+    // p6 — THEME (label + paragraph)
     if (L.p6?.theme && P.theme) {
-      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 12);
+      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
       drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
+    }
+    if (L.p6?.themeExpl && P.themeExpl) {
+      const maxLines = (L.p6.themeExpl.maxLines ?? L.p6.themeExplMaxLines ?? 12);
+      drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
     }
 
     // p7–p10
