@@ -139,7 +139,7 @@ const LOCKED = {
   // V3.2: include a dedicated paragraph slot for theme explanation
   p6: {
     theme:     { x:25,y:330,w:550,size:18,align:"left", maxLines:2 },
-    themeExpl: { x:25,y:360,w:550,size:18,align:"left", maxLines:12 }
+    themeExpl: { x:25,y:560,w:550,size:18,align:"left", maxLines:12 }
   },
   p7: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
   p8: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
