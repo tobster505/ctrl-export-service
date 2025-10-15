@@ -1,5 +1,5 @@
 /**
- * CTRL Export Service · fill-template (Perspective flow) — V3 (full)
+ * CTRL Export Service · fill-template (Perspective flow) — V3 (fixed)
  * Place at: /pages/api/fill-template.js
  * TL-origin coordinates (pt), pages are 1-based.
  */
@@ -59,6 +59,7 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const wrapped = [];
 
   const breakLine = (s) => {
+    if (!s) { wrapped.push(""); return; }
     const words = s.split(/\s+/);
     let line = "";
     for (const word of words) {
@@ -80,19 +81,16 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   let cursor = pageHeight - y; // convert TL-y → BL-y baseline
   const lh = size + lineGap;
 
-  const emit = align === "center"
+  const xFor = align === "center"
     ? (lx) => (x + (w - font.widthOfTextAtSize(lx, size)) / 2)
     : align === "right"
       ? (lx) => (x + (w - font.widthOfTextAtSize(lx, size)))
       : () => x;
 
-  const contentStream = page.getContentStream();
-  const ops = page.getOperators();
-
   let used = 0;
   for (const ln of wrapped) {
     if (used >= maxLines) break;
-    const tx = emit(ln);
+    const tx = xFor(ln);
     page.drawText(ln, { x: tx, y: cursor - size, size, font, color });
     cursor -= lh;
     used++;
@@ -100,11 +98,6 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
 }
 
 /* ────────────────────────── SPIDER DESC TOKENS ────────────────────────── */
-/**
- * Allows templates like:
- *   "Your chart is {{shape}} with {{counts}} and order {{order}}."
- * Replaces known tokens with values; supports optional query prefix/suffix/append.
- */
 function tokenizeSpiderDesc(base, shape, orderArrow, countsStr, max, q) {
   base = String(base || "");
 
@@ -125,10 +118,6 @@ function tokenizeSpiderDesc(base, shape, orderArrow, countsStr, max, q) {
 }
 
 /* ────────────────────────── NORMALISE INPUT ────────────────────────── */
-/**
- * IMPORTANT: reads canonical fields AND p6: aliases (p6:theme, p6:themeExpl).
- * Also normalises arrays for tips/actions and work-with blocks.
- */
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol)
     ? d.workwcol.map(x => ({ look: norm(x?.look || ""), work: norm(x?.work || "") }))
@@ -179,10 +168,6 @@ function normaliseInput(d = {}) {
 }
 
 /* ────────────────────────── LAYOUT (LOCKED + overrides) ────────────────────────── */
-/**
- * Minimal LOCKED defaults that match the template’s expected keys.
- * Keep your own, richer LOCKED if you already have it; this one is safe.
- */
 const LOCKED = {
   footer: {
     f2: { x: 40,  y: 785, w: 520, size: 9,  align: "right" },
@@ -214,10 +199,9 @@ const LOCKED = {
   },
   p6: {
     theme:     { x: 60, y: 300, w: 520, size: 18, align: "left", maxLines: 2 },
-    themeExpl: { x: 60, y: 330, w: 520, size: 13, align: "left", maxLines: 12 } // NEW paragraph box
+    themeExpl: { x: 60, y: 330, w: 520, size: 13, align: "left", maxLines: 12 }
   },
   p10: {
-    // Your template may include a combined text region; keep keys if you use them
     bodyPara: { x: 60, y: 240, w: 520, size: 13, align: "left", maxLines: 15 }
   },
   p11: {
@@ -230,7 +214,6 @@ const LOCKED = {
   }
 };
 
-/** Deep-merge payload-provided layout overrides into LOCKED. */
 function layoutFromPayload(payloadLayout) {
   const L = JSON.parse(JSON.stringify(LOCKED));
   if (!payloadLayout) return L;
@@ -276,7 +259,6 @@ export default async function handler(req, res) {
     /* ───── p4 (spider notes) ───── */
     if (L.p4?.spiderfreq && P.spiderfreq) drawTextBox(p(3), font, P.spiderfreq, L.p4.spiderfreq);
     if (L.p4?.spiderdesc && P.spiderdesc) {
-      // If tokens exist, allow query-controlled tokenization
       const base = P.spiderdesc;
       const desc = tokenizeSpiderDesc(base, q.shape, q.order, q.counts, q.max, q);
       drawTextBox(p(3), font, desc, L.p4.spiderdesc);
