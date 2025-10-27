@@ -1,4 +1,4 @@
-// /api/fill-template.js — USER EXPORTER (Node runtime)
+// /api/fill-template.js — USER EXPORTER (Node runtime, robust /public loader)
 // Loads templates ONLY from /public. Default = CTRL_Perspective_Assessment_Profile_template_slim.pdf
 export const config = { runtime: "nodejs" };
 
@@ -8,6 +8,7 @@ const N  = (v, fb = 0)  => (Number.isFinite(+v) ? +v : +fb);
 const okObj = (o) => o && typeof o === "object" && !Array.isArray(o);
 const norm = (t) => String(t || "").replace(/\r/g, "").trim();
 
+// ---------- request payload reader (works for GET ?data= and POST JSON) ----------
 async function readRequestPayload(universalReq) {
   // GET ?data=<base64 JSON>
   try {
@@ -41,24 +42,51 @@ async function readRequestPayload(universalReq) {
   return {};
 }
 
+// ---------- robust /public loader (multi-path resolver for Vercel layouts) ----------
+import { fileURLToPath } from "url";
+import path from "path";
+import fs from "fs/promises";
+
 async function loadTemplateBytesLocal(filename) {
-  // Read from /public
-  const path = (await import("path")).default;
-  const fs = (await import("fs/promises")).default;
-  const p = path.join(process.cwd(), "public", filename);
-  try {
-    return await fs.readFile(p);
-  } catch {
-    throw new Error(`Template not found in /public: ${filename}`);
+  const fname = String(filename || "").trim();
+  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
+
+  // Resolve relative to this function file (works inside .vercel/output/functions/...)
+  const __file = fileURLToPath(import.meta.url);
+  const __dir  = path.dirname(__file);
+
+  // Candidate locations (top to bottom)
+  const candidates = [
+    // typical: api/fill-template.js -> projectRoot/public/<file>
+    path.join(__dir, "..", "..", "public", fname),
+    path.join(__dir, "..", "public", fname),
+    path.join(__dir, "public", fname),
+
+    // sometimes process.cwd() points to function work dir or project root
+    path.join(process.cwd(), "public", fname),
+
+    // as last resort, next to the api file if bundler copied it
+    path.join(__dir, fname),
+  ];
+
+  let lastErr;
+  for (const p of candidates) {
+    try {
+      const buf = await fs.readFile(p);
+      return buf;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  throw new Error(`Template not found in any known path for /public: ${fname}`);
 }
 
+// ---------- response helpers ----------
 function okResNode(res, status, body, headers = {}) {
   res.statusCode = status;
   for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
   res.end(body);
 }
-
 function okResWeb(status, body, headers = {}) {
   return new Response(body, { status, headers });
 }
@@ -110,11 +138,12 @@ function drawTextBox(page, font, text, spec = {}, opts = {}) {
   }
 }
 
+// ---------- renderer ----------
 async function renderPdf(payload) {
-  // Lazy-import pdf-lib
+  // Lazy-import pdf-lib for safer cold starts
   const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
 
-  // ---- USER template: hard default to slim
+  // Hard default to USER slim template if none provided via env/body
   const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template_slim.pdf");
   const bytes = await loadTemplateBytesLocal(tpl);
   const pdf = await PDFDocument.load(bytes);
@@ -132,7 +161,7 @@ async function renderPdf(payload) {
   const theme        = S(payload.theme || payload["p6:theme"]);
   const themeExpl    = S(payload.themeExpl || payload["p6:themeExpl"]);
 
-  // ---- Default coords (TL input; baseline drawing)
+  // Default coords (TL input; baseline drawing)
   const DEFAULTS = {
     name:         { page: 1, x: 90,  y: 140, w: 440, size: 22, align: "left", __pdf: { rgb } },
     date:         { page: 1, x: 90,  y: 170, w: 440, size: 14, align: "left", __pdf: { rgb } },
