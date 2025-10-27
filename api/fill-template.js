@@ -1,5 +1,5 @@
-// /api/fill-template.js — Vercel (Node runtime), robust & lazy-loaded
-
+// /api/fill-template.js — USER EXPORTER (Node runtime)
+// Loads templates ONLY from /public. Default = CTRL_Perspective_Assessment_Profile_template_slim.pdf
 export const config = { runtime: "nodejs" };
 
 // ---------- tiny utils ----------
@@ -25,7 +25,7 @@ async function readRequestPayload(universalReq) {
       if (okObj(body)) return body;
     } catch {}
   }
-  // POST JSON body (Node)
+  // POST JSON body (Node streams)
   const req = universalReq;
   if (req?.headers && typeof req.on === "function") {
     try {
@@ -63,7 +63,7 @@ function okResWeb(status, body, headers = {}) {
   return new Response(body, { status, headers });
 }
 
-// ---------- core drawing helpers (no width variable shadowing) ----------
+// ---------- core drawing helper (no width shadowing) ----------
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
   const { rgb } = spec.__pdf;
   const {
@@ -114,14 +114,15 @@ async function renderPdf(payload) {
   // Lazy-import pdf-lib
   const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
 
-  // Fields
-  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template.pdf");
+  // ---- USER template: hard default to slim
+  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template_slim.pdf");
   const bytes = await loadTemplateBytesLocal(tpl);
   const pdf = await PDFDocument.load(bytes);
 
   const fontName = S(process.env.PDF_DEFAULT_FONT || "Helvetica");
   const font = await pdf.embedFont(StandardFonts[fontName] || StandardFonts.Helvetica);
 
+  // Accept both slim keys and human keys, but we only *emit* to slim fields
   const name         = S(payload.name || payload["p1:n"], "Perspective");
   const date         = S(payload.date || payload["p1:d"], new Date().toLocaleDateString("en-GB"));
   const dominant     = S(payload.dominant || payload["p3:dom"]);
@@ -131,6 +132,7 @@ async function renderPdf(payload) {
   const theme        = S(payload.theme || payload["p6:theme"]);
   const themeExpl    = S(payload.themeExpl || payload["p6:themeExpl"]);
 
+  // ---- Default coords (TL input; baseline drawing)
   const DEFAULTS = {
     name:         { page: 1, x: 90,  y: 140, w: 440, size: 22, align: "left", __pdf: { rgb } },
     date:         { page: 1, x: 90,  y: 170, w: 440, size: 14, align: "left", __pdf: { rgb } },
@@ -143,7 +145,6 @@ async function renderPdf(payload) {
 
   const coords = okObj(payload.coords) ? payload.coords : {};
   const pick = (k) => ({ ...DEFAULTS[k], ...(okObj(coords[k]) ? coords[k] : {}) });
-
   const pageOf = (n) => pdf.getPage(Math.min(Math.max(N(n,1)-1,0), pdf.getPageCount()-1));
 
   // Page 1
@@ -174,7 +175,8 @@ async function renderPdf(payload) {
 async function realHandler(universalReq) {
   const payload = await readRequestPayload(universalReq);
 
-  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template.pdf");
+  // Hard default to SLIM template if none passed via env/body
+  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template_slim.pdf");
   if (!/\.pdf$/i.test(tpl)) {
     return { status: 400, body: JSON.stringify({ ok: false, error: "Invalid template filename" }), headers: { "Content-Type": "application/json" } };
   }
@@ -187,9 +189,8 @@ async function realHandler(universalReq) {
   }
 }
 
-// Export for Node-style (req, res)
+// Default export (Node style) with Web fallback
 export default async function nodeHandler(req, res) {
-  // If res is missing (Web runtime), return Web Response
   if (!res || typeof res.writeHead !== "function") {
     const out = await realHandler(req);
     return okResWeb(out.status, out.body, out.headers);
@@ -198,6 +199,6 @@ export default async function nodeHandler(req, res) {
   okResNode(res, out.status, out.body, out.headers);
 }
 
-// Also support explicit Web handlers if your framework calls them:
+// Explicit Web handlers (if your framework prefers them)
 export async function GET(req)  { const out = await realHandler(req); return okResWeb(out.status, out.body, out.headers); }
 export async function POST(req) { const out = await realHandler(req); return okResWeb(out.status, out.body, out.headers); }
