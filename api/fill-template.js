@@ -1,166 +1,97 @@
-/**
- * CTRL Export Service · fill-template (Perspective flow)
- * Place at: /pages/api/fill-template.js
- * TL-origin coordinates (pt), pages are 1-based.
- */
-export const config = { runtime: "nodejs" };
+// api/fill-template.js
+// CTRL Coach Export Service · URL-tunable coordinates (TL origin, 1-based pages)
+// Works with ?tpl=...&data=<base64 json>[&raw=1] and optional QS overrides:
+//   &p3_domDesc_x=72&p3_domDesc_y=700&p3_domDesc_w=630&p3_domDesc_size=11
+//
+// Also supports injecting a full layout object via data.layoutV6.
 
-import fs from "fs/promises";
-import path from "path";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-/* ───────────── utilities ───────────── */
-const S = (v, fb = "") => (v == null ? String(fb) : String(v));
-const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
+// ───────────── ESM __dirname ─────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
-const norm = (v, fb = "") =>
+// ───────────── utilities ─────────────
+const S = (v, fb='') => (v == null ? String(fb) : String(v));
+const N = (v, fb=0)  => (Number.isFinite(+v) ? +v : +fb);
+const A = (v)        => (Array.isArray(v) ? v : []);
+
+const norm = (v, fb='') =>
   String(v ?? fb)
-    .normalize("NFKC")
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, "-")
-    .replace(/\u2026/g, "...")
-    .replace(/\u00A0/g, " ")
-    .replace(/[•·]/g, "-")
-    // arrows → WinAnsi-safe
-    .replace(/\u2194/g, "<->").replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
-    .replace(/\u2191/g, "^").replace(/\u2193/g, "v").replace(/[\u2196-\u2199]/g, "->")
-    .replace(/\u21A9/g, "<-").replace(/\u21AA/g, "->")
-    .replace(/\u00D7/g, "x")
-    // zero-width, emoji/PUA
-    .replace(/[\u200B-\u200D\u2060]/g, "")
-    .replace(/[\uD800-\uDFFF]/g, "")
-    .replace(/[\uE000-\uF8FF]/g, "")
-    // tidy
-    .replace(/\t/g, " ").replace(/\r\n?/g, "\n")
-    .replace(/[ \f\v]+/g, " ").replace(/[ \t]+\n/g, "\n").trim();
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-').replace(/\u2026/g, '...')
+    .replace(/\u00A0/g, ' ').replace(/[•·]/g, '-')
+    .replace(/[\u200B-\u200D\u2060]/g, '')
+    .replace(/[\uD800-\uDFFF]/g, '').replace(/[\uE000-\uF8FF]/g, '')
+    .replace(/\t/g, ' ').replace(/\r\n?/g, '\n')
+    .replace(/[ \f\v]+/g, ' ').replace(/[ \t]+\n/g, '\n')
+    .trim();
 
 function parseDataParam(b64ish) {
   if (!b64ish) return {};
   let s = String(b64ish);
   try { s = decodeURIComponent(s); } catch {}
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  try { return JSON.parse(Buffer.from(s, 'base64').toString('utf8')); }
   catch { return {}; }
 }
 
-/* word wrap draw helper (TL → BL conversion inside) */
+/** Top-left (TL) coordinates, 1-based pages; wrap + draw text. */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
-  const { x=40, y=40, w=540, size=12, lineGap=3, color=rgb(0,0,0), align="left" } = spec;
+  const {
+    x=40, y=40, w=540, size=12, lineGap=3,
+    color=rgb(0,0,0), align='left'
+  } = spec;
   const maxLines = (opts.maxLines ?? spec.maxLines ?? 6);
-  const hard = norm(text || "");
-  const lines = hard.split(/\n/).map(s=>s.trim());
+  const hard = norm(text || '');
+  if (!hard) return;
+
+  const linesIn = hard.split(/\n/).map(s => s.trim());
   const wrapped = [];
-
   const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
-  const wrapLine = (ln) => {
-    const words = ln.split(/\s+/); let cur="";
-    for (let i=0;i<words.length;i++){
-      const nxt = cur ? `${cur} ${words[i]}` : words[i];
-      if (widthOf(nxt) <= w || !cur) cur = nxt;
-      else { wrapped.push(cur); cur = words[i]; }
-    }
-    wrapped.push(cur);
-  };
-  for (const ln of lines) wrapLine(ln);
 
-  const out = wrapped.slice(0, maxLines);
+  const wrap = (ln) => {
+    const words = ln.split(/\s+/);
+    let cur = '';
+    for (const w of words) {
+      const next = cur ? `${cur} ${w}` : w;
+      if (widthOf(next) <= w || !cur) cur = next;
+      else { wrapped.push(cur); cur = w; }
+    }
+    if (cur) wrapped.push(cur);
+  };
+  for (const ln of linesIn) wrap(ln);
+
+  const lines = wrapped.slice(0, maxLines);
   const pageH = page.getHeight();
-  const baselineY = pageH - y;
-  const lineH = Math.max(1,size) + lineGap;
+  const baselineY = pageH - y;  // TL → BL
+  const lineH = Math.max(1, size) + lineGap;
 
   let yCursor = baselineY;
-  for (const ln of out) {
-    let xDraw = x; const wLn = widthOf(ln);
-    if (align === "center") xDraw = x + (w - wLn) / 2;
-    else if (align === "right") xDraw = x + (w - wLn);
-    page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1,size), font, color });
+  for (const ln of lines) {
+    let xDraw = x;
+    const wLn = widthOf(ln);
+    if (align === 'center') xDraw = x + (w - wLn) / 2;
+    else if (align === 'right') xDraw = x + (w - wLn);
+
+    page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1, size), font, color });
     yCursor -= lineH;
+    if (yCursor < 0) break;
   }
 }
 
-const rectTLtoBL = (page, box, inset = 0) => {
-  const pageH = page.getHeight();
-  const x = N(box.x) + inset;
-  const w = Math.max(0, N(box.w) - inset * 2);
-  const h = Math.max(0, N(box.h) - inset * 2);
-  const y = pageH - N(box.y) - N(box.h) + inset;
-  return { x, y, w, h };
-};
-
-function paintStateHighlight(page3, dom, cfg = {}) {
-  const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
-  if (!b) return;
-  const radius  = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : (cfg.highlightRadius ?? 28);
-  const inset   = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))  ? +((cfg.styleByState||{})[dom].inset)  : (cfg.highlightInset  ?? 6);
-  const opacity = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
-  const boxBL = rectTLtoBL(page3, b, inset);
-  const shade = rgb(251/255, 236/255, 250/255);
-  page3.drawRectangle({ x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h, borderRadius: radius, color: shade, opacity });
-  const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
-  if (!perState || cfg.labelText == null || cfg.labelSize == null) return;
-  return { labelX: perState.x, labelY: perState.y };
-}
-
-/* robust resolver for C/T/R/L from label/char */
-function resolveDomKey(...candidates) {
-  const mapLabel = { concealed:"C", triggered:"T", regulated:"R", lead:"L" };
-  const mapChar  = { art:"C", fal:"T", mika:"R", sam:"L" };
-  for (const c0 of candidates.flat()) {
-    const c = String(c0 || "").trim();
-    if (!c) continue;
-    const u = c.toUpperCase();
-    if (["C","T","R","L"].includes(u)) return u;
-    const l = c.toLowerCase();
-    if (mapLabel[l]) return mapLabel[l];
-    if (mapChar[l])  return mapChar[l];
-  }
-  return "";
-}
-
-/* locked coordinates (TL, 1-based) */
-const LOCKED = {
-  meta: { units: "pt", origin: "TL", pages: "1-based" },
-  p1: { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
-  p3: {
-    domChar:{ x:272,y:640,w:630,size:23,align:"left", maxLines:6 },
-    domDesc:{ x: 25,y:685,w:550,size:18,align:"left", maxLines:12 },
-    state: {
-      useAbsolute:true, shape:"round", highlightInset:6, highlightRadius:28, fillOpacity:0.45,
-      styleByState:{ C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
-      labelByState:{ C:{x:60,y:245}, T:{x:290,y:244}, R:{x:60,y:605}, L:{x:290,y:605} },
-      labelText:"YOU ARE HERE", labelSize:10, labelColor:{r:0.20,g:0.20,b:0.20}, labelOffsetX:0, labelOffsetY:0, labelPadTop:12, labelPadBottom:12,
-      absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
-    }
-  },
-  p4: { spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 }, chart:{ x:20,y:225,w:570,h:280 } },
-  p5: { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
-  // V3.2: include a dedicated paragraph slot for theme explanation
-  p6: {
-    theme:     { x:25,y:330,w:550,size:18,align:"left", maxLines:2 },
-    themeExpl: { x:25,y:560,w:550,size:18,align:"left", maxLines:12 }
-  },
-  p7: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p8: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p9: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p10:{ ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p11: {
-    lineGap:6, itemGap:6, bulletIndent:18, split:true,
-    tips1:{x:30,y:175,w:530,h:80,size:18,align:"left",maxLines:4},
-    tips2:{x:30,y:265,w:530,h:80,size:18,align:"left",maxLines:4},
-    acts1:{x:30,y:405,w:530,h:80,size:18,align:"left",maxLines:4},
-    acts2:{x:30,y:495,w:530,h:80,size:18,align:"left",maxLines:4}
-  },
-  footer:(()=>{ const f={x:380,y:51,w:400,size:13,align:"left"}; return {f2:{...f},f3:{...f},f4:{...f},f5:{...f},f6:{...f},f7:{...f},f8:{...f},f9:{...f},f10:{...f},f11:{...f},f12:{...f}} })()
-};
-
-/* remote chart (PNG/JPG), keeps transparency */
+/** Remote PNG/JPG with transparency preserved when possible. */
 async function embedRemoteImage(pdfDoc, url) {
   try {
     if (!url || !/^https?:/i.test(url)) return null;
-    if (typeof fetch === "undefined") return null;
-    const res = await fetch(url); if (!res.ok) return null;
+    if (typeof fetch === 'undefined') return null;
+    const res = await fetch(url);
+    if (!res.ok) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes[0] === 0x89 && bytes[1] === 0x50) return await pdfDoc.embedPng(bytes);
     if (bytes[0] === 0xff && bytes[1] === 0xd8) return await pdfDoc.embedJpg(bytes);
@@ -168,329 +99,301 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* ───────── QuickChart tuner (shape-based scale + rounded radar, v2/v3/v4) ───────── */
-function tuneQuickChartUrl(originalUrl) {
-  try {
-    if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
-    const u = new URL(originalUrl);
-    let cParam = u.searchParams.get("c");
-    if (!cParam) return originalUrl;
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-    let cfg = null;
-    try { cfg = JSON.parse(cParam); }
-    catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
-
-    if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
-
-    const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
-      ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
-      : [];
-
-    const shape = (() => {
-      const s = d.slice().sort((a,b)=>b-a).join(".");
-      return s === "5" ? "5.0" : s;
-    })();
-
-    cfg.options = cfg.options || {};
-    cfg.options.elements = cfg.options.elements || {};
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
-    if (cfg.data && Array.isArray(cfg.data.datasets)) {
-      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 }));
-    }
-
-    let min = 0, max = Math.max(4, ...d);
-    if (shape === "2.1.1.1") { max = 3; }
-    else if (shape === "3.2") { max = 4; }
-    else if (shape === "4.1" || shape === "5.0" || shape === "5") { max = 5; }
-
-    cfg.options.scales = cfg.options.scales || {};
-    cfg.options.scales.r = { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
-    cfg.options.scale    = { ticks: { min, max, stepSize: 1, beginAtZero: true }, gridLines: { circular: true }, angleLines: { display: true } };
-
-    u.searchParams.set("c", JSON.stringify(cfg));
-    return u.toString();
-  } catch {
-    return originalUrl;
-  }
+/** GET /public template bytes */
+async function loadTemplateBytes(tplName) {
+  const abs = path.resolve(__dirname, '..', 'public', String(tplName).replace(/[^A-Za-z0-9._-]/g, ''));
+  return await fs.readFile(abs);
 }
 
-/* ───────── SpiderDesc tuner helpers ───────── */
-function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
-  const out = { C:0, T:0, R:0, L:0 };
-  const s = String(freqStr || "");
-  const re = /([CTRL]):\s*([0-9]+)/gi;
-  let m;
-  while ((m = re.exec(s))) {
-    const k = m[1].toUpperCase();
-    out[k] = Number(m[2]) || 0;
+/** Resolve C/T/R/L from any of (dom, domChar, domDesc). */
+function resolveDomKey(...cands) {
+  const mapLabel = { concealed:'C', triggered:'T', regulated:'R', lead:'L' };
+  const mapChar  = { art:'C', fal:'T', mika:'R', sam:'L' };
+  for (const c0 of cands.flat()) {
+    const c = String(c0 || '').trim(); if (!c) continue;
+    const u = c.toUpperCase(); if (['C','T','R','L'].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
   }
-  for (const k of ["C","T","R","L"]) if (!out[k] && Number(fb[k])) out[k] = Number(fb[k]);
+  return '';
+}
+
+// ───────────── LOCKED defaults (TL coords; 1-based pages) ─────────────
+// Coach template sections – these keys are also used to form QS override names.
+const LOCKED = {
+  meta: { units: 'pt', origin: 'TL', pages: '1-based' },
+
+  // Page 1
+  p1: {
+    name: { x: 60, y: 760, w: 470, size: 22, align: 'left',  maxLines: 1 },
+    date: { x: 430, y: 785, w: 140, size: 12, align: 'left',  maxLines: 1 }
+  },
+
+  // Page 3: dominant description
+  p3: {
+    domDesc: { x: 30, y: 685, w: 550, size: 13, align: 'left', maxLines: 20 }
+  },
+
+  // Page 4: spider explanation + chart (optional)
+  p4: {
+    spider: { x: 30, y: 585, w: 550, size: 13, align: 'left', maxLines: 18 },
+    chart:  { x: 32, y: 260, w: 560, h: 280 } // TL: will convert to BL internally for image
+  },
+
+  // Page 5: sequence paragraph
+  p5: {
+    seqpat: { x: 25, y: 520, w: 550, size: 13, align: 'left', maxLines: 18 }
+  },
+
+  // Page 6: theme & explanation
+  p6: {
+    theme:     { x: 25, y: 540, w: 550, size: 12, align: 'left', maxLines: 1 },
+    themeExpl: { x: 25, y: 520, w: 550, size: 13, align: 'left', maxLines: 18 }
+  },
+
+  // Page 7–8: work with colleagues / leaders (pairs of look/work; 2 columns)
+  p7: {
+    // workwcol LOOK/WORK – top Y is applied in code
+    lookCol: { x: 30,  y: 440, w: 240, size: 12, align: 'left', lineGap: 4, maxLines: 5 },
+    workCol: { x: 320, y: 440, w: 240, size: 12, align: 'left', lineGap: 4, maxLines: 5 },
+    rowGap: 80
+  },
+  p8: {
+    // workwlead LOOK/WORK
+    lookCol: { x: 30,  y: 440, w: 240, size: 12, align: 'left', lineGap: 4, maxLines: 5 },
+    workCol: { x: 320, y: 440, w: 240, size: 12, align: 'left', lineGap: 4, maxLines: 5 },
+    rowGap: 80
+  },
+
+  // Page 9: tips (left) + actions (right) lists
+  p9: {
+    tips:    { x: 30,  y: 450, w: 250, size: 12, align: 'left', lineGap: 4, maxLines: 24 },
+    actions: { x: 320, y: 450, w: 250, size: 12, align: 'left', lineGap: 4, maxLines: 24 }
+  }
+};
+
+// ───────────── read layout overrides from QS ─────────────
+/**
+ * Builds a partial layout object from QS like:
+ *  &p3_domDesc_x=72&p3_domDesc_y=700&p3_domDesc_w=630&p3_domDesc_size=11
+ *  &p4_chart_x=355&p4_chart_y=315&p4_chart_w=270&p4_chart_h=250
+ */
+function layoutFromQuery(qs) {
+  const out = {};
+  const numericKeys = new Set(['x','y','w','h','size','lineGap','maxLines']);
+  const re = /^p(\d+)_(\w+)_(x|y|w|h|size|lineGap|maxLines)$/; // page_field_prop
+
+  for (const [k, v] of Object.entries(qs || {})) {
+    const m = k.match(re);
+    if (!m) continue;
+    const page = `p${m[1]}`;
+    const field = m[2];
+    const prop = m[3];
+    out[page] = out[page] || {};
+    out[page][field] = out[page][field] || {};
+    out[page][field][prop] = numericKeys.has(prop) ? N(v) : S(v);
+  }
   return out;
 }
 
-function canonicalFromCounts(cnt) {
-  const CTRL = ["C","T","R","L"];
-  const orderIdx = k => CTRL.indexOf(k);
-  const arr = CTRL.map(k => ({ k, n: Number(cnt[k]||0) }))
-    .filter(x => x.n > 0)
-    .sort((a,b) => (b.n - a.n) || (orderIdx(a.k) - orderIdx(b.k)));
-  if (!arr.length) return { shape: "", states: [] };
-  const pos = arr.map(x => x.n);
-  let shape = pos.join(".");
-  if (pos[0] === 5) shape = "5.0";
-  else if (pos[0] === 4 && pos[1] === 1) shape = "4.1";
-  else if (pos[0] === 3 && pos[1] === 2) shape = "3.2";
-  else if (pos[0] === 3 && pos[1] === 1 && pos[2] === 1) shape = "3.1.1";
-  else if (pos[0] === 2 && pos[1] === 2 && pos[2] === 1) shape = "2.2.1";
-  else if (pos[0] === 2 && pos[1] === 1 && pos[2] === 1 && pos[3] === 1) shape = "2.1.1.1";
-
-  let states = [];
-  if (shape === "5.0")               states = [arr[0].k];
-  else if (shape === "4.1" ||
-           shape === "3.2")          states = [arr[0].k, arr[1].k];
-  else if (shape === "3.1.1" ||
-           shape === "2.2.1")        states = [arr[0].k, arr[1].k, arr[2].k];
-  else if (shape === "2.1.1.1")      states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
-  else                               states = arr.map(x=>x.k);
-
-  return { shape, states };
+/** Deep merge: RHS overrides LHS objects. */
+function deepMerge(a, b) {
+  if (!b) return a;
+  const out = JSON.parse(JSON.stringify(a || {}));
+  for (const k of Object.keys(b)) {
+    const bv = b[k], av = out[k];
+    if (bv && typeof bv === 'object' && !Array.isArray(bv)) {
+      out[k] = deepMerge(av && typeof av === 'object' ? av : {}, bv);
+    } else {
+      out[k] = bv;
+    }
+  }
+  return out;
 }
 
-function scaleMaxForShape(shape) {
-  if (shape === "2.1.1.1") return 3;
-  if (shape === "3.2")     return 4;
-  if (shape === "4.1")     return 5;
-  if (shape === "5.0" || shape === "5") return 5;
-  return 4;
-}
-
-function tuneSpiderDesc(rawDesc, q, P) {
-  // Priority: explicit URL override if provided
-  let base = q && typeof q.spiderdesc === "string" && q.spiderdesc.trim().length ? q.spiderdesc : (rawDesc || "");
-  if (!base) return "";
-
-  // Derive counts/shape/order from spiderfreq
-  const counts = parseCountsFromFreq(P?.spiderfreq);
-  const { shape, states } = canonicalFromCounts(counts);
-  const orderArrow = states.join(" \u2192 "); // "R → C → T → L"
-  const max = scaleMaxForShape(shape);
-  const countsStr = String(P?.spiderfreq || "");
-
-  // Token replacement
-  base = String(base).replace(/\{\{\s*(shape|states|order|counts|max)\s*\}\}/gi, (_, key) => {
-    const k = key.toLowerCase();
-    if (k === "shape")  return shape || "";
-    if (k === "states" || k === "order") return orderArrow || "";
-    if (k === "counts") return countsStr || "";
-    if (k === "max")    return String(max);
-    return "";
-  });
-
-  // Optional prefix/suffix/append via query
-  if (q && typeof q.spiderdesc_prefix === "string") base = String(q.spiderdesc_prefix) + base;
-  if (q && typeof q.spiderdesc_suffix === "string") base = base + String(q.spiderdesc_suffix);
-  if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
-
-  return base;
-}
-
-/* normalize inbound payload */
+// ───────────── input normalisation ─────────────
 function normaliseInput(d = {}) {
-  const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
-  const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
-  const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
-  const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
-
   const nameCand =
     (d.person && d.person.fullName) ||
-    d["p1:n"] ||
-    d.fullName ||
-    (d.person && d.person.preferredName) ||
-    d.preferredName ||
-    d.name;
+    d.fullName || d.preferredName || d.name;
 
   return {
-    name:      norm(nameCand || "Perspective"),
-    dateLbl:   norm(d.dateLbl || d["p1:d"] || d.d || ""),
-    dom:       String(d.dom || d.domLabel || ""),
-    domChar:   norm(d.domchar || d.domChar || d.character || ""),
-    domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
-    spiderdesc:norm(d.spiderdesc || d.spider || ""),
-    spiderfreq:norm(d.spiderfreq || ""),
-    seqpat:    norm(d.seqpat || d.pattern || d.seqat || ""),
-    theme:     norm(d.theme || d["p6:theme"] || ""),
-    themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
-    workwcol:  wcol,
-    workwlead: wldr,
-    tips,
-    actions,
-    chartUrl:  String(d.chart || d.chartUrl || ""),
-    layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
+    name:      norm(nameCand || 'Perspective'),
+    email:     S(d?.person?.email || d.email || ''),
+    dateLbl:   norm(d.dateLbl || ''),
+    dom:       S(d.dom || ''),
+    domChar:   S(d.domchar || d.domChar || ''),
+    domDesc:   norm(d.domdesc || d.domDesc || ''),
+    spiderdesc:norm(d.spiderdesc || ''),
+    seqpat:    norm(d.seqpat || ''),
+    theme:     norm(d.theme || ''),
+    themeExpl: norm(d.themeExpl || ''),
+    workwcol:  A(d.workwcol).map(x => ({ look: norm(x?.look || ''), work: norm(x?.work || '') })),
+    workwlead: A(d.workwlead).map(x => ({ look: norm(x?.look || ''), work: norm(x?.work || '') })),
+    tips:      A(d.tips).map(norm),
+    actions:   A(d.actions).map(norm),
+    chartUrl:  S(d.chartUrl || d.chart || ''),
+    layoutV6:  (d.layoutV6 && typeof d.layoutV6 === 'object') ? d.layoutV6 : null
   };
 }
 
-function layoutFromPayload(payloadLayout) {
-  const L = JSON.parse(JSON.stringify(LOCKED));
-  if (!payloadLayout) return L;
-  for (const k of Object.keys(payloadLayout)) {
-    if (!L[k]) { L[k] = payloadLayout[k]; continue; }
-    if (typeof payloadLayout[k] === "object" && !Array.isArray(payloadLayout[k])) L[k] = { ...L[k], ...payloadLayout[k] };
-    else L[k] = payloadLayout[k];
-  }
-  return L;
-}
-
-/* ───────────── handler ───────────── */
+// ───────────── handler ─────────────
 export default async function handler(req, res) {
   try {
-    const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
-    const tpl = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
+    const method = req.method || 'GET';
+    const isPost = method === 'POST';
+    const q = isPost ? (req.body || {}) : (req.query || {});
 
-    const src = parseDataParam(q.data);
+    const tpl = S(isPost ? q.tpl : q.tpl, 'CTRL_Perspective_Assessment_Profile_template_slim_coach.pdf').trim();
+    if (!tpl) {
+      res.statusCode = 400;
+      return res.end('Missing tpl');
+    }
+
+    const raw = Boolean(isPost ? q.raw : q.raw);
+
+    // decode payload
+    const dataB64 = S(isPost ? q.data : q.data).trim();
+    const src = parseDataParam(dataB64);
     const P   = normaliseInput(src);
-    const L   = layoutFromPayload(src.layoutV6);
 
-    const tplPath = path.resolve(process.cwd(), "public", String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
-    const pdfBytes = await fs.readFile(tplPath);
-    const pdfDoc   = await PDFDocument.load(pdfBytes);
-    const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    // build layout: defaults → layoutV6 from data → QS overrides
+    const L_fromQS = layoutFromQuery(q);
+    const L = deepMerge(deepMerge(LOCKED, P.layoutV6 || {}), L_fromQS || {});
 
-    const pages = pdfDoc.getPages();
-    const p = (i) => pages[i];
-
-    // p1
-    if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
-    if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
-
-    // p3 (dominant highlight + label)
-    if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
-    if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
-
-    const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
-    if (domKey && L.p3?.state?.useAbsolute) {
-      const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
-      if (anchor && L.p3.state.labelText) {
-        drawTextBox(p(2), font, String(L.p3.state.labelText), { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" }, { maxLines: 1 });
-      }
+    // serve raw template if requested
+    const tplBytes = await loadTemplateBytes(tpl);
+    if (raw) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      res.statusCode = 200;
+      return res.end(tplBytes);
     }
 
-    // p4 (spider explanation + transparent chart)
-    if (L.p4?.spider) {
-      const rawSpiderDesc =
-        (src && src["p4:spiderdesc"]) ??
-        (P && P.spiderdesc) ??
-        "";
+    // paint
+    let outBytes = null;
+    try {
+      const pdfDoc = await PDFDocument.load(tplBytes);
+      const pages  = pdfDoc.getPages();
+      const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
-      if (tuned) {
-        const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
-        drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
+      const p = (i) => pages[i]; // 0-based accessor
+
+      // p1 — name/date
+      if (p(0)) {
+        if (L.p1?.name && P.name)  drawTextBox(p(0), font, P.name,  L.p1.name,  { maxLines: L.p1.name.maxLines  });
+        if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date, { maxLines: L.p1.date.maxLines });
       }
-    }
 
-    if (L.p4?.chart && (P?.chartUrl || q.chart)) {
-      let chartUrl = String(P?.chartUrl || q.chart || "");
-      chartUrl = tuneQuickChartUrl(chartUrl);
-      if (chartUrl) {
-        const img = await embedRemoteImage(pdfDoc, chartUrl);
-        if (img) {
-          const H = p(3).getHeight();
-          const { x, y, w, h } = L.p4.chart;
-          p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+      // p3 — dominant description
+      if (p(2) && L.p3?.domDesc && P.domDesc) {
+        drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
+      }
+
+      // p4 — spiderdesc + chart
+      if (p(3)) {
+        if (L.p4?.spider && P.spiderdesc) {
+          drawTextBox(p(3), font, P.spiderdesc, L.p4.spider, { maxLines: L.p4.spider.maxLines });
+        }
+        if (L.p4?.chart && (P.chartUrl || q.chart)) {
+          const chartUrl = S(P.chartUrl || q.chart);
+          const img = await embedRemoteImage(pdfDoc, chartUrl);
+          if (img) {
+            const H = p(3).getHeight();
+            const { x, y, w, h } = L.p4.chart;
+            // TL → BL for images
+            p(3).drawImage(img, { x, y: H - y - h, width: clamp(w, 10, 1000), height: clamp(h, 10, 1000) });
+          }
         }
       }
-    }
 
-    // p5
-    if (L.p5?.seqpat && P.seqpat) {
-      const maxLines = (L.p5.seqpat.maxLines ?? L.p5.seqpatMaxLines ?? 12);
-      drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
-    }
-
-    // p6 — THEME (label + paragraph)
-    if (L.p6?.theme && P.theme) {
-      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
-      drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
-    }
-    if (L.p6?.themeExpl && P.themeExpl) {
-      const maxLines = (L.p6.themeExpl.maxLines ?? L.p6.themeExplMaxLines ?? 12);
-      drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
-    }
-
-    // p7–p10
-    const mapIdx = { C:0, T:1, R:2, L:3 };
-    if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
-      for (const k of ["C","T","R","L"]) {
-        const i = mapIdx[k], bx = L.p7.colBoxes[i], item = P.workwcol[i] || {};
-        const txt = norm(item?.look || ""); if (!txt) continue;
-        drawTextBox(p(6), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
+      // p5 — sequence
+      if (p(4) && L.p5?.seqpat && P.seqpat) {
+        drawTextBox(p(4), font, P.seqpat, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
       }
-    }
-    if (L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
-      for (const k of ["C","T","R","L"]) {
-        const i = mapIdx[k], bx = L.p8.colBoxes[i], item = P.workwcol[i] || {};
-        const txt = norm(item?.work || ""); if (!txt) continue;
-        drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
+
+      // p6 — theme + explanation
+      if (p(5)) {
+        if (L.p6?.theme && P.theme) {
+          drawTextBox(p(5), font, P.theme, L.p6.theme, { maxLines: L.p6.theme.maxLines });
+        }
+        if (L.p6?.themeExpl && P.themeExpl) {
+          drawTextBox(p(5), font, P.themeExpl, L.p6.themeExpl, { maxLines: L.p6.themeExpl.maxLines });
+        }
       }
-    }
-    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
-      for (const k of ["C","T","R","L"]) {
-        const i = mapIdx[k], bx = L.p9.ldrBoxes[i], item = P.workwlead[i] || {};
-        const txt = norm(item?.look || ""); if (!txt) continue;
-        drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+
+      // p7 — work with colleagues (pairs as rows; LOOK left / WORK right)
+      if (p(6) && P.workwcol && (P.workwcol.length || 0) > 0) {
+        let y = N(L.p7?.lookCol?.y, 440);
+        const gap = N(L.p7?.rowGap, 80);
+        for (const pair of P.workwcol) {
+          const look = norm(pair?.look || '');
+          const work = norm(pair?.work || '');
+          if (!look && !work) continue;
+          if (look) drawTextBox(p(6), font, look, { ...L.p7.lookCol, y }, { maxLines: L.p7.lookCol.maxLines });
+          if (work) drawTextBox(p(6), font, work, { ...L.p7.workCol, y }, { maxLines: L.p7.workCol.maxLines });
+          y -= gap;
+          if (y < 70) break;
+        }
       }
-    }
-    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
-      for (const k of ["C","T","R","L"]) {
-        const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
-        const txt = norm(item?.work || ""); if (!txt) continue;
-        drawTextBox(p(9), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
+
+      // p8 — work with leaders (pairs)
+      if (p(7) && P.workwlead && (P.workwlead.length || 0) > 0) {
+        let y = N(L.p8?.lookCol?.y, 440);
+        const gap = N(L.p8?.rowGap, 80);
+        for (const pair of P.workwlead) {
+          const look = norm(pair?.look || '');
+          const work = norm(pair?.work || '');
+          if (!look && !work) continue;
+          if (look) drawTextBox(p(7), font, look, { ...L.p8.lookCol, y }, { maxLines: L.p8.lookCol.maxLines });
+          if (work) drawTextBox(p(7), font, work, { ...L.p8.workCol, y }, { maxLines: L.p8.workCol.maxLines });
+          y -= gap;
+          if (y < 70) break;
+        }
       }
-    }
 
-    // p11 (hanging-indent bullets + strip "Tip:" prefix)
-    if (L.p11?.split) {
-      const clean = s =>
-        norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "")
-          .trim();
-
-      const pairs = [
-        { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
-        { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
-        { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
-        { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
-      ];
-
-      for (const { txt, box } of pairs) {
-        if (!txt) continue;
-        const indent = N(L.p11.bulletIndent, 18);
-        const size   = box.size || 18;
-        const maxL   = box.maxLines || 4;
-
-        const dashX = box.x + Math.max(2, indent - 10);
-        drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
-
-        drawTextBox(
-          p(10), font, txt,
-          { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
-          { maxLines: maxL }
-        );
+      // p9 — tips (left) + actions (right)
+      if (p(8)) {
+        const drawList = (arr, spec) => {
+          const items = A(arr).map(norm).filter(Boolean);
+          let y = N(spec.y, 450);
+          const gap = N(spec.lineGap, 4) + N(spec.size, 12) * 1.2;
+          for (const it of items) {
+            drawTextBox(p(8), font, it, { ...spec, y }, { maxLines: spec.maxLines ?? 24 });
+            y -= gap;
+            if (y < 60) break;
+          }
+        };
+        if (L.p9?.tips && P.tips)    drawList(P.tips,    L.p9.tips);
+        if (L.p9?.actions && P.actions) drawList(P.actions, L.p9.actions);
       }
+
+      outBytes = await pdfDoc.save();
+    } catch (paintErr) {
+      console.error('fill-template: paint error', paintErr);
+      outBytes = tplBytes; // fail-soft: return raw template
     }
 
-    // footers
-    const footerLabel = norm(P.name);
-    const putFooter = (pageIdx, key) => { const spec = L.footer?.[key]; if (!spec) return; drawTextBox(p(pageIdx), font, footerLabel, spec, { maxLines: 1 }); };
-    putFooter(1,"f2"); putFooter(2,"f3"); putFooter(3,"f4"); putFooter(4,"f5"); putFooter(5,"f6");
-    putFooter(6,"f7"); putFooter(7,"f8"); putFooter(8,"f9"); putFooter(9,"f10"); putFooter(10,"f11"); putFooter(11,"f12");
-
-    const bytes = await pdfDoc.save();
-    const nameOut = S(q.out || `CTRL_${P.name || "Perspective"}_${P.dateLbl || ""}.pdf`).replace(/[^\w.-]+/g, "_");
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
-    res.end(Buffer.from(bytes));
-  } catch (err) {
-    res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Cache-Control', 'no-store');
+    res.statusCode = 200;
+    return res.end(outBytes);
+  } catch (e) {
+    console.error('fill-template: fatal', e);
+    try {
+      const tpl = S(req.method === 'POST' ? req.body?.tpl : req.query?.tpl).trim();
+      if (tpl) {
+        const tplBytes = await loadTemplateBytes(tpl);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Cache-Control', 'no-store');
+        res.statusCode = 200;
+        return res.end(tplBytes);
+      }
+    } catch {}
+    res.statusCode = 500;
+    return res.end('fill-template failed');
   }
 }
