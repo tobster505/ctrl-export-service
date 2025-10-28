@@ -543,14 +543,7 @@ export default async function handler(req, res) {
         drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
       }
     }
-    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
-      for (const k of ["C","T","R","L"]) {
-        const i = mapIdx[k], bx = L.p9.ldrBoxes[i], item = P.workwlead[i] || {};
-        const txt = norm(item?.look || ""); if (!txt) continue;
-        drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
-      }
-    }
-    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+        if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
         const txt = norm(item?.work || ""); if (!txt) continue;
@@ -558,51 +551,49 @@ export default async function handler(req, res) {
       }
     }
 
- // p11 Tips & Actions — pack non-empty items into the two slots
-if (L.p11?.split) {
-  // 1) normalise & clean
-  const tidy = s =>
-    norm(String(s || ""))
-      .replace(/^(?:[-–—•·]\s*)/i, "")                 // strip bullet glyphs
-      .replace(/^\s*(tip|tips)\s*:?\s*/i, "")          // strip leading "tip:" / "tips:"
-      .replace(/^\s*(action|next action|actions)\s*:?\s*/i, "")
-      .trim();
+    // p11 Tips & Actions — pack non-empty items into the two slots
+    if (L.p11?.split) {
+      // 1) normalise & clean
+      const tidy = s =>
+        norm(String(s || ""))
+          .replace(/^(?:[-–—•·]\s*)/i, "")                 // strip bullet glyphs
+          .replace(/^\s*(tip|tips)\s*:?\s*/i, "")          // strip leading "tip:" / "tips:"
+          .replace(/^\s*(action|next action|actions)\s*:?\s*/i, "")
+          .trim();
 
-  const tipsRaw    = Array.isArray(P.tips)    ? P.tips    : [];
-  const actionsRaw = Array.isArray(P.actions) ? P.actions : [];
+      const tipsRaw    = Array.isArray(P.tips)    ? P.tips    : [];
+      const actionsRaw = Array.isArray(P.actions) ? P.actions : [];
 
-  // 2) keep order, drop empties *after* cleaning
-  const tipsPacked    = tipsRaw.map(tidy).filter(Boolean).slice(0, 2);
-  const actionsPacked = actionsRaw.map(tidy).filter(Boolean).slice(0, 2);
+      // 2) keep order, drop empties *after* cleaning
+      const tipsPacked    = tipsRaw.map(tidy).filter(Boolean).slice(0, 2);
+      const actionsPacked = actionsRaw.map(tidy).filter(Boolean).slice(0, 2);
 
-  // 3) helper to draw a single bullet line into a target box
-  const drawBullet = (pageIdx, box, text) => {
-    if (!box || !text) return;
-    const indent = N(L.p11.bulletIndent, 18);
-    const size   = box.size || 18;
-    const maxL   = box.maxLines || 4;
+      // 3) helper to draw a single bullet line into a target box
+      const drawBullet = (pageIdx, box, text) => {
+        if (!box || !text) return;
+        const indent = N(L.p11.bulletIndent, 18);
+        const size   = box.size || 18;
+        const maxL   = box.maxLines || 4;
 
-    // small dash “bullet”
-    const dashX = box.x + Math.max(2, indent - 10);
-    drawTextBox(p(pageIdx), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+        // small dash “bullet”
+        const dashX = box.x + Math.max(2, indent - 10);
+        drawTextBox(p(pageIdx), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-    // the text, indented
-    drawTextBox(
-      p(pageIdx), font, text,
-      { x: box.x + indent, y: box.y, w: Math.max(0, box.w - indent), size, align: box.align || "left" },
-      { maxLines: maxL }
-    );
-  };
+        // the text, indented
+        drawTextBox(
+          p(pageIdx), font, text,
+          { x: box.x + indent, y: box.y, w: Math.max(0, box.w - indent), size, align: box.align || "left" },
+          { maxLines: maxL }
+        );
+      };
 
-  // 4) place Tips (first non-empty → tips1, second → tips2)
-  drawBullet(10, L.p11.tips1, tipsPacked[0] || "");
-  drawBullet(10, L.p11.tips2, tipsPacked[1] || "");
+      // 4) place Tips (first non-empty → tips1, second → tips2)
+      drawBullet(10, L.p11.tips1, tipsPacked[0] || "");
+      drawBullet(10, L.p11.tips2, tipsPacked[1] || "");
 
-  // 5) place Actions (first non-empty → acts1, second → acts2)
-  drawBullet(10, L.p11.acts1, actionsPacked[0] || "");
-  drawBullet(10, L.p11.acts2, actionsPacked[1] || "");
-}
-
+      // 5) place Actions (first non-empty → acts1, second → acts2)
+      drawBullet(10, L.p11.acts1, actionsPacked[0] || "");
+      drawBullet(10, L.p11.acts2, actionsPacked[1] || "");
     }
 
     // footers
@@ -617,6 +608,8 @@ if (L.p11?.split) {
     res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
     res.end(Buffer.from(bytes));
   } catch (err) {
+    // Optional: also log to help with Vercel debugging
+    console.error("fill-template error:", err);
     res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
   }
 }
