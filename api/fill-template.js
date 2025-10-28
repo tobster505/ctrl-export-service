@@ -216,11 +216,7 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* === Radar scale rules ===
-   - min = one below the lowest NON-ZERO (floor at 0)
-   - max = one above highest (cap at 5)
-   - special-case: if max=5 and it's the ONLY non-zero (5,0,0,0), force [0,5] & emphasize line
-*/
+/* === Radar scale rules === */
 function radarScaleFromCounts(counts) {
   const vals = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const maxVal = Math.max(...vals);
@@ -270,7 +266,7 @@ function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
         r: {
           min: rScale.min,
           max: rScale.max,
-          ticks: { ...rScale.ticks, color: C.labels },
+          ticks: { ...rScale.ticks, color: C.labels, font: { size: 12 } },
           grid:  { ...rScale.grid, color: C.grid, lineWidth: 2, circular: true },
           angleLines: { display: true, color: C.grid, lineWidth: 2 },
           pointLabels: { font: { size: 18, weight: "700" }, color: C.labels }
@@ -363,12 +359,36 @@ function tuneSpiderDesc(rawDesc, q, P) {
   return base;
 }
 
+/* ───────── Tips & Actions helpers ───────── */
+function splitToList(v) {
+  // Accept array directly; or split string on common separators
+  if (Array.isArray(v)) return v.map(s => String(s ?? "")).filter(Boolean);
+  const s = String(v || "");
+  if (!s) return [];
+  // Split on newlines OR "||" OR semicolons. Keep order.
+  return s
+    .split(/\n+|\s*\|\|\s*|;\s*/g)
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+function cleanBullet(s) {
+  return norm(String(s || ""))
+    .replace(/^(?:[-–—•·]\s*)/i, "")     // strip leading bullet glyph
+    .replace(/^tip\s*:?\s*/i, "")        // strip "Tip:" prefix
+    .replace(/^action\s*:?\s*/i, "")     // strip "Action:" prefix
+    .trim();
+}
+
 /* normalize inbound payload to canonical */
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
-  const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
-  const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
+
+  // Tips / actions can arrive as arrays OR as a single string with separators
+  const tipsIn    = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
+  const actsIn    = d.actions ?? d.actionsText ?? (d.clientTipsActions && d.clientTipsActions.actions);
+  const tipsList  = splitToList(tipsIn).map(cleanBullet).filter(Boolean);
+  const actsList  = splitToList(actsIn).map(cleanBullet).filter(Boolean);
 
   const nameCand =
     (d.person && d.person.fullName) ||
@@ -391,8 +411,8 @@ function normaliseInput(d = {}) {
     themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
     workwcol:  wcol,
     workwlead: wldr,
-    tips,
-    actions,
+    tips:      tipsList,                      // ← canonical tips array
+    actions:   actsList,                      // ← canonical actions array
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
     counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
     chartTheme:(d.chartTheme && typeof d.chartTheme === "object") ? d.chartTheme : null,
@@ -488,7 +508,7 @@ export default async function handler(req, res) {
       drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
     }
 
-    // p6 — THEME (mask “Theme pair” label; then render)
+    // p6 — THEME (mask baked label; render paragraph only)
     if (P.maskThemeLabel !== false) {
       try {
         const white = rgb(1,1,1);
@@ -538,18 +558,21 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 Tips & Actions
+    // p11 Tips & Actions — robust visualisation (up to two each)
     if (L.p11?.split) {
-      const clean = s =>
+      const tips  = Array.isArray(P.tips)    ? P.tips.filter(Boolean) : [];
+      const acts  = Array.isArray(P.actions) ? P.actions.filter(Boolean) : [];
+
+      const clean = (s) =>
         norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "")
+          .replace(/^(?:[-–—•·]\s*)?(?:tip|action)\s*:?\s*/i, "")
           .trim();
 
       const pairs = [
-        { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
-        { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
-        { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
-        { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
+        { txt: clean(tips[0]),    box: L.p11.tips1 },
+        { txt: clean(tips[1]),    box: L.p11.tips2 },
+        { txt: clean(acts[0]),    box: L.p11.acts1 },
+        { txt: clean(acts[1]),    box: L.p11.acts2 }
       ];
 
       for (const { txt, box } of pairs) {
@@ -558,9 +581,11 @@ export default async function handler(req, res) {
         const size   = box.size || 18;
         const maxL   = box.maxLines || 4;
 
+        // small dash as bullet
         const dashX = box.x + Math.max(2, indent - 10);
         drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
+        // the text body
         drawTextBox(
           p(10), font, txt,
           { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
