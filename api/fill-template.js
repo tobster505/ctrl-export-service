@@ -1,244 +1,497 @@
-// /api/fill-template.js — USER EXPORTER (Node runtime, robust /public loader + DEBUG panel)
-// Loads templates ONLY from /public. Default = CTRL_Perspective_Assessment_Profile_template_slim.pdf
+/**
+* CTRL Export Service · fill-template (Perspective flow)
+* Place at: /pages/api/fill-template.js
+* TL-origin coordinates (pt), pages are 1-based.
+*/
 export const config = { runtime: "nodejs" };
 
-// ---------- tiny utils ----------
-const S  = (v, fb = "") => (v == null ? String(fb) : String(v));
-const N  = (v, fb = 0)  => (Number.isFinite(+v) ? +v : +fb);
-const okObj = (o) => o && typeof o === "object" && !Array.isArray(o);
-const norm = (t) => String(t || "").replace(/\r/g, "").trim();
-
-// ---------- request payload reader (GET ?data= or POST JSON) ----------
-async function readRequestPayload(universalReq) {
-  // GET ?data=<base64 JSON>
-  try {
-    const url = new URL(typeof universalReq.url === "string" ? universalReq.url : `http://x${universalReq.url}`);
-    const b64 = url.searchParams.get("data");
-    if (b64) {
-      const json = Buffer.from(b64, "base64").toString("utf8");
-      return JSON.parse(json);
-    }
-  } catch {}
-  // POST JSON body (Web Request)
-  if (typeof universalReq.json === "function") {
-    try {
-      const body = await universalReq.json();
-      if (okObj(body)) return body;
-    } catch {}
-  }
-  // POST JSON body (Node streams)
-  const req = universalReq;
-  if (req?.headers && typeof req.on === "function") {
-    try {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (raw) {
-        const body = JSON.parse(raw);
-        if (okObj(body)) return body;
-      }
-    } catch {}
-  }
-  return {};
-}
-
-// ---------- robust /public loader (multi-path resolver for Vercel layouts) ----------
-import { fileURLToPath } from "url";
-import path from "path";
 import fs from "fs/promises";
+import path from "path";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-async function loadTemplateBytesLocal(filename) {
-  const fname = String(filename || "").trim();
-  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
+/* ───────────── utilities ───────────── */
+const S = (v, fb = "") => (v == null ? String(fb) : String(v));
+const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-  const __file = fileURLToPath(import.meta.url);
-  const __dir  = path.dirname(__file);
+const norm = (v, fb = "") =>
+String(v ?? fb)
+.normalize("NFKC")
+.replace(/[\u2018\u2019]/g, "'")
+.replace(/[\u201C\u201D]/g, '"')
+.replace(/[\u2013\u2014]/g, "-")
+.replace(/\u2026/g, "...")
+.replace(/\u00A0/g, " ")
+.replace(/[•·]/g, "-")
+// arrows → WinAnsi-safe
+.replace(/\u2194/g, "<->").replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
+.replace(/\u2191/g, "^").replace(/\u2193/g, "v").replace(/[\u2196-\u2199]/g, "->")
+.replace(/\u21A9/g, "<-").replace(/\u21AA/g, "->")
+.replace(/\u00D7/g, "x")
+// zero-width, emoji/PUA
+.replace(/[\u200B-\u200D\u2060]/g, "")
+.replace(/[\uD800-\uDFFF]/g, "")
+.replace(/[\uE000-\uF8FF]/g, "")
+// tidy
+.replace(/\t/g, " ").replace(/\r\n?/g, "\n")
+.replace(/[ \f\v]+/g, " ").replace(/[ \t]+\n/g, "\n").trim();
 
-  const candidates = [
-    path.join(__dir, "..", "..", "public", fname),
-    path.join(__dir, "..", "public", fname),
-    path.join(__dir, "public", fname),
-    path.join(process.cwd(), "public", fname),
-    path.join(__dir, fname),
-  ];
-
-  let lastErr;
-  for (const p of candidates) {
-    try {
-      const buf = await fs.readFile(p);
-      return buf;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw new Error(`Template not found in any known path for /public: ${fname}`);
+function parseDataParam(b64ish) {
+if (!b64ish) return {};
+let s = String(b64ish);
+try { s = decodeURIComponent(s); } catch {}
+s = s.replace(/-/g, "+").replace(/_/g, "/");
+while (s.length % 4) s += "=";
+try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+catch { return {}; }
 }
 
-// ---------- response helpers ----------
-function okResNode(res, status, body, headers = {}) {
-  res.statusCode = status;
-  for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
-  res.end(body);
-}
-function okResWeb(status, body, headers = {}) {
-  return new Response(body, { status, headers });
-}
-
-// ---------- core drawing helper (no width shadowing) ----------
+/* word wrap draw helper (TL → BL conversion inside) */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
-  const { rgb } = spec.__pdf;
-  const {
-    x=40, y=40, w=540, size=12, lineGap=3,
-    align="left", color=rgb(0,0,0), maxLines=6, coord="TL"
-  } = { ...spec, ...opts };
+const { x=40, y=40, w=540, size=12, lineGap=3, color=rgb(0,0,0), align="left" } = spec;
+const maxLines = (opts.maxLines ?? spec.maxLines ?? 6);
+const hard = norm(text || "");
+const lines = hard.split(/\n/).map(s=>s.trim());
+const wrapped = [];
 
-  const boxW = w;
-  const hard = norm(text || "");
-  if (!hard) return;
+const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+const wrapLine = (ln) => {
+const words = ln.split(/\s+/); let cur="";
+for (let i=0;i<words.length;i++){
+const nxt = cur ? `${cur} ${words[i]}` : words[i];
+if (widthOf(nxt) <= w || !cur) cur = nxt;
+else { wrapped.push(cur); cur = words[i]; }
+}
+wrapped.push(cur);
+};
+for (const ln of lines) wrapLine(ln);
 
-  const widthOf = (s) => font.widthOfTextAtSize(String(s), Math.max(1, size));
-  const linesIn = hard.split(/\n/).map(s => s.trim());
-  const wrapped = [];
+const out = wrapped.slice(0, maxLines);
+const pageH = page.getHeight();
+const baselineY = pageH - y;
+const lineH = Math.max(1,size) + lineGap;
 
-  const wrap = (ln) => {
-    const words = ln.split(/\s+/);
-    let cur = "";
-    for (const word of words) {
-      const next = cur ? `${cur} ${word}` : word;
-      if (widthOf(next) <= boxW) cur = next;
-      else { if (cur) wrapped.push(cur); cur = word; }
-    }
-    if (cur) wrapped.push(cur);
-  };
-  for (const ln of linesIn) wrap(ln);
-
-  const lim = opts.maxLines ?? spec.maxLines ?? maxLines;
-  const lines = wrapped.slice(0, lim);
-
-  const pageH = page.getHeight();
-  const yOrigin = coord === "BL" ? y : (pageH - y); // TL->baseline vs BL direct
-  const lineH = Math.max(1, size) + lineGap;
-
-  let yCursor = yOrigin;
-  for (const ln of lines) {
-    let xDraw = x;
-    const wLn = widthOf(ln);
-    if (align === "center") xDraw = x + (boxW - wLn) / 2;
-    else if (align === "right") xDraw = x + (boxW - wLn);
-
-    const yText = coord === "BL" ? (yCursor) : (yCursor - size);
-    page.drawText(ln, { x: xDraw, y: yText, size: Math.max(1, size), font, color });
-    yCursor -= lineH;
-    if (yCursor < 0) break;
-  }
+let yCursor = baselineY;
+for (const ln of out) {
+let xDraw = x; const wLn = widthOf(ln);
+if (align === "center") xDraw = x + (w - wLn) / 2;
+else if (align === "right") xDraw = x + (w - wLn);
+page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1,size), font, color });
+yCursor -= lineH;
+}
 }
 
-// ---------- renderer ----------
-async function renderPdf(payload) {
-  // Lazy-import pdf-lib
-  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+const rectTLtoBL = (page, box, inset = 0) => {
+const pageH = page.getHeight();
+const x = N(box.x) + inset;
+const w = Math.max(0, N(box.w) - inset * 2);
+const h = Math.max(0, N(box.h) - inset * 2);
+const y = pageH - N(box.y) - N(box.h) + inset;
+return { x, y, w, h };
+};
 
-  // coord system: TL (default) or BL (set via env or payload.meta.coord)
-  const coordMode = (process.env.PDF_COORD || payload?.meta?.coord || "TL").toUpperCase(); // "TL" or "BL"
-  const coord = (coordMode === "BL") ? "BL" : "TL";
-
-  // Hard default to USER slim template if none provided via env/body
-  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template_slim.pdf");
-  const bytes = await loadTemplateBytesLocal(tpl);
-  const pdf = await PDFDocument.load(bytes);
-
-  const fontName = S(process.env.PDF_DEFAULT_FONT || "Helvetica");
-  const font = await pdf.embedFont(StandardFonts[fontName] || StandardFonts.Helvetica);
-
-  // Accept both slim keys and human keys; fallback with visible "(missing)" in debug
-  const dbg = !!payload?.meta?.debug;
-  const missing = dbg ? " (missing)" : "";
-
-  const name         = S(payload.name || payload["p1:n"])         || (dbg ? "Perspective" + missing : "Perspective");
-  const date         = S(payload.date || payload["p1:d"])         || new Date().toLocaleDateString("en-GB");
-  const dominant     = S(payload.dominant || payload["p3:dom"])   || (dbg ? "(missing)" : "");
-  const dominantName = S(payload.dominantName || payload["p3:domchar"]) || (dbg ? "(missing)" : "");
-  const distribution = S(payload.distribution || payload["p3:freq"])    || (dbg ? "(missing)" : "");
-  const sequence     = S(payload.sequence || payload["p4:seq"])         || (dbg ? "(missing)" : "");
-  const theme        = S(payload.theme || payload["p6:theme"])          || (dbg ? "(missing)" : "");
-  const themeExpl    = S(payload.themeExpl || payload["p6:themeExpl"])  || (dbg ? "(missing)" : "");
-
-  // Default coords (TL input by design; switchable with coord)
-  const DEFAULTS = {
-    name:         { page: 1, x: 90,  y: 140, w: 440, size: 22, align: "left", __pdf: { rgb }, coord },
-    date:         { page: 1, x: 90,  y: 170, w: 440, size: 14, align: "left", __pdf: { rgb }, coord },
-    dominant:     { page: 2, x: 55,  y: 140, w: 520, size: 21, align: "left", maxLines: 2,  __pdf: { rgb }, coord },
-    distribution: { page: 2, x: 55,  y: 180, w: 520, size: 14, align: "left", maxLines: 1,  __pdf: { rgb }, coord },
-    sequence:     { page: 2, x: 55,  y: 205, w: 520, size: 14, align: "left", maxLines: 1,  __pdf: { rgb }, coord },
-    theme:        { page: 6, x: 55,  y: 520, w: 520, size: 18, align: "left", maxLines: 2,  __pdf: { rgb }, coord },
-    themeExpl:    { page: 6, x: 55,  y: 555, w: 520, size: 14, align: "left", maxLines: 10, __pdf: { rgb }, coord },
-  };
-
-  const coords = okObj(payload.coords) ? payload.coords : {};
-  const pick = (k) => ({ ...DEFAULTS[k], ...(okObj(coords[k]) ? coords[k] : {}) });
-  const pageOf = (n) => pdf.getPage(Math.min(Math.max(N(n,1)-1,0), pdf.getPageCount()-1));
-
-  // Page 1
-  drawTextBox(pageOf(pick("name").page), font, name, pick("name"));
-  drawTextBox(pageOf(pick("date").page), font, date, pick("date"), { maxLines: 1 });
-
-  // Page 2
-  const domText = dominantName && !dominant.includes(dominantName) ? `${dominant} — ${dominantName}` : dominant;
-  drawTextBox(pageOf(pick("dominant").page), font, domText, pick("dominant"));
-  drawTextBox(pageOf(pick("distribution").page), font, distribution, pick("distribution"), { maxLines: 1 });
-  drawTextBox(pageOf(pick("sequence").page),     font, sequence.replace(/\s*,\s*/g, ", "), pick("sequence"), { maxLines: 1 });
-
-  // Page 6
-  if (theme)     drawTextBox(pageOf(pick("theme").page),     font, theme,     pick("theme"));
-  if (themeExpl) drawTextBox(pageOf(pick("themeExpl").page), font, themeExpl, pick("themeExpl"));
-
-  // ===== DEBUG PANEL (always on page 1 when debug=true) =====
-  if (dbg) {
-    const p1 = pageOf(1);
-    const grey = rgb(0.95, 0.95, 0.95);
-    // light panel bar
-    p1.drawRectangle({ x: 30, y: p1.getHeight() - 60, width: p1.getWidth() - 60, height: 40, color: grey, opacity: 1 });
-    // debug text (force BL coord for this banner so it appears at the top regardless)
-    const banner = [
-      `[debug] tpl=${tpl} | pages=${pdf.getPageCount()} | coord=${coord}`,
-      `name=${name} | date=${date}`,
-      `dom=${domText} | freq=${distribution} | seq=${sequence}`,
-      `theme=${theme}`
-    ].join("  ·  ");
-    drawTextBox(p1, font, banner, { x: 36, y: 38, w: p1.getWidth() - 72, size: 10, align: "left", __pdf: { rgb }, coord: "BL" }, { maxLines: 1 });
-  }
-
-  return Buffer.from(await pdf.save());
+function paintStateHighlight(page3, dom, cfg = {}) {
+const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
+if (!b) return;
+const radius  = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : (cfg.highlightRadius ?? 28);
+const inset   = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))  ? +((cfg.styleByState||{})[dom].inset)  : (cfg.highlightInset  ?? 6);
+const opacity = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
+const boxBL = rectTLtoBL(page3, b, inset);
+const shade = rgb(251/255, 236/255, 250/255);
+page3.drawRectangle({ x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h, borderRadius: radius, color: shade, opacity });
+const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
+if (!perState || cfg.labelText == null || cfg.labelSize == null) return;
+return { labelX: perState.x, labelY: perState.y };
 }
 
-// ---------- dual-mode handler ----------
-async function realHandler(universalReq) {
-  const payload = await readRequestPayload(universalReq);
-
-  // Hard default to SLIM template if none passed via env/body
-  const tpl = S(process.env.PDF_TPL_FILENAME || payload.template || "CTRL_Perspective_Assessment_Profile_template_slim.pdf");
-  if (!/\.pdf$/i.test(tpl)) {
-    return { status: 400, body: JSON.stringify({ ok: false, error: "Invalid template filename" }), headers: { "Content-Type": "application/json" } };
-  }
-
-  try {
-    const pdf = await renderPdf(payload);
-    return { status: 200, body: pdf, headers: { "Content-Type": "application/pdf", "Cache-Control": "no-store" } };
-  } catch (err) {
-    return { status: 500, body: JSON.stringify({ ok: false, error: String(err?.message || err) }), headers: { "Content-Type": "application/json" } };
-  }
+/* robust resolver for C/T/R/L from label/char */
+function resolveDomKey(...candidates) {
+const mapLabel = { concealed:"C", triggered:"T", regulated:"R", lead:"L" };
+const mapChar  = { art:"C", fal:"T", mika:"R", sam:"L" };
+for (const c0 of candidates.flat()) {
+const c = String(c0 || "").trim();
+if (!c) continue;
+const u = c.toUpperCase();
+if (["C","T","R","L"].includes(u)) return u;
+const l = c.toLowerCase();
+if (mapLabel[l]) return mapLabel[l];
+if (mapChar[l])  return mapChar[l];
+}
+return "";
 }
 
-// Default export (Node style) with Web fallback
-export default async function nodeHandler(req, res) {
-  if (!res || typeof res.writeHead !== "function") {
-    const out = await realHandler(req);
-    return okResWeb(out.status, out.body, out.headers);
-  }
-  const out = await realHandler(req);
-  okResNode(res, out.status, out.body, out.headers);
+/* locked coordinates (TL, 1-based) */
+const LOCKED = {
+meta: { units: "pt", origin: "TL", pages: "1-based" },
+p1: { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
+p3: {
+domChar:{ x:272,y:640,w:630,size:23,align:"left", maxLines:6 },
+domDesc:{ x: 25,y:685,w:550,size:18,align:"left", maxLines:12 },
+state: {
+useAbsolute:true, shape:"round", highlightInset:6, highlightRadius:28, fillOpacity:0.45,
+styleByState:{ C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
+labelByState:{ C:{x:60,y:245}, T:{x:290,y:244}, R:{x:60,y:605}, L:{x:290,y:605} },
+labelText:"YOU ARE HERE", labelSize:10, labelColor:{r:0.20,g:0.20,b:0.20}, labelOffsetX:0, labelOffsetY:0, labelPadTop:12, labelPadBottom:12,
+absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
+}
+},
+p4: { spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 }, chart:{ x:20,y:225,w:570,h:280 } },
+p5: { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
+// V3.2: include a dedicated paragraph slot for theme explanation
+p6: {
+theme:     { x:25,y:330,w:550,size:18,align:"left", maxLines:2 },
+ 
+    themeExpl: { x:25,y:560,w:550,size:18,align:"left", maxLines:12 }
+},
+p7: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+p8: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+p9: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+p10:{ ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+p11: {
+lineGap:6, itemGap:6, bulletIndent:18, split:true,
+tips1:{x:30,y:175,w:530,h:80,size:18,align:"left",maxLines:4},
+tips2:{x:30,y:265,w:530,h:80,size:18,align:"left",maxLines:4},
+acts1:{x:30,y:405,w:530,h:80,size:18,align:"left",maxLines:4},
+acts2:{x:30,y:495,w:530,h:80,size:18,align:"left",maxLines:4}
+},
+footer:(()=>{ const f={x:380,y:51,w:400,size:13,align:"left"}; return {f2:{...f},f3:{...f},f4:{...f},f5:{...f},f6:{...f},f7:{...f},f8:{...f},f9:{...f},f10:{...f},f11:{...f},f12:{...f}} })()
+};
+
+/* remote chart (PNG/JPG), keeps transparency */
+async function embedRemoteImage(pdfDoc, url) {
+try {
+if (!url || !/^https?:/i.test(url)) return null;
+if (typeof fetch === "undefined") return null;
+const res = await fetch(url); if (!res.ok) return null;
+const bytes = new Uint8Array(await res.arrayBuffer());
+if (bytes[0] === 0x89 && bytes[1] === 0x50) return await pdfDoc.embedPng(bytes);
+if (bytes[0] === 0xff && bytes[1] === 0xd8) return await pdfDoc.embedJpg(bytes);
+try { return await pdfDoc.embedPng(bytes); } catch { return await pdfDoc.embedJpg(bytes); }
+} catch { return null; }
 }
 
-// Explicit Web handlers (if your framework prefers them)
-export async function GET(req)  { const out = await realHandler(req); return okResWeb(out.status, out.body, out.headers); }
-export async function POST(req) { const out = await realHandler(req); return okResWeb(out.status, out.body, out.headers); }
+/* ───────── QuickChart tuner (shape-based scale + rounded radar, v2/v3/v4) ───────── */
+function tuneQuickChartUrl(originalUrl) {
+try {
+if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
+const u = new URL(originalUrl);
+let cParam = u.searchParams.get("c");
+if (!cParam) return originalUrl;
+
+let cfg = null;
+try { cfg = JSON.parse(cParam); }
+catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
+
+if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
+
+const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
+? cfg.data.datasets[0].data.map(n => Number(n) || 0)
+: [];
+
+const shape = (() => {
+const s = d.slice().sort((a,b)=>b-a).join(".");
+return s === "5" ? "5.0" : s;
+})();
+
+cfg.options = cfg.options || {};
+cfg.options.elements = cfg.options.elements || {};
+cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
+if (cfg.data && Array.isArray(cfg.data.datasets)) {
+cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 }));
+}
+
+let min = 0, max = Math.max(4, ...d);
+if (shape === "2.1.1.1") { max = 3; }
+else if (shape === "3.2") { max = 4; }
+else if (shape === "4.1" || shape === "5.0" || shape === "5") { max = 5; }
+
+cfg.options.scales = cfg.options.scales || {};
+cfg.options.scales.r = { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
+cfg.options.scale    = { ticks: { min, max, stepSize: 1, beginAtZero: true }, gridLines: { circular: true }, angleLines: { display: true } };
+
+u.searchParams.set("c", JSON.stringify(cfg));
+return u.toString();
+} catch {
+return originalUrl;
+}
+}
+
+/* ───────── SpiderDesc tuner helpers ───────── */
+function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
+const out = { C:0, T:0, R:0, L:0 };
+const s = String(freqStr || "");
+const re = /([CTRL]):\s*([0-9]+)/gi;
+let m;
+while ((m = re.exec(s))) {
+const k = m[1].toUpperCase();
+out[k] = Number(m[2]) || 0;
+}
+for (const k of ["C","T","R","L"]) if (!out[k] && Number(fb[k])) out[k] = Number(fb[k]);
+return out;
+}
+
+function canonicalFromCounts(cnt) {
+const CTRL = ["C","T","R","L"];
+const orderIdx = k => CTRL.indexOf(k);
+const arr = CTRL.map(k => ({ k, n: Number(cnt[k]||0) }))
+.filter(x => x.n > 0)
+.sort((a,b) => (b.n - a.n) || (orderIdx(a.k) - orderIdx(b.k)));
+if (!arr.length) return { shape: "", states: [] };
+const pos = arr.map(x => x.n);
+let shape = pos.join(".");
+if (pos[0] === 5) shape = "5.0";
+else if (pos[0] === 4 && pos[1] === 1) shape = "4.1";
+else if (pos[0] === 3 && pos[1] === 2) shape = "3.2";
+else if (pos[0] === 3 && pos[1] === 1 && pos[2] === 1) shape = "3.1.1";
+else if (pos[0] === 2 && pos[1] === 2 && pos[2] === 1) shape = "2.2.1";
+else if (pos[0] === 2 && pos[1] === 1 && pos[2] === 1 && pos[3] === 1) shape = "2.1.1.1";
+
+let states = [];
+if (shape === "5.0")               states = [arr[0].k];
+else if (shape === "4.1" ||
+shape === "3.2")          states = [arr[0].k, arr[1].k];
+else if (shape === "3.1.1" ||
+shape === "2.2.1")        states = [arr[0].k, arr[1].k, arr[2].k];
+else if (shape === "2.1.1.1")      states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
+else                               states = arr.map(x=>x.k);
+
+return { shape, states };
+}
+
+function scaleMaxForShape(shape) {
+if (shape === "2.1.1.1") return 3;
+if (shape === "3.2")     return 4;
+if (shape === "4.1")     return 5;
+if (shape === "5.0" || shape === "5") return 5;
+return 4;
+}
+
+function tuneSpiderDesc(rawDesc, q, P) {
+// Priority: explicit URL override if provided
+let base = q && typeof q.spiderdesc === "string" && q.spiderdesc.trim().length ? q.spiderdesc : (rawDesc || "");
+if (!base) return "";
+
+// Derive counts/shape/order from spiderfreq
+const counts = parseCountsFromFreq(P?.spiderfreq);
+const { shape, states } = canonicalFromCounts(counts);
+const orderArrow = states.join(" \u2192 "); // "R → C → T → L"
+const max = scaleMaxForShape(shape);
+const countsStr = String(P?.spiderfreq || "");
+
+// Token replacement
+base = String(base).replace(/\{\{\s*(shape|states|order|counts|max)\s*\}\}/gi, (_, key) => {
+const k = key.toLowerCase();
+if (k === "shape")  return shape || "";
+if (k === "states" || k === "order") return orderArrow || "";
+if (k === "counts") return countsStr || "";
+if (k === "max")    return String(max);
+return "";
+});
+
+// Optional prefix/suffix/append via query
+if (q && typeof q.spiderdesc_prefix === "string") base = String(q.spiderdesc_prefix) + base;
+if (q && typeof q.spiderdesc_suffix === "string") base = base + String(q.spiderdesc_suffix);
+if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
+
+return base;
+}
+
+/* normalize inbound payload */
+function normaliseInput(d = {}) {
+const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
+const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
+const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
+const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
+
+const nameCand =
+(d.person && d.person.fullName) ||
+d["p1:n"] ||
+d.fullName ||
+(d.person && d.person.preferredName) ||
+d.preferredName ||
+d.name;
+
+return {
+name:      norm(nameCand || "Perspective"),
+dateLbl:   norm(d.dateLbl || d["p1:d"] || d.d || ""),
+dom:       String(d.dom || d.domLabel || ""),
+domChar:   norm(d.domchar || d.domChar || d.character || ""),
+domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
+spiderdesc:norm(d.spiderdesc || d.spider || ""),
+spiderfreq:norm(d.spiderfreq || ""),
+seqpat:    norm(d.seqpat || d.pattern || d.seqat || ""),
+theme:     norm(d.theme || d["p6:theme"] || ""),
+themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
+workwcol:  wcol,
+workwlead: wldr,
+tips,
+actions,
+chartUrl:  String(d.chart || d.chartUrl || ""),
+layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null
+};
+}
+
+function layoutFromPayload(payloadLayout) {
+const L = JSON.parse(JSON.stringify(LOCKED));
+if (!payloadLayout) return L;
+for (const k of Object.keys(payloadLayout)) {
+if (!L[k]) { L[k] = payloadLayout[k]; continue; }
+if (typeof payloadLayout[k] === "object" && !Array.isArray(payloadLayout[k])) L[k] = { ...L[k], ...payloadLayout[k] };
+else L[k] = payloadLayout[k];
+}
+return L;
+}
+
+/* ───────────── handler ───────────── */
+export default async function handler(req, res) {
+try {
+const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
+const tpl = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
+
+const src = parseDataParam(q.data);
+const P   = normaliseInput(src);
+const L   = layoutFromPayload(src.layoutV6);
+
+const tplPath = path.resolve(process.cwd(), "public", String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
+const pdfBytes = await fs.readFile(tplPath);
+const pdfDoc   = await PDFDocument.load(pdfBytes);
+const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+const pages = pdfDoc.getPages();
+const p = (i) => pages[i];
+
+// p1
+if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
+if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
+
+// p3 (dominant highlight + label)
+if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
+if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
+
+const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
+if (domKey && L.p3?.state?.useAbsolute) {
+const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
+if (anchor && L.p3.state.labelText) {
+drawTextBox(p(2), font, String(L.p3.state.labelText), { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" }, { maxLines: 1 });
+}
+}
+
+// p4 (spider explanation + transparent chart)
+if (L.p4?.spider) {
+const rawSpiderDesc =
+(src && src["p4:spiderdesc"]) ??
+(P && P.spiderdesc) ??
+"";
+
+const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
+if (tuned) {
+const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
+drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
+}
+}
+
+if (L.p4?.chart && (P?.chartUrl || q.chart)) {
+let chartUrl = String(P?.chartUrl || q.chart || "");
+chartUrl = tuneQuickChartUrl(chartUrl);
+if (chartUrl) {
+const img = await embedRemoteImage(pdfDoc, chartUrl);
+if (img) {
+const H = p(3).getHeight();
+const { x, y, w, h } = L.p4.chart;
+p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+}
+}
+}
+
+// p5
+if (L.p5?.seqpat && P.seqpat) {
+const maxLines = (L.p5.seqpat.maxLines ?? L.p5.seqpatMaxLines ?? 12);
+drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
+}
+
+// p6 — THEME (label + paragraph)
+if (L.p6?.theme && P.theme) {
+const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
+drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
+}
+if (L.p6?.themeExpl && P.themeExpl) {
+const maxLines = (L.p6.themeExpl.maxLines ?? L.p6.themeExplMaxLines ?? 12);
+drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
+}
+
+// p7–p10
+const mapIdx = { C:0, T:1, R:2, L:3 };
+if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
+for (const k of ["C","T","R","L"]) {
+const i = mapIdx[k], bx = L.p7.colBoxes[i], item = P.workwcol[i] || {};
+const txt = norm(item?.look || ""); if (!txt) continue;
+drawTextBox(p(6), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
+}
+}
+if (L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
+for (const k of ["C","T","R","L"]) {
+const i = mapIdx[k], bx = L.p8.colBoxes[i], item = P.workwcol[i] || {};
+const txt = norm(item?.work || ""); if (!txt) continue;
+drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
+}
+}
+if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+for (const k of ["C","T","R","L"]) {
+const i = mapIdx[k], bx = L.p9.ldrBoxes[i], item = P.workwlead[i] || {};
+const txt = norm(item?.look || ""); if (!txt) continue;
+drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+}
+}
+if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+for (const k of ["C","T","R","L"]) {
+const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
+const txt = norm(item?.work || ""); if (!txt) continue;
+drawTextBox(p(9), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
+}
+}
+
+// p11 (hanging-indent bullets + strip "Tip:" prefix)
+if (L.p11?.split) {
+const clean = s =>
+norm(String(s || ""))
+.replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "")
+.trim();
+
+const pairs = [
+{ txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
+{ txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
+{ txt: clean(P.actions?.[0]), box: L.p11.acts1 },
+{ txt: clean(P.actions?.[1]), box: L.p11.acts2 }
+];
+
+for (const { txt, box } of pairs) {
+if (!txt) continue;
+const indent = N(L.p11.bulletIndent, 18);
+const size   = box.size || 18;
+const maxL   = box.maxLines || 4;
+
+const dashX = box.x + Math.max(2, indent - 10);
+drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+
+drawTextBox(
+p(10), font, txt,
+{ x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
+{ maxLines: maxL }
+);
+}
+}
+
+// footers
+const footerLabel = norm(P.name);
+const putFooter = (pageIdx, key) => { const spec = L.footer?.[key]; if (!spec) return; drawTextBox(p(pageIdx), font, footerLabel, spec, { maxLines: 1 }); };
+putFooter(1,"f2"); putFooter(2,"f3"); putFooter(3,"f4"); putFooter(4,"f5"); putFooter(5,"f6");
+putFooter(6,"f7"); putFooter(7,"f8"); putFooter(8,"f9"); putFooter(9,"f10"); putFooter(10,"f11"); putFooter(11,"f12");
+
+const bytes = await pdfDoc.save();
+const nameOut = S(q.out || `CTRL_${P.name || "Perspective"}_${P.dateLbl || ""}.pdf`).replace(/[^\w.-]+/g, "_");
+res.setHeader("Content-Type", "application/pdf");
+res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
+res.end(Buffer.from(bytes));
+} catch (err) {
+res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
+}
+}
