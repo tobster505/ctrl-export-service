@@ -164,7 +164,7 @@ const LOCKED = {
     chart:{  x:35, y:235, w:540, h:260 }   // final requested size
   },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
-  p6:  { theme:{ x:25,y:330,w:550,size:18,align:"left", maxLines:2 }, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
+  p6:  { theme: null, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
   p7:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
   p8:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
   p9:  { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
