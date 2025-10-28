@@ -151,9 +151,9 @@ const LOCKED = {
     }
   },
   p4:  { 
-    spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 },
+    spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:10 },
     // ↓ Your requested smaller chart box (kept centered)
-    chart:{  x:35, y:235, w:540, h:260 } 
+    chart:{  x:35, y:235, w:500, h:220 } 
   },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
   p6:  { theme:{ x:25,y:330,w:550,size:18,align:"left", maxLines:2 }, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
@@ -238,11 +238,11 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
           grid:       { circular: true, lineWidth: 2 },  // bolder rings
           angleLines: { display: true, lineWidth: 2 },   // bolder spokes
           pointLabels: {                                   // axis labels
-            font: { size: 16, weight: "700", style: "normal" }
+            font: { size: 18, weight: "750", style: "normal" }
           }
         }
       },
-      elements: { line: { tension: 0.35, borderWidth: 4 } }
+      elements: { line: { tension: 0.75, borderWidth: 4 } }
     }
   };
 
