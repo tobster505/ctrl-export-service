@@ -558,40 +558,51 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 Tips & Actions — robust visualisation (up to two each)
-    if (L.p11?.split) {
-      const tips  = Array.isArray(P.tips)    ? P.tips.filter(Boolean) : [];
-      const acts  = Array.isArray(P.actions) ? P.actions.filter(Boolean) : [];
+ // p11 Tips & Actions — pack non-empty items into the two slots
+if (L.p11?.split) {
+  // 1) normalise & clean
+  const tidy = s =>
+    norm(String(s || ""))
+      .replace(/^(?:[-–—•·]\s*)/i, "")                 // strip bullet glyphs
+      .replace(/^\s*(tip|tips)\s*:?\s*/i, "")          // strip leading "tip:" / "tips:"
+      .replace(/^\s*(action|next action|actions)\s*:?\s*/i, "")
+      .trim();
 
-      const clean = (s) =>
-        norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)?(?:tip|action)\s*:?\s*/i, "")
-          .trim();
+  const tipsRaw    = Array.isArray(P.tips)    ? P.tips    : [];
+  const actionsRaw = Array.isArray(P.actions) ? P.actions : [];
 
-      const pairs = [
-        { txt: clean(tips[0]),    box: L.p11.tips1 },
-        { txt: clean(tips[1]),    box: L.p11.tips2 },
-        { txt: clean(acts[0]),    box: L.p11.acts1 },
-        { txt: clean(acts[1]),    box: L.p11.acts2 }
-      ];
+  // 2) keep order, drop empties *after* cleaning
+  const tipsPacked    = tipsRaw.map(tidy).filter(Boolean).slice(0, 2);
+  const actionsPacked = actionsRaw.map(tidy).filter(Boolean).slice(0, 2);
 
-      for (const { txt, box } of pairs) {
-        if (!txt) continue;
-        const indent = N(L.p11.bulletIndent, 18);
-        const size   = box.size || 18;
-        const maxL   = box.maxLines || 4;
+  // 3) helper to draw a single bullet line into a target box
+  const drawBullet = (pageIdx, box, text) => {
+    if (!box || !text) return;
+    const indent = N(L.p11.bulletIndent, 18);
+    const size   = box.size || 18;
+    const maxL   = box.maxLines || 4;
 
-        // small dash as bullet
-        const dashX = box.x + Math.max(2, indent - 10);
-        drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+    // small dash “bullet”
+    const dashX = box.x + Math.max(2, indent - 10);
+    drawTextBox(p(pageIdx), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-        // the text body
-        drawTextBox(
-          p(10), font, txt,
-          { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
-          { maxLines: maxL }
-        );
-      }
+    // the text, indented
+    drawTextBox(
+      p(pageIdx), font, text,
+      { x: box.x + indent, y: box.y, w: Math.max(0, box.w - indent), size, align: box.align || "left" },
+      { maxLines: maxL }
+    );
+  };
+
+  // 4) place Tips (first non-empty → tips1, second → tips2)
+  drawBullet(10, L.p11.tips1, tipsPacked[0] || "");
+  drawBullet(10, L.p11.tips2, tipsPacked[1] || "");
+
+  // 5) place Actions (first non-empty → acts1, second → acts2)
+  drawBullet(10, L.p11.acts1, actionsPacked[0] || "");
+  drawBullet(10, L.p11.acts2, actionsPacked[1] || "");
+}
+
     }
 
     // footers
