@@ -151,9 +151,8 @@ const LOCKED = {
     }
   },
   p4:  { 
-    spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:10 },
-    // ↓ Your requested smaller chart box (kept centered)
-    chart:{  x:35, y:235, w:500, h:220 } 
+    spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 },
+    chart:{  x:35, y:235, w:540, h:260 }   // final requested size
   },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
   p6:  { theme:{ x:25,y:330,w:550,size:18,align:"left", maxLines:2 }, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
@@ -208,10 +207,32 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* Build a QuickChart radar URL from counts (styled: bold lines + bigger, bold labels) */
+/* === Radar scale rules you requested ===
+   - min = one below the lowest NON-ZERO (floor at 0)
+   - max = one above highest (cap at 5)
+   - special-case: if max=5 and it's the ONLY non-zero (5,0,0,0), force [0,5] & emphasize line
+*/
+function radarScaleFromCounts(counts) {
+  const vals = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
+  const maxVal = Math.max(...vals);
+  const nonZero = vals.filter(v => v > 0);
+  if (maxVal <= 0 || nonZero.length === 0) {
+    return { min: 0, max: 4, ticks: { stepSize: 1 }, grid: { circular: true } };
+  }
+  if (maxVal === 5 && nonZero.length === 1) {
+    return { min: 0, max: 5, ticks: { stepSize: 1 }, grid: { circular: true }, _fiveOnly: true };
+  }
+  const lowestNZ = Math.min(...nonZero);
+  const min = Math.max(0, lowestNZ - 1);
+  const max = Math.min(5, maxVal + 1);
+  return { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
+}
+
+/* Build a QuickChart radar URL from counts with dynamic scale + bold styling */
 function buildSpiderQuickChartUrlFromCounts(counts) {
   const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
-  const max = Math.max(4, ...data, 5); // allow up to 5
+  const rScale = radarScaleFromCounts(counts);
+  const isFiveOnly = !!rScale._fiveOnly;
 
   const cfg = {
     type: "radar",
@@ -221,10 +242,10 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
         label: "CTRL",
         data,
         fill: true,
-        borderWidth: 4,          // bolder radar line
-        pointRadius: 4,          // bigger points
+        borderWidth: isFiveOnly ? 5 : 4,
+        pointRadius: isFiveOnly ? 6 : 4,
         pointBorderWidth: 2,
-        pointHoverRadius: 5
+        pointHoverRadius: isFiveOnly ? 8 : 5
       }]
     },
     options: {
@@ -232,17 +253,15 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0,
-          max,
-          ticks: { stepSize: 1 },
-          grid:       { circular: true, lineWidth: 2 },  // bolder rings
-          angleLines: { display: true, lineWidth: 2 },   // bolder spokes
-          pointLabels: {                                   // axis labels
-            font: { size: 18, weight: "750", style: "normal" }
-          }
+          min: rScale.min,
+          max: rScale.max,
+          ticks: rScale.ticks,
+          grid: rScale.grid,
+          angleLines: { display: true, lineWidth: 2 },
+          pointLabels: { font: { size: 16, weight: "700", style: "normal" } }
         }
       },
-      elements: { line: { tension: 0.75, borderWidth: 4 } }
+      elements: { line: { tension: 0.60, borderWidth: isFiveOnly ? 5 : 4 } }
     }
   };
 
@@ -251,10 +270,12 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
   u.searchParams.set("backgroundColor", "transparent");
   u.searchParams.set("width", "700");
   u.searchParams.set("height", "700");
+  // Cache-bust so you always see the latest image
+  u.searchParams.set("v", Date.now().toString(36));
   return u.toString();
 }
 
-/* Ensure any incoming radar URL is tuned for bold lines + labels */
+/* Ensure any incoming radar URL is tuned for bold lines + labels (kept if you ever pass your own URL) */
 function tuneQuickChartUrl(originalUrl) {
   try {
     if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
@@ -273,7 +294,7 @@ function tuneQuickChartUrl(originalUrl) {
     cfg.options.scales = cfg.options.scales || {};
     cfg.options.scales.r = cfg.options.scales.r || {};
 
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35, borderWidth: 4 };
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.60, borderWidth: 4 };
     cfg.options.scales.r.grid = { ...(cfg.options.scales.r.grid || {}), circular: true, lineWidth: 2 };
     cfg.options.scales.r.angleLines = { ...(cfg.options.scales.r.angleLines || {}), display: true, lineWidth: 2 };
     cfg.options.scales.r.pointLabels = {
@@ -281,14 +302,8 @@ function tuneQuickChartUrl(originalUrl) {
       font: { ...(cfg.options.scales.r.pointLabels?.font || {}), size: 16, weight: "700", style: "normal" }
     };
 
-    const ds = (cfg.data && Array.isArray(cfg.data.datasets) && cfg.data.datasets[0]) ? cfg.data.datasets[0] : null;
-    const vals = Array.isArray(ds?.data) ? ds.data.map(n => Number(n) || 0) : [];
-    const max = Math.max(4, ...vals, 5);
-    cfg.options.scales.r.min = cfg.options.scales.r.min ?? 0;
-    cfg.options.scales.r.max = cfg.options.scales.r.max ?? max;
-    cfg.options.scales.r.ticks = { ...(cfg.options.scales.r.ticks || {}), stepSize: 1 };
-
     u.searchParams.set("c", JSON.stringify(cfg));
+    u.searchParams.set("v", Date.now().toString(36)); // cache-bust
     return u.toString();
   } catch {
     return originalUrl;
@@ -307,6 +322,14 @@ function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
   }
   for (const k of ["C","T","R","L"]) if (!out[k] && Number(fb[k])) out[k] = Number(fb[k]);
   return out;
+}
+
+function scaleMaxForShape(shape) {
+  if (shape === "2.1.1.1") return 3;
+  if (shape === "3.2")     return 4;
+  if (shape === "4.1")     return 5;
+  if (shape === "5.0" || shape === "5") return 5;
+  return 4;
 }
 
 function canonicalFromCounts(cnt) {
@@ -335,19 +358,11 @@ function canonicalFromCounts(cnt) {
   return { shape, states };
 }
 
-function scaleMaxForShape(shape) {
-  if (shape === "2.1.1.1") return 3;
-  if (shape === "3.2")     return 4;
-  if (shape === "4.1")     return 5;
-  if (shape === "5.0" || shape === "5") return 5;
-  return 4;
-}
-
 function tuneSpiderDesc(rawDesc, q, P) {
   let base = q && typeof q.spiderdesc === "string" && q.spiderdesc.trim().length ? q.spiderdesc : (rawDesc || "");
   if (!base) return "";
 
-  const counts = parseCountsFromFreq(P?.spiderfreq);
+  const counts = P.counts ?? parseCountsFromFreq(P?.spiderfreq);
   const { shape, states } = canonicalFromCounts(counts);
   const orderArrow = states.join(" \u2192 ");
   const max = scaleMaxForShape(shape);
@@ -400,6 +415,7 @@ function normaliseInput(d = {}) {
     tips,
     actions,
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
+    counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
     layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null,
     maskThemeLabel: d.maskThemeLabel !== false // default true
   };
@@ -423,7 +439,10 @@ export default async function handler(req, res) {
     const tpl  = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
     const src  = await readPayload(req);
     const P    = normaliseInput(src);
-    const L    = layoutFromPayload(src.layoutV6);
+
+    // IMPORTANT: ignore remote layout to stop Botpress overrides while stabilising
+    const ALLOW_REMOTE_LAYOUT = false;
+    const L    = layoutFromPayload(ALLOW_REMOTE_LAYOUT ? src.layoutV6 : null);
 
     // robust local /public loader
     const pdfBytes = await loadTemplateBytesLocal(String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
@@ -453,23 +472,24 @@ export default async function handler(req, res) {
 
     // p4 (spider explanation + chart)
     if (L.p4?.spider) {
-      const rawSpiderDesc = (src && src["p4:spiderdesc"]) ?? (P && P.spiderdesc) ?? "";
-      const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
+      const tuned = tuneSpiderDesc(P.spiderdesc, q, P).trim();
       if (tuned) {
         const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
         drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
       }
     }
 
+    // p4 chart — prefer explicit counts; dynamic scale; cache-bust
     if (L.p4?.chart) {
-      // prefer explicit URL; else auto-build from counts parsed from spiderfreq
       let chartUrl = String(P?.chartUrl || q.chart || "");
+      let counts = P.counts ? { C:N(P.counts.C,0), T:N(P.counts.T,0), R:N(P.counts.R,0), L:N(P.counts.L,0) }
+                            : parseCountsFromFreq(P.spiderfreq || "");
       if (!chartUrl) {
-        const counts = parseCountsFromFreq(P.spiderfreq || "");
-        const sum = (counts.C||0)+(counts.T||0)+(counts.R||0)+(counts.L||0);
+        const sum = N(counts.C,0)+N(counts.T,0)+N(counts.R,0)+N(counts.L,0);
         if (sum > 0) chartUrl = buildSpiderQuickChartUrlFromCounts(counts);
+      } else {
+        try { const u = new URL(chartUrl); u.searchParams.set("v", Date.now().toString(36)); chartUrl = u.toString(); } catch {}
       }
-      chartUrl = tuneQuickChartUrl(chartUrl);
       if (chartUrl) {
         const img = await embedRemoteImage(pdfDoc, chartUrl);
         if (img) {
@@ -486,7 +506,7 @@ export default async function handler(req, res) {
       drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
     }
 
-    // p6 — THEME (label + paragraph) + optional mask to hide printed "Theme pair" label
+    // p6 — THEME (mask “Theme pair” label; then render)
     if (P.maskThemeLabel !== false) {
       try {
         const white = rgb(1,1,1);
@@ -494,7 +514,7 @@ export default async function handler(req, res) {
         const xTL = 55, yTL = 500;
         const yBL = p(5).getHeight() - yTL - h;
         p(5).drawRectangle({ x: xTL, y: yBL, width: w, height: h, color: white, opacity: 1 });
-      } catch { /* optional */ }
+      } catch {}
     }
     if (L.p6?.theme && P.theme) {
       const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
@@ -505,7 +525,7 @@ export default async function handler(req, res) {
       drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
     }
 
-    // p7–p10 WorkWith (unchanged from your working version)
+    // p7–p10 WorkWith
     const mapIdx = { C:0, T:1, R:2, L:3 };
     if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
@@ -536,7 +556,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 Tips & Actions (unchanged)
+    // p11 Tips & Actions
     if (L.p11?.split) {
       const clean = s =>
         norm(String(s || ""))
