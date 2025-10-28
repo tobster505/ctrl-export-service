@@ -135,6 +135,15 @@ function resolveDomKey(...candidates) {
   return "";
 }
 
+/* ─────────── Radar colour theme (overrideable via payload.chartTheme) ─────────── */
+const RADAR_THEME = {
+  stroke: "#4B2E83",                 // polygon outline + points
+  fill:   "rgba(75,46,131,0.22)",    // polygon fill
+  point:  "#4B2E83",                 // point fill
+  grid:   "rgba(0,0,0,0.14)",        // rings & spokes
+  labels: "#555555"                  // axis labels & ticks
+};
+
 /* ───────── locked layout (TL, 1-based) ───────── */
 const LOCKED = {
   meta: { units: "pt", origin: "TL", pages: "1-based" },
@@ -207,7 +216,7 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* === Radar scale rules you requested ===
+/* === Radar scale rules ===
    - min = one below the lowest NON-ZERO (floor at 0)
    - max = one above highest (cap at 5)
    - special-case: if max=5 and it's the ONLY non-zero (5,0,0,0), force [0,5] & emphasize line
@@ -228,11 +237,13 @@ function radarScaleFromCounts(counts) {
   return { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
 }
 
-/* Build a QuickChart radar URL from counts with dynamic scale + bold styling */
-function buildSpiderQuickChartUrlFromCounts(counts) {
+/* Build a QuickChart radar URL from counts with dynamic scale + brand colours */
+function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
   const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const rScale = radarScaleFromCounts(counts);
   const isFiveOnly = !!rScale._fiveOnly;
+
+  const C = { ...RADAR_THEME, ...(themeOverride || {}) };
 
   const cfg = {
     type: "radar",
@@ -242,6 +253,10 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
         label: "CTRL",
         data,
         fill: true,
+        borderColor: C.stroke,
+        backgroundColor: C.fill,
+        pointBackgroundColor: C.point,
+        pointBorderColor: "#FFFFFF",
         borderWidth: isFiveOnly ? 5 : 4,
         pointRadius: isFiveOnly ? 6 : 4,
         pointBorderWidth: 2,
@@ -255,10 +270,10 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
         r: {
           min: rScale.min,
           max: rScale.max,
-          ticks: rScale.ticks,
-          grid: rScale.grid,
-          angleLines: { display: true, lineWidth: 2 },
-          pointLabels: { font: { size: 16, weight: "700", style: "normal" } }
+          ticks: { ...rScale.ticks, color: C.labels },
+          grid:  { ...rScale.grid, color: C.grid, lineWidth: 2, circular: true },
+          angleLines: { display: true, color: C.grid, lineWidth: 2 },
+          pointLabels: { font: { size: 16, weight: "700" }, color: C.labels }
         }
       },
       elements: { line: { tension: 0.60, borderWidth: isFiveOnly ? 5 : 4 } }
@@ -270,44 +285,8 @@ function buildSpiderQuickChartUrlFromCounts(counts) {
   u.searchParams.set("backgroundColor", "transparent");
   u.searchParams.set("width", "700");
   u.searchParams.set("height", "700");
-  // Cache-bust so you always see the latest image
-  u.searchParams.set("v", Date.now().toString(36));
+  u.searchParams.set("v", Date.now().toString(36)); // cache-bust
   return u.toString();
-}
-
-/* Ensure any incoming radar URL is tuned for bold lines + labels (kept if you ever pass your own URL) */
-function tuneQuickChartUrl(originalUrl) {
-  try {
-    if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
-    const u = new URL(originalUrl);
-    let cParam = u.searchParams.get("c");
-    if (!cParam) return originalUrl;
-
-    let cfg = null;
-    try { cfg = JSON.parse(cParam); }
-    catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
-
-    if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
-
-    cfg.options = cfg.options || {};
-    cfg.options.elements = cfg.options.elements || {};
-    cfg.options.scales = cfg.options.scales || {};
-    cfg.options.scales.r = cfg.options.scales.r || {};
-
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.60, borderWidth: 4 };
-    cfg.options.scales.r.grid = { ...(cfg.options.scales.r.grid || {}), circular: true, lineWidth: 2 };
-    cfg.options.scales.r.angleLines = { ...(cfg.options.scales.r.angleLines || {}), display: true, lineWidth: 2 };
-    cfg.options.scales.r.pointLabels = {
-      ...(cfg.options.scales.r.pointLabels || {}),
-      font: { ...(cfg.options.scales.r.pointLabels?.font || {}), size: 16, weight: "700", style: "normal" }
-    };
-
-    u.searchParams.set("c", JSON.stringify(cfg));
-    u.searchParams.set("v", Date.now().toString(36)); // cache-bust
-    return u.toString();
-  } catch {
-    return originalUrl;
-  }
 }
 
 /* ───────── spiderdesc + counts helpers ───────── */
@@ -416,6 +395,7 @@ function normaliseInput(d = {}) {
     actions,
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
     counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
+    chartTheme:(d.chartTheme && typeof d.chartTheme === "object") ? d.chartTheme : null,
     layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null,
     maskThemeLabel: d.maskThemeLabel !== false // default true
   };
@@ -470,7 +450,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // p4 (spider explanation + chart)
+    // p4 (spider explanation)
     if (L.p4?.spider) {
       const tuned = tuneSpiderDesc(P.spiderdesc, q, P).trim();
       if (tuned) {
@@ -479,17 +459,19 @@ export default async function handler(req, res) {
       }
     }
 
-    // p4 chart — prefer explicit counts; dynamic scale; cache-bust
+    // p4 chart — prefer explicit counts; dynamic scale; theme; cache-bust
     if (L.p4?.chart) {
       let chartUrl = String(P?.chartUrl || q.chart || "");
       let counts = P.counts ? { C:N(P.counts.C,0), T:N(P.counts.T,0), R:N(P.counts.R,0), L:N(P.counts.L,0) }
                             : parseCountsFromFreq(P.spiderfreq || "");
+
       if (!chartUrl) {
         const sum = N(counts.C,0)+N(counts.T,0)+N(counts.R,0)+N(counts.L,0);
-        if (sum > 0) chartUrl = buildSpiderQuickChartUrlFromCounts(counts);
+        if (sum > 0) chartUrl = buildSpiderQuickChartUrlFromCounts(counts, P.chartTheme);
       } else {
         try { const u = new URL(chartUrl); u.searchParams.set("v", Date.now().toString(36)); chartUrl = u.toString(); } catch {}
       }
+
       if (chartUrl) {
         const img = await embedRemoteImage(pdfDoc, chartUrl);
         if (img) {
