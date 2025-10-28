@@ -244,7 +244,7 @@ function tuneQuickChartUrl(originalUrl) {
   }
 }
 
-/* ───────── spiderdesc helpers ───────── */
+/* ───────── spiderdesc + counts helpers ───────── */
 function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
   const out = { C:0, T:0, R:0, L:0 };
   const s = String(freqStr || "");
@@ -316,6 +316,44 @@ function tuneSpiderDesc(rawDesc, q, P) {
   if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
 
   return base;
+}
+
+/* NEW: build a QuickChart radar URL from counts (auto-fallback for p4 chart) */
+function buildSpiderQuickChartUrlFromCounts(counts) {
+  const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
+  const max = Math.max(3, ...data, 4); // at least 4, up to 5 if needed
+  const cfg = {
+    type: "radar",
+    data: {
+      labels: ["Concealed","Triggered","Regulated","Lead"],
+      datasets: [{
+        label: "CTRL",
+        data,
+        fill: true,
+        borderWidth: 2,
+        pointRadius: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          min: 0,
+          max,
+          ticks: { stepSize: 1 },
+          grid: { circular: true }
+        }
+      },
+      elements: { line: { tension: 0.35 } }
+    }
+  };
+  const u = new URL("https://quickchart.io/chart");
+  u.searchParams.set("c", JSON.stringify(cfg));
+  u.searchParams.set("backgroundColor", "transparent");
+  u.searchParams.set("width", "700");
+  u.searchParams.set("height", "700");
+  return u.toString();
 }
 
 /* normalize inbound payload to canonical */
@@ -400,7 +438,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // p4 (spider explanation + transparent chart)
+    // p4 (spider explanation + chart)
     if (L.p4?.spider) {
       const rawSpiderDesc = (src && src["p4:spiderdesc"]) ?? (P && P.spiderdesc) ?? "";
       const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
@@ -410,8 +448,14 @@ export default async function handler(req, res) {
       }
     }
 
-    if (L.p4?.chart && (P?.chartUrl || q.chart)) {
+    if (L.p4?.chart) {
+      // prefer explicit URL; else auto-build from counts
       let chartUrl = String(P?.chartUrl || q.chart || "");
+      if (!chartUrl) {
+        const counts = parseCountsFromFreq(P.spiderfreq || "");
+        const sum = (counts.C||0)+(counts.T||0)+(counts.R||0)+(counts.L||0);
+        if (sum > 0) chartUrl = buildSpiderQuickChartUrlFromCounts(counts);
+      }
       chartUrl = tuneQuickChartUrl(chartUrl);
       if (chartUrl) {
         const img = await embedRemoteImage(pdfDoc, chartUrl);
@@ -448,7 +492,7 @@ export default async function handler(req, res) {
       drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
     }
 
-    // p7–p10 WorkWith
+    // p7–p10 WorkWith (unchanged)
     const mapIdx = { C:0, T:1, R:2, L:3 };
     if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
@@ -479,7 +523,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 Tips & Actions (hanging-indent bullets)
+    // p11 Tips & Actions (unchanged)
     if (L.p11?.split) {
       const clean = s =>
         norm(String(s || ""))
