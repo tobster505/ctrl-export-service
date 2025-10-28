@@ -1,370 +1,527 @@
-// /api/fill-template.js
-// Vercel serverless (ESM). User PDF ONLY.
-// Loads template strictly from /public and fills fields without touching any coach flow.
-//
-// Notes:
-// - Safe against missing fields; skips gracefully.
-// - Draws Page 4 chart from counts or spiderfreq text (no external fetch).
-// - Omits any "Theme pair" title; prints the pair and explanation only.
-// - Renders workWith, tips, actions from multiple possible keys.
+/**
+ * CTRL Export Service · fill-template (Perspective flow, USER-ONLY)
+ * Place at: /pages/api/fill-template.js
+ * TL-origin coordinates (pt), pages are 1-based.
+ */
+export const config = { runtime: "nodejs" };
 
-import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+/* ───────────── imports ───────────── */
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-// ---------- util: __dirname (ESM) ----------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+/* ───────────── utilities ───────────── */
+const S = (v, fb = "") => (v == null ? String(fb) : String(v));
+const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 
-// ---------- tiny helpers ----------
-const S  = (v, fb = '') => (v == null ? String(fb) : String(v));
-const N  = (v, fb = 0)  => (Number.isFinite(+v) ? +v : +fb);
-const A  = (v) => (Array.isArray(v) ? v : []);
-const G  = (o, k, fb = '') => S((o && o[k]) ?? fb, fb);
-const okObj = (o) => o && typeof o === 'object' && !Array.isArray(o);
-const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const norm = (v, fb = "") =>
+  String(v ?? fb)
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    .replace(/[•·]/g, "-")
+    // arrows → WinAnsi-safe
+    .replace(/\u2194/g, "<->").replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
+    .replace(/\u2191/g, "^").replace(/\u2193/g, "v").replace(/[\u2196-\u2199]/g, "->")
+    .replace(/\u21A9/g, "<-").replace(/\u21AA/g, "->")
+    .replace(/\u00D7/g, "x")
+    // zero-width, emoji/PUA
+    .replace(/[\u200B-\u200D\u2060]/g, "")
+    .replace(/[\uD800-\uDFFF]/g, "")
+    .replace(/[\uE000-\uF8FF]/g, "")
+    // tidy
+    .replace(/\t/g, " ").replace(/\r\n?/g, "\n")
+    .replace(/[ \f\v]+/g, " ").replace(/[ \t]+\n/g, "\n").trim();
 
-// ---------- DEFAULT COORDS (from your stored baseline) ----------
-const CHART = { x: 1030, y: 620, w: 720, h: 420 }; // Page 4 chart area
-// Page 6 (theme pair) – we only print pair + expl (no label)
-const P6    = {
-  themeX:  90, themeY: 1030, themeW: 820, themeSize: 26, themeMax: 1,
-  explX:   90, explY:  980,  explW: 820, explSize: 18, explMax: 8
-};
-// Page 7 Tips/Actions defaults (from your “Page 7” memory)
-const P7 = {
-  tips:   { x: 30,  y: 530, w: 300, size: 17, align: 'left', max: 12 },
-  acts:   { x: 320, y: 530, w: 300, size: 17, align: 'left', max: 12 },
-  bullet: { indent: 14, gap: 2 }
-};
+function parseDataParam(b64ish) {
+  if (!b64ish) return {};
+  let s = String(b64ish);
+  try { s = decodeURIComponent(s); } catch {}
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  try { return JSON.parse(Buffer.from(s, "base64").toString("utf8")); }
+  catch { return {}; }
+}
 
-// Simple text block writer with wrapping
-function drawWrappedText(page, text, x, y, w, size, font, color = rgb(0,0,0), lineGap = 4, maxLines = Infinity) {
-  const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ');
-  if (!words.length) return y;
-  let line = '', yy = y, lines = 0;
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    const width = font.widthOfTextAtSize(test, size);
-    if (width > w && line) {
-      page.drawText(line, { x, y: yy, size, font, color });
-      lines++; if (lines >= maxLines) return yy;
-      yy -= size + lineGap;
-      line = word;
-    } else {
-      line = test;
+/* GET/POST payload reader (supports ?data= and JSON body) */
+async function readPayload(req) {
+  const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
+  if (q.data) return parseDataParam(q.data);
+  if (req.method === "POST" && !q.data) {
+    try { return typeof req.json === "function" ? await req.json() : (req.body || {}); }
+    catch { /* fallthrough */ }
+  }
+  return {};
+}
+
+/* TL → draw helper (does internal TL->BL conv for baseline) */
+function drawTextBox(page, font, text, spec = {}, opts = {}) {
+  const { x=40, y=40, w=540, size=12, lineGap=3, color=rgb(0,0,0), align="left" } = spec;
+  const maxLines = (opts.maxLines ?? spec.maxLines ?? 6);
+  const hard = norm(text || "");
+  if (!hard) return;
+
+  const lines = hard.split(/\n/).map(s=>s.trim());
+  const wrapped = [];
+  const widthOf = (s) => font.widthOfTextAtSize(s, Math.max(1, size));
+
+  const wrapLine = (ln) => {
+    const words = ln.split(/\s+/); let cur="";
+    for (let i=0;i<words.length;i++){
+      const nxt = cur ? `${cur} ${words[i]}` : words[i];
+      if (widthOf(nxt) <= w || !cur) cur = nxt;
+      else { wrapped.push(cur); cur = words[i]; }
     }
-  }
-  if (line) {
-    page.drawText(line, { x, y: yy, size, font, color });
-    yy -= size + lineGap;
-  }
-  return yy;
-}
-
-// Bullet list writer
-function drawBullets(page, items, x, y, w, size, font, opts = {}) {
-  const gap = opts.gap ?? 2;
-  const indent = opts.indent ?? 14;
-  let yy = y;
-  for (const it of items) {
-    const bullet = '• ';
-    page.drawText(bullet, { x, y: yy, size, font });
-    yy = drawWrappedText(page, it, x + indent, yy, w - indent, size, font, rgb(0,0,0), gap);
-  }
-  return yy;
-}
-
-// Parse counts from data.counts or from spiderfreq string "C:1 · T:3 · R:0 · L:1"
-function getCounts(data) {
-  const counts = okObj(data.counts) ? data.counts : {};
-  let C = N(counts.C, NaN);
-  let T = N(counts.T, NaN);
-  let R = N(counts.R, NaN);
-  let L = N(counts.L, NaN);
-
-  if ([C,T,R,L].some(isNaN)) {
-    const raw = S(data['p4:spiderfreq'] || data.spiderfreq || data.spiderFreq || '');
-    const mC = raw.match(/C\s*:\s*(\d+)/i);
-    const mT = raw.match(/T\s*:\s*(\d+)/i);
-    const mR = raw.match(/R\s*:\s*(\d+)/i);
-    const mL = raw.match(/L\s*:\s*(\d+)/i);
-    C = N(mC && mC[1], 0);
-    T = N(mT && mT[1], 0);
-    R = N(mR && mR[1], 0);
-    L = N(mL && mL[1], 0);
-  }
-  return { C, T, R, L };
-}
-
-// Draw a simple 4-bar chart (C, T, R, L) in the reserved area
-function drawCTRLBars(page, font, counts, area = CHART) {
-  const vals = [counts.C, counts.T, counts.R, counts.L];
-  const labels = ['C','T','R','L'];
-  const maxVal = Math.max(1, ...vals);
-  const pad = 30;
-  const innerW = area.w - 2*pad;
-  const innerH = area.h - 2*pad;
-  const barW = innerW / (vals.length * 2);
-  const baseX = area.x + pad;
-  const baseY = area.y + pad;
-
-  // Axes
-  page.drawLine({
-    start: { x: baseX, y: baseY },
-    end:   { x: baseX, y: baseY + innerH },
-    thickness: 1, color: rgb(0,0,0)
-  });
-  page.drawLine({
-    start: { x: baseX, y: baseY },
-    end:   { x: baseX + innerW, y: baseY },
-    thickness: 1, color: rgb(0,0,0)
-  });
-
-  // Bars + labels
-  vals.forEach((v, i) => {
-    const x = baseX + (i*2 + 0.5)*barW;
-    const h = innerH * (v / maxVal);
-    page.drawRectangle({
-      x, y: baseY, width: barW, height: h, color: rgb(0.2,0.2,0.2)
-    });
-    // value
-    const valStr = String(v);
-    page.drawText(valStr, {
-      x: x + barW/2 - font.widthOfTextAtSize(valStr, 12)/2,
-      y: baseY + h + 6, size: 12, font, color: rgb(0,0,0)
-    });
-    // label
-    page.drawText(labels[i], {
-      x: x + barW/2 - font.widthOfTextAtSize(labels[i], 12)/2,
-      y: baseY - 18, size: 12, font, color: rgb(0,0,0)
-    });
-  });
-}
-
-// Extract workWith blocks in a robust way.
-// Returns an array of { title, look, work } strings to render.
-function getWorkWith(data) {
-  // Preferred: data.workWith = { C:[{look,work}], T:[], R:[], L:[] } (or .col)
-  const out = [];
-
-  const maybePush = (title, arr) => {
-    A(arr).forEach((o) => {
-      if (okObj(o)) {
-        const look = S(o.look).trim();
-        const work = S(o.work).trim();
-        if (look || work) out.push({ title, look, work });
-      }
-    });
+    wrapped.push(cur);
   };
+  for (const ln of lines) wrapLine(ln);
 
-  if (okObj(data.workWith)) {
-    const W = data.workWith;
-    maybePush('Concealed', W.C ?? W.col);
-    maybePush('Triggered', W.T ?? W.t);
-    maybePush('Regulated', W.R ?? W.r);
-    maybePush('Lead',      W.L ?? W.l);
+  const out = wrapped.slice(0, maxLines);
+  const pageH = page.getHeight();
+  const baselineY = pageH - y;
+  const lineH = Math.max(1,size) + lineGap;
+
+  let yCursor = baselineY;
+  for (const ln of out) {
+    let xDraw = x; const wLn = widthOf(ln);
+    if (align === "center") xDraw = x + (w - wLn) / 2;
+    else if (align === "right") xDraw = x + (w - wLn);
+    page.drawText(ln, { x: xDraw, y: yCursor - size, size: Math.max(1,size), font, color });
+    yCursor -= lineH;
   }
+}
 
-  // Legacy keys: workwcol, workwt, workwr, workwl
-  if (!out.length) {
-    maybePush('Concealed', data.workwcol);
-    maybePush('Triggered', data.workwt);
-    maybePush('Regulated', data.workwr);
-    maybePush('Lead',      data.workwl);
+const rectTLtoBL = (page, box, inset = 0) => {
+  const pageH = page.getHeight();
+  const x = N(box.x) + inset;
+  const w = Math.max(0, N(box.w) - inset * 2);
+  const h = Math.max(0, N(box.h) - inset * 2);
+  const y = pageH - N(box.y) - N(box.h) + inset;
+  return { x, y, w, h };
+};
+
+function paintStateHighlight(page3, dom, cfg = {}) {
+  const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
+  if (!b) return;
+  const radius  = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : (cfg.highlightRadius ?? 28);
+  const inset   = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))  ? +((cfg.styleByState||{})[dom].inset)  : (cfg.highlightInset  ?? 6);
+  const opacity = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
+  const boxBL = rectTLtoBL(page3, b, inset);
+  const shade = rgb(251/255, 236/255, 250/255);
+  page3.drawRectangle({ x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h, borderRadius: radius, color: shade, opacity });
+  const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
+  if (!perState || cfg.labelText == null || cfg.labelSize == null) return;
+  return { labelX: perState.x, labelY: perState.y };
+}
+
+/* robust resolver for C/T/R/L from label/char */
+function resolveDomKey(...candidates) {
+  const mapLabel = { concealed:"C", triggered:"T", regulated:"R", lead:"L" };
+  const mapChar  = { art:"C", fal:"T", mika:"R", sam:"L" };
+  for (const c0 of candidates.flat()) {
+    const c = String(c0 || "").trim(); if (!c) continue;
+    const u = c.toUpperCase();
+    if (["C","T","R","L"].includes(u)) return u;
+    const l = c.toLowerCase();
+    if (mapLabel[l]) return mapLabel[l];
+    if (mapChar[l])  return mapChar[l];
   }
+  return "";
+}
 
-  // Ultra-legacy: top-level array of {look,work}
-  if (!out.length && Array.isArray(data.workWith)) {
-    data.workWith.forEach((o, idx) => {
-      if (okObj(o) && (o.look || o.work)) {
-        out.push({ title: `Block ${idx+1}`, look: S(o.look), work: S(o.work) });
-      }
-    });
+/* ───────── locked layout (TL, 1-based) ───────── */
+const LOCKED = {
+  meta: { units: "pt", origin: "TL", pages: "1-based" },
+  p1:  { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
+  p3:  {
+    domChar:{ x:272,y:640,w:630,size:23,align:"left", maxLines:6 },
+    domDesc:{ x: 25,y:685,w:550,size:18,align:"left", maxLines:12 },
+    state: {
+      useAbsolute:true, shape:"round", highlightInset:6, highlightRadius:28, fillOpacity:0.45,
+      styleByState:{ C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
+      labelByState:{ C:{x:60,y:245}, T:{x:290,y:244}, R:{x:60,y:605}, L:{x:290,y:605} },
+      labelText:"YOU ARE HERE", labelSize:10, labelColor:{r:0.20,g:0.20,b:0.20}, labelOffsetX:0, labelOffsetY:0, labelPadTop:12, labelPadBottom:12,
+      absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
+    }
+  },
+  p4:  { spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 }, chart:{ x:20,y:225,w:570,h:280 } },
+  p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
+  p6:  { theme:{ x:25,y:330,w:550,size:18,align:"left", maxLines:2 }, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
+  p7:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+  p8:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+  p9:  { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+  p10: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+  p11: {
+    lineGap:6, itemGap:6, bulletIndent:18, split:true,
+    tips1:{x:30,y:175,w:530,h:80,size:18,align:"left",maxLines:4},
+    tips2:{x:30,y:265,w:530,h:80,size:18,align:"left",maxLines:4},
+    acts1:{x:30,y:405,w:530,h:80,size:18,align:"left",maxLines:4},
+    acts2:{x:30,y:495,w:530,h:80,size:18,align:"left",maxLines:4}
+  },
+  footer:(()=>{ const f={x:380,y:51,w:400,size:13,align:"left"}; return {f2:{...f},f3:{...f},f4:{...f},f5:{...f},f6:{...f},f7:{...f},f8:{...f},f9:{...f},f10:{...f},f11:{...f},f12:{...f}} })()
+};
+
+/* ───────── robust /public template loader ───────── */
+async function loadTemplateBytesLocal(filename) {
+  const fname = String(filename || "").trim();
+  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
+
+  const __file = fileURLToPath(import.meta.url);
+  const __dir  = path.dirname(__file);
+
+  const candidates = [
+    path.join(__dir, "..", "..", "public", fname),
+    path.join(__dir, "..", "public", fname),
+    path.join(__dir, "public", fname),
+    path.join(process.cwd(), "public", fname),
+    path.join(__dir, fname),
+  ];
+
+  let lastErr;
+  for (const pth of candidates) {
+    try { return await fs.readFile(pth); }
+    catch (err) { lastErr = err; }
   }
+  throw new Error(`Template not found in any known path for /public: ${fname} (${lastErr?.message||"no detail"})`);
+}
 
+/* ───────── image + QuickChart helpers ───────── */
+async function embedRemoteImage(pdfDoc, url) {
+  try {
+    if (!url || !/^https?:/i.test(url)) return null;
+    if (typeof fetch === "undefined") return null;
+    const res = await fetch(url); if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes[0] === 0x89 && bytes[1] === 0x50) return await pdfDoc.embedPng(bytes);
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) return await pdfDoc.embedJpg(bytes);
+    try { return await pdfDoc.embedPng(bytes); } catch { return await pdfDoc.embedJpg(bytes); }
+  } catch { return null; }
+}
+
+function tuneQuickChartUrl(originalUrl) {
+  try {
+    if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
+    const u = new URL(originalUrl);
+    let cParam = u.searchParams.get("c");
+    if (!cParam) return originalUrl;
+
+    let cfg = null;
+    try { cfg = JSON.parse(cParam); }
+    catch { try { cfg = JSON.parse(decodeURIComponent(cParam)); } catch { return originalUrl; } }
+
+    if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
+
+    const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
+      ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
+      : [];
+
+    cfg.options = cfg.options || {};
+    cfg.options.elements = cfg.options.elements || {};
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
+    if (cfg.data && Array.isArray(cfg.data.datasets)) {
+      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 }));
+    }
+
+    // scale window
+    let min = 0, max = Math.max(4, ...d);
+    const s = d.slice().sort((a,b)=>b-a).join(".");
+    if (s === "2.1.1.1") max = 3;
+    else if (s === "3.2") max = 4;
+    else if (s === "4.1" || s === "5.0" || s === "5") max = 5;
+
+    cfg.options.scales = cfg.options.scales || {};
+    cfg.options.scales.r = { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
+    cfg.options.scale    = { ticks: { min, max, stepSize: 1, beginAtZero: true }, gridLines: { circular: true }, angleLines: { display: true } };
+
+    u.searchParams.set("c", JSON.stringify(cfg));
+    return u.toString();
+  } catch {
+    return originalUrl;
+  }
+}
+
+/* ───────── spiderdesc helpers ───────── */
+function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
+  const out = { C:0, T:0, R:0, L:0 };
+  const s = String(freqStr || "");
+  const re = /([CTRL]):\s*([0-9]+)/gi;
+  let m;
+  while ((m = re.exec(s))) {
+    const k = m[1].toUpperCase();
+    out[k] = Number(m[2]) || 0;
+  }
+  for (const k of ["C","T","R","L"]) if (!out[k] && Number(fb[k])) out[k] = Number(fb[k]);
   return out;
 }
 
-// Extract tips/actions arrays (strings).
-function getTipsActions(data) {
-  const tips = A(data.tips).map(S).filter(Boolean);
-  const actions = A(data.actions).map(S).filter(Boolean);
-  return { tips, actions };
+function canonicalFromCounts(cnt) {
+  const CTRL = ["C","T","R","L"];
+  const orderIdx = k => CTRL.indexOf(k);
+  const arr = CTRL.map(k => ({ k, n: Number(cnt[k]||0) }))
+    .filter(x => x.n > 0)
+    .sort((a,b) => (b.n - a.n) || (orderIdx(a.k) - orderIdx(b.k)));
+  if (!arr.length) return { shape: "", states: [] };
+  const pos = arr.map(x => x.n);
+  let shape = pos.join(".");
+  if (pos[0] === 5) shape = "5.0";
+  else if (pos[0] === 4 && pos[1] === 1) shape = "4.1";
+  else if (pos[0] === 3 && pos[1] === 2) shape = "3.2";
+  else if (pos[0] === 3 && pos[1] === 1 && pos[2] === 1) shape = "3.1.1";
+  else if (pos[0] === 2 && pos[1] === 2 && pos[2] === 1) shape = "2.2.1";
+  else if (pos[0] === 2 && pos[1] === 1 && pos[2] === 1 && pos[3] === 1) shape = "2.1.1.1";
+
+  let states = [];
+  if (shape === "5.0")               states = [arr[0].k];
+  else if (shape === "4.1" || shape === "3.2") states = [arr[0].k, arr[1].k];
+  else if (shape === "3.1.1" || shape === "2.2.1") states = [arr[0].k, arr[1].k, arr[2].k];
+  else if (shape === "2.1.1.1")      states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
+  else                               states = arr.map(x=>x.k);
+
+  return { shape, states };
 }
 
-// ---------- handler ----------
+function scaleMaxForShape(shape) {
+  if (shape === "2.1.1.1") return 3;
+  if (shape === "3.2")     return 4;
+  if (shape === "4.1")     return 5;
+  if (shape === "5.0" || shape === "5") return 5;
+  return 4;
+}
+
+function tuneSpiderDesc(rawDesc, q, P) {
+  let base = q && typeof q.spiderdesc === "string" && q.spiderdesc.trim().length ? q.spiderdesc : (rawDesc || "");
+  if (!base) return "";
+
+  const counts = parseCountsFromFreq(P?.spiderfreq);
+  const { shape, states } = canonicalFromCounts(counts);
+  const orderArrow = states.join(" \u2192 ");
+  const max = scaleMaxForShape(shape);
+  const countsStr = String(P?.spiderfreq || "");
+
+  base = String(base).replace(/\{\{\s*(shape|states|order|counts|max)\s*\}\}/gi, (_, key) => {
+    const k = key.toLowerCase();
+    if (k === "shape")  return shape || "";
+    if (k === "states" || k === "order") return orderArrow || "";
+    if (k === "counts") return countsStr || "";
+    if (k === "max")    return String(max);
+    return "";
+  });
+
+  if (q && typeof q.spiderdesc_prefix === "string") base = String(q.spiderdesc_prefix) + base;
+  if (q && typeof q.spiderdesc_suffix === "string") base = base + String(q.spiderdesc_suffix);
+  if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
+
+  return base;
+}
+
+/* normalize inbound payload to canonical */
+function normaliseInput(d = {}) {
+  const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
+  const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
+  const tips = Array.isArray(d.tips)? d.tips.map(norm) : [];
+  const actions = Array.isArray(d.actions)? d.actions.map(norm) : [];
+
+  const nameCand =
+    (d.person && d.person.fullName) ||
+    d["p1:n"] ||
+    d.fullName ||
+    (d.person && d.person.preferredName) ||
+    d.preferredName ||
+    d.name;
+
+  return {
+    name:      norm(nameCand || "Perspective"),
+    dateLbl:   norm(d.dateLbl || d["p1:d"] || d.d || ""),
+    dom:       String(d.dom || d.domLabel || ""),
+    domChar:   norm(d.domchar || d.domChar || d.character || ""),
+    domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
+    spiderdesc:norm(d.spiderdesc || d.spider || ""),
+    spiderfreq:norm(d.spiderfreq || d["p3:freq"] || ""),
+    seqpat:    norm(d.seqpat || d.pattern || d.seqat || d["p4:seq"] || ""),
+    theme:     norm(d.theme || d["p6:theme"] || ""),
+    themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
+    workwcol:  wcol,
+    workwlead: wldr,
+    tips,
+    actions,
+    chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
+    layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null,
+    maskThemeLabel: d.maskThemeLabel !== false // default true
+  };
+}
+
+function layoutFromPayload(payloadLayout) {
+  const L = JSON.parse(JSON.stringify(LOCKED));
+  if (!payloadLayout) return L;
+  for (const k of Object.keys(payloadLayout)) {
+    if (!L[k]) { L[k] = payloadLayout[k]; continue; }
+    if (typeof payloadLayout[k] === "object" && !Array.isArray(payloadLayout[k])) L[k] = { ...L[k], ...payloadLayout[k] };
+    else L[k] = payloadLayout[k];
+  }
+  return L;
+}
+
+/* ───────────── handler ───────────── */
 export default async function handler(req, res) {
   try {
-    // Inputs
-    const tplFile = S(req.query.tpl, 'CTRL_Perspective_Assessment_Profile_template_slim.pdf').trim();
-    const outName = S(req.query.out, '').trim();
-    const dataParam = req.query.data;
+    const q    = req.method === "POST" ? (req.body || {}) : (req.query || {});
+    const tpl  = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
+    const src  = await readPayload(req);
+    const P    = normaliseInput(src);
+    const L    = layoutFromPayload(src.layoutV6);
 
-    // Decode data (supports raw JSON or base64 JSON)
-    let data = {};
-    if (typeof dataParam === 'string' && dataParam.length) {
-      try {
-        data = JSON.parse(dataParam);
-      } catch {
-        const buf = Buffer.from(dataParam, 'base64');
-        data = JSON.parse(buf.toString('utf8'));
+    // robust local /public loader
+    const pdfBytes = await loadTemplateBytesLocal(String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
+    const pdfDoc   = await PDFDocument.load(pdfBytes);
+    const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    const pages = pdfDoc.getPages();
+    const p = (i) => pages[i];
+
+    // p1
+    if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
+    if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
+
+    // p3 (dominant highlight + label)
+    if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
+    if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
+
+    const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
+    if (domKey && L.p3?.state?.useAbsolute) {
+      const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
+      if (anchor && L.p3.state.labelText) {
+        drawTextBox(p(2), font, String(L.p3.state.labelText),
+          { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" },
+          { maxLines: 1 });
       }
     }
 
-    // Enforce /public
-    const publicDir = path.join(__dirname, '..', 'public');
-    const absTpl = path.join(publicDir, tplFile);
-    // Security: ensure resolved path stays inside /public
-    if (!absTpl.startsWith(publicDir)) {
-      return res.status(400).json({ ok: false, error: 'Invalid template path.' });
-    }
-
-    // Load template
-    let tplBytes;
-    try {
-      tplBytes = await fs.readFile(absTpl);
-    } catch {
-      return res.status(404).json({ ok: false, error: `Template not found in /public: ${tplFile}` });
-    }
-
-    const pdf = await PDFDocument.load(tplBytes);
-    const pages = pdf.getPages();
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
-    const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-    // ------- PAGE 1: Name & Date (kept as-is) -------
-    // Fields used commonly in your flow:
-    // p1:n (name), p1:d (date label) or dateLbl, person.fullName
-    {
-      const p1 = pages[0];
-      const fullName = S(data['p1:n'] || data?.person?.fullName || data.FullName || data.fullName).trim();
-      const dateLbl  = S(data['p1:d'] || data.dateLbl || data.dateLabel || '').trim();
-
-      if (fullName) p1.drawText(fullName, { x: 100, y: 1030, size: 28, font: bold });
-      if (dateLbl)  p1.drawText(dateLbl,   { x: 100, y:  995, size: 16, font });
-    }
-
-    // ------- PAGE 3: Dominant (kept as-is) -------
-    // p3:dom (Triggered), p3:domchar (Fal), p3:domdesc
-    if (pages[2]) {
-      const p3 = pages[2];
-      const dom     = S(data['p3:dom'] || data.dom).trim();
-      const domchar = S(data['p3:domchar'] || data.domchar || data.domChar).trim();
-      const domdesc = S(data['p3:domdesc'] || data.domdesc || data.domDesc).trim();
-
-      if (dom)     p3.drawText(dom,     { x: 100, y: 1030, size: 26, font: bold });
-      if (domchar) p3.drawText(domchar, { x: 100, y:  995, size: 18, font });
-      if (domdesc) drawWrappedText(p3, domdesc, 100, 960, 820, 16, font, rgb(0,0,0), 4, 14);
-    }
-
-    // ------- PAGE 4: Spider freq + chart (FIXED) -------
-    // p4:spiderdesc, p4:spiderfreq, p4:spiderkey
-    if (pages[3]) {
-      const p4 = pages[3];
-      const spiderDesc = S(data['p4:spiderdesc'] || data.spiderdesc || data.spiderDesc);
-      const spiderFreq = S(data['p4:spiderfreq'] || data.spiderfreq || data.spiderFreq);
-      const counts     = getCounts(data);
-
-      if (spiderDesc) drawWrappedText(p4, spiderDesc, 100, 1030, 820, 16, font, rgb(0,0,0), 4, 12);
-      if (spiderFreq) p4.drawText(spiderFreq, { x: 100, y: 830, size: 14, font });
-
-      // Chart (always attempt to draw; ignores incoming chart:false)
-      drawCTRLBars(p4, font, counts, CHART);
-    }
-
-    // ------- PAGE 5: Sequence pattern (kept as-is) -------
-    // p5:seqpat
-    if (pages[4]) {
-      const p5 = pages[4];
-      const seqpat = S(data['p5:seqpat'] || data.seqpat || data.seqPat);
-      if (seqpat) drawWrappedText(p5, seqpat, 100, 1030, 820, 16, font, rgb(0,0,0), 4, 14);
-    }
-
-    // ------- PAGE 6: Theme Pair (NO title printed) -------
-    // p6:theme  + p6:themeExpl
-    if (pages[5]) {
-      const p6 = pages[5];
-      const theme    = S(data['p6:theme'] || data['p6:pair'] || data.theme || data.themeKey);
-      const themeExp = S(data['p6:themeExpl'] || data.themeExpl || data['p6:expl'] || data['p6:pairExpl']);
-
-      // Do NOT draw any label like "Theme pair" — per your request.
-      if (theme) {
-        // Larger, single line
-        p6.drawText(theme, { x: P6.themeX, y: P6.themeY, size: P6.themeSize, font: bold });
-      }
-      if (themeExp) {
-        drawWrappedText(p6, themeExp, P6.explX, P6.explY, P6.explW, P6.explSize, font, rgb(0,0,0), 4, P6.explMax);
+    // p4 (spider explanation + transparent chart)
+    if (L.p4?.spider) {
+      const rawSpiderDesc = (src && src["p4:spiderdesc"]) ?? (P && P.spiderdesc) ?? "";
+      const tuned = tuneSpiderDesc(rawSpiderDesc, q, P).trim();
+      if (tuned) {
+        const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
+        drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
       }
     }
 
-    // ------- PAGE 7: Tips & Actions (robust) -------
-    // tips:[], actions:[]
-    if (pages[6]) {
-      const p7 = pages[6];
-      const { tips, actions } = getTipsActions(data);
-
-      if (tips.length) {
-        p7.drawText('Tips', { x: P7.tips.x, y: P7.tips.y + 32, size: 18, font: bold });
-        drawBullets(p7, tips, P7.tips.x, P7.tips.y, P7.tips.w, P7.tips.size, font, P7.bullet);
-      }
-      if (actions.length) {
-        p7.drawText('Actions', { x: P7.acts.x, y: P7.acts.y + 32, size: 18, font: bold });
-        drawBullets(p7, actions, P7.acts.x, P7.acts.y, P7.acts.w, P7.acts.size, font, P7.bullet);
-      }
-    }
-
-    // ------- PAGE 8+: Work With Me (robust) -------
-    // Renders up to 4 blocks of {title, look, work}, 2 per page if present.
-    const workWith = getWorkWith(data);
-    if (workWith.length) {
-      // Start on page 8 if available
-      let idx = 0;
-      let pageIdx = 7; // 0-based (page 8 visually)
-      while (idx < workWith.length && pages[pageIdx]) {
-        const pg = pages[pageIdx];
-        const leftY  = 1030;
-        const rightY = 600;
-
-        for (let col = 0; col < 2 && idx < workWith.length; col++, idx++) {
-          const blk = workWith[idx];
-          const baseX = col === 0 ? 90 : 480;
-          let y = col === 0 ? leftY : rightY;
-
-          // Title (e.g., "Triggered")
-          if (blk.title) pg.drawText(blk.title, { x: baseX, y, size: 18, font: bold });
-          y -= 26;
-
-          if (blk.look) {
-            pg.drawText('What to look for', { x: baseX, y, size: 14, font: bold });
-            y -= 20;
-            y = drawWrappedText(pg, blk.look, baseX, y, 320, 14, font, rgb(0,0,0), 3, 8);
-            y -= 10;
-          }
-          if (blk.work) {
-            pg.drawText('How to work with me', { x: baseX, y, size: 14, font: bold });
-            y -= 20;
-            y = drawWrappedText(pg, blk.work, baseX, y, 320, 14, font, rgb(0,0,0), 3, 10);
-            y -= 6;
-          }
+    if (L.p4?.chart && (P?.chartUrl || q.chart)) {
+      let chartUrl = String(P?.chartUrl || q.chart || "");
+      chartUrl = tuneQuickChartUrl(chartUrl);
+      if (chartUrl) {
+        const img = await embedRemoteImage(pdfDoc, chartUrl);
+        if (img) {
+          const H = p(3).getHeight();
+          const { x, y, w, h } = L.p4.chart;
+          p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
         }
-        pageIdx++;
       }
     }
 
-    // ------- Output -------
-    const bytes = await pdf.save();
-    const filename = outName || 'CTRL_Perspective_Profile.pdf';
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    res.status(200).send(Buffer.from(bytes));
+    // p5
+    if (L.p5?.seqpat && P.seqpat) {
+      const maxLines = (L.p5.seqpat.maxLines ?? L.p5.seqpatMaxLines ?? 12);
+      drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
+    }
+
+    // p6 — THEME (label + paragraph) + optional mask to hide printed "Theme pair" label
+    if (P.maskThemeLabel !== false) {
+      try {
+        const white = rgb(1,1,1);
+        const w = p(5).getWidth() - 90, h = 18;
+        const xTL = 55, yTL = 500;
+        const yBL = p(5).getHeight() - yTL - h;
+        p(5).drawRectangle({ x: xTL, y: yBL, width: w, height: h, color: white, opacity: 1 });
+      } catch { /* optional */ }
+    }
+    if (L.p6?.theme && P.theme) {
+      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
+      drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
+    }
+    if (L.p6?.themeExpl && P.themeExpl) {
+      const maxLines = (L.p6.themeExpl.maxLines ?? L.p6.themeExplMaxLines ?? 12);
+      drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
+    }
+
+    // p7–p10 WorkWith
+    const mapIdx = { C:0, T:1, R:2, L:3 };
+    if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p7.colBoxes[i], item = P.workwcol[i] || {};
+        const txt = norm(item?.look || ""); if (!txt) continue;
+        drawTextBox(p(6), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
+      }
+    }
+    if (L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p8.colBoxes[i], item = P.workwcol[i] || {};
+        const txt = norm(item?.work || ""); if (!txt) continue;
+        drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
+      }
+    }
+    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p9.ldrBoxes[i], item = P.workwlead[i] || {};
+        const txt = norm(item?.look || ""); if (!txt) continue;
+        drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+      }
+    }
+    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+      for (const k of ["C","T","R","L"]) {
+        const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
+        const txt = norm(item?.work || ""); if (!txt) continue;
+        drawTextBox(p(9), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
+      }
+    }
+
+    // p11 Tips & Actions (hanging-indent bullets)
+    if (L.p11?.split) {
+      const clean = s =>
+        norm(String(s || ""))
+          .replace(/^(?:[-–—•·]\s*)?(?:tip\s*:?\s*)/i, "")
+          .trim();
+
+      const pairs = [
+        { txt: clean(P.tips?.[0]),    box: L.p11.tips1 },
+        { txt: clean(P.tips?.[1]),    box: L.p11.tips2 },
+        { txt: clean(P.actions?.[0]), box: L.p11.acts1 },
+        { txt: clean(P.actions?.[1]), box: L.p11.acts2 }
+      ];
+
+      for (const { txt, box } of pairs) {
+        if (!txt) continue;
+        const indent = N(L.p11.bulletIndent, 18);
+        const size   = box.size || 18;
+        const maxL   = box.maxLines || 4;
+
+        const dashX = box.x + Math.max(2, indent - 10);
+        drawTextBox(p(10), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+
+        drawTextBox(
+          p(10), font, txt,
+          { x: box.x + indent, y: box.y, w: box.w - indent, size, align: box.align || "left" },
+          { maxLines: maxL }
+        );
+      }
+    }
+
+    // footers
+    const footerLabel = norm(P.name);
+    const putFooter = (pageIdx, key) => { const spec = L.footer?.[key]; if (!spec) return; drawTextBox(p(pageIdx), font, footerLabel, spec, { maxLines: 1 }); };
+    putFooter(1,"f2"); putFooter(2,"f3"); putFooter(3,"f4"); putFooter(4,"f5"); putFooter(5,"f6");
+    putFooter(6,"f7"); putFooter(7,"f8"); putFooter(8,"f9"); putFooter(9,"f10"); putFooter(10,"f11"); putFooter(11,"f12");
+
+    const bytes = await pdfDoc.save();
+    const nameOut = S(q.out || `CTRL_${P.name || "Perspective"}_${P.dateLbl || ""}.pdf`).replace(/[^\w.-]+/g, "_");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
+    res.end(Buffer.from(bytes));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      ok: false,
-      error: 'FUNCTION_INVOCATION_FAILED',
-      detail: String(err && err.message || err)
-    });
+    res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
   }
 }
