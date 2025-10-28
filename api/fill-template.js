@@ -216,7 +216,11 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* === Radar scale rules === */
+/* === Radar scale rules ===
+   - min = one below the lowest NON-ZERO (floor at 0)
+   - max = one above highest (cap at 5)
+   - special-case: if max=5 and it's the ONLY non-zero (5,0,0,0), force [0,5] & emphasize line
+*/
 function radarScaleFromCounts(counts) {
   const vals = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const maxVal = Math.max(...vals);
@@ -324,11 +328,11 @@ function canonicalFromCounts(cnt) {
   else if (pos[0] === 2 && pos[1] === 1 && pos[2] === 1 && pos[3] === 1) shape = "2.1.1.1";
 
   let states = [];
-  if (shape === "5.0")               states = [arr[0].k];
-  else if (shape === "4.1" || shape === "3.2") states = [arr[0].k, arr[1].k];
-  else if (shape === "3.1.1" || shape === "2.2.1") states = [arr[0].k, arr[1].k, arr[2].k];
-  else if (shape === "2.1.1.1")      states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
-  else                               states = arr.map(x=>x.k);
+  if (shape === "5.0")                           states = [arr[0].k];
+  else if (shape === "4.1" || shape === "3.2")   states = [arr[0].k, arr[1].k];
+  else if (shape === "3.1.1" || "2.2.1")         states = [arr[0].k, arr[1].k, arr[2].k];
+  else if (shape === "2.1.1.1")                  states = [arr[0].k, arr[1].k, arr[2].k, arr[3].k];
+  else                                           states = arr.map(x=>x.k);
 
   return { shape, states };
 }
@@ -361,11 +365,9 @@ function tuneSpiderDesc(rawDesc, q, P) {
 
 /* ───────── Tips & Actions helpers ───────── */
 function splitToList(v) {
-  // Accept array directly; or split string on common separators
   if (Array.isArray(v)) return v.map(s => String(s ?? "")).filter(Boolean);
   const s = String(v || "");
   if (!s) return [];
-  // Split on newlines OR "||" OR semicolons. Keep order.
   return s
     .split(/\n+|\s*\|\|\s*|;\s*/g)
     .map(x => x.trim())
@@ -373,9 +375,9 @@ function splitToList(v) {
 }
 function cleanBullet(s) {
   return norm(String(s || ""))
-    .replace(/^(?:[-–—•·]\s*)/i, "")     // strip leading bullet glyph
-    .replace(/^tip\s*:?\s*/i, "")        // strip "Tip:" prefix
-    .replace(/^action\s*:?\s*/i, "")     // strip "Action:" prefix
+    .replace(/^(?:[-–—•·]\s*)/i, "")     // strip bullet glyph
+    .replace(/^tip\s*:?\s*/i, "")        // strip "Tip:"
+    .replace(/^action\s*:?\s*/i, "")     // strip "Action:"
     .trim();
 }
 
@@ -384,7 +386,6 @@ function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
 
-  // Tips / actions can arrive as arrays OR as a single string with separators
   const tipsIn    = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
   const actsIn    = d.actions ?? d.actionsText ?? (d.clientTipsActions && d.clientTipsActions.actions);
   const tipsList  = splitToList(tipsIn).map(cleanBullet).filter(Boolean);
@@ -411,8 +412,8 @@ function normaliseInput(d = {}) {
     themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
     workwcol:  wcol,
     workwlead: wldr,
-    tips:      tipsList,                      // ← canonical tips array
-    actions:   actsList,                      // ← canonical actions array
+    tips:      tipsList,
+    actions:   actsList,
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
     counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
     chartTheme:(d.chartTheme && typeof d.chartTheme === "object") ? d.chartTheme : null,
@@ -527,7 +528,7 @@ export default async function handler(req, res) {
       drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
     }
 
-    // p7–p10 WorkWith
+    // p7–p8 — WorkWith collaborators (look/work)
     const mapIdx = { C:0, T:1, R:2, L:3 };
     if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
@@ -543,7 +544,19 @@ export default async function handler(req, res) {
         drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
       }
     }
-        if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+
+    // p9 — Leaders (LOOK) with fallback to WORK if look is absent
+    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+      for (const k of ["C","T","R","L"]) {
+        const i  = mapIdx[k], bx = L.p9.ldrBoxes[i], it = P.workwlead[i] || {};
+        const txt = norm(it?.look || it?.work || ""); // ← fallback ensures not blank
+        if (!txt) continue;
+        drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+      }
+    }
+
+    // p10 — Leaders (WORK)
+    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
         const txt = norm(item?.work || ""); if (!txt) continue;
@@ -551,35 +564,29 @@ export default async function handler(req, res) {
       }
     }
 
-    // p11 Tips & Actions — pack non-empty items into the two slots
+    // p11 — Tips & Actions: draw up to two each, skip headings/empties
     if (L.p11?.split) {
-      // 1) normalise & clean
-      const tidy = s =>
+      const tidy = (s) =>
         norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)/i, "")                 // strip bullet glyphs
-          .replace(/^\s*(tip|tips)\s*:?\s*/i, "")          // strip leading "tip:" / "tips:"
-          .replace(/^\s*(action|next action|actions)\s*:?\s*/i, "")
+          .replace(/^(?:[-–—•·]\s*)/i, "")
+          .replace(/^\s*(tips?|tip)\s*:?\s*/i, "")
+          .replace(/^\s*(actions?|next\s*action)\s*:?\s*/i, "")
           .trim();
 
-      const tipsRaw    = Array.isArray(P.tips)    ? P.tips    : [];
-      const actionsRaw = Array.isArray(P.actions) ? P.actions : [];
+      const good = (s) => s && s.length >= 3 && !/^tips?$|^actions?$/i.test(s);
 
-      // 2) keep order, drop empties *after* cleaning
-      const tipsPacked    = tipsRaw.map(tidy).filter(Boolean).slice(0, 2);
-      const actionsPacked = actionsRaw.map(tidy).filter(Boolean).slice(0, 2);
+      const tipsPacked    = (Array.isArray(P.tips)    ? P.tips    : []).map(tidy).filter(good).slice(0,2);
+      const actionsPacked = (Array.isArray(P.actions) ? P.actions : []).map(tidy).filter(good).slice(0,2);
 
-      // 3) helper to draw a single bullet line into a target box
       const drawBullet = (pageIdx, box, text) => {
-        if (!box || !text) return;
+        if (!box || !good(text)) return;
         const indent = N(L.p11.bulletIndent, 18);
         const size   = box.size || 18;
         const maxL   = box.maxLines || 4;
 
-        // small dash “bullet”
         const dashX = box.x + Math.max(2, indent - 10);
         drawTextBox(p(pageIdx), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-        // the text, indented
         drawTextBox(
           p(pageIdx), font, text,
           { x: box.x + indent, y: box.y, w: Math.max(0, box.w - indent), size, align: box.align || "left" },
@@ -587,11 +594,11 @@ export default async function handler(req, res) {
         );
       };
 
-      // 4) place Tips (first non-empty → tips1, second → tips2)
+      // Tips → top half
       drawBullet(10, L.p11.tips1, tipsPacked[0] || "");
       drawBullet(10, L.p11.tips2, tipsPacked[1] || "");
 
-      // 5) place Actions (first non-empty → acts1, second → acts2)
+      // Actions → bottom half
       drawBullet(10, L.p11.acts1, actionsPacked[0] || "");
       drawBullet(10, L.p11.acts2, actionsPacked[1] || "");
     }
@@ -608,8 +615,6 @@ export default async function handler(req, res) {
     res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
     res.end(Buffer.from(bytes));
   } catch (err) {
-    // Optional: also log to help with Vercel debugging
-    console.error("fill-template error:", err);
     res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
   }
 }
