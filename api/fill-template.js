@@ -273,7 +273,7 @@ function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
           ticks: { ...rScale.ticks, color: C.labels },
           grid:  { ...rScale.grid, color: C.grid, lineWidth: 2, circular: true },
           angleLines: { display: true, color: C.grid, lineWidth: 2 },
-          pointLabels: { font: { size: 16, weight: "700" }, color: C.labels }
+          pointLabels: { font: { size: 18, weight: "700" }, color: C.labels }
         }
       },
       elements: { line: { tension: 0.60, borderWidth: isFiveOnly ? 5 : 4 } }
