@@ -160,7 +160,7 @@ const LOCKED = {
     }
   },
   p4:  { 
-    spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 },
+    spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:15 },
     chart:{  x:35, y:235, w:540, h:260 }   // final requested size
   },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
