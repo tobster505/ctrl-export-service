@@ -114,8 +114,10 @@ function paintStateHighlight(page3, dom, cfg = {}) {
   const shade = rgb(251/255, 236/255, 250/255);
   page3.drawRectangle({ x: boxBL.x, y: boxBL.y, width: boxBL.w, height: boxBL.h, borderRadius: radius, color: shade, opacity });
   const perState = (cfg.labelByState && cfg.labelByState[dom]) || null;
-  if (!perState || cfg.labelText == null || cfg.labelSize == null) return;
-  return { labelX: perState.x, labelY: perState.y };
+  if (perState && cfg.labelText && cfg.labelSize) {
+    return { labelX: perState.x, labelY: perState.y };
+  }
+  return null;
 }
 
 /* robust resolver for C/T/R/L from label/char */
@@ -148,7 +150,11 @@ const LOCKED = {
       absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
     }
   },
-  p4:  { spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 }, chart:{ x:20,y:225,w:570,h:280 } },
+  p4:  { 
+    spider:{ x:30,y:585,w:550,size:18,align:"left", maxLines:10 },
+    // ↓ Your requested smaller chart box (kept centered)
+    chart:{  x:35, y:235, w:540, h:260 } 
+  },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
   p6:  { theme:{ x:25,y:330,w:550,size:18,align:"left", maxLines:2 }, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
   p7:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
@@ -202,6 +208,53 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
+/* Build a QuickChart radar URL from counts (styled: bold lines + bigger, bold labels) */
+function buildSpiderQuickChartUrlFromCounts(counts) {
+  const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
+  const max = Math.max(4, ...data, 5); // allow up to 5
+
+  const cfg = {
+    type: "radar",
+    data: {
+      labels: ["Concealed","Triggered","Regulated","Lead"],
+      datasets: [{
+        label: "CTRL",
+        data,
+        fill: true,
+        borderWidth: 4,          // bolder radar line
+        pointRadius: 4,          // bigger points
+        pointBorderWidth: 2,
+        pointHoverRadius: 5
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          min: 0,
+          max,
+          ticks: { stepSize: 1 },
+          grid:       { circular: true, lineWidth: 2 },  // bolder rings
+          angleLines: { display: true, lineWidth: 2 },   // bolder spokes
+          pointLabels: {                                   // axis labels
+            font: { size: 16, weight: "700", style: "normal" }
+          }
+        }
+      },
+      elements: { line: { tension: 0.35, borderWidth: 4 } }
+    }
+  };
+
+  const u = new URL("https://quickchart.io/chart");
+  u.searchParams.set("c", JSON.stringify(cfg));
+  u.searchParams.set("backgroundColor", "transparent");
+  u.searchParams.set("width", "700");
+  u.searchParams.set("height", "700");
+  return u.toString();
+}
+
+/* Ensure any incoming radar URL is tuned for bold lines + labels */
 function tuneQuickChartUrl(originalUrl) {
   try {
     if (!originalUrl || !/^https?:/i.test(originalUrl)) return originalUrl;
@@ -215,27 +268,25 @@ function tuneQuickChartUrl(originalUrl) {
 
     if (!cfg || String(cfg.type).toLowerCase() !== "radar") return originalUrl;
 
-    const d = Array.isArray(cfg?.data?.datasets?.[0]?.data)
-      ? cfg.data.datasets[0].data.map(n => Number(n) || 0)
-      : [];
-
     cfg.options = cfg.options || {};
     cfg.options.elements = cfg.options.elements || {};
-    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35 };
-    if (cfg.data && Array.isArray(cfg.data.datasets)) {
-      cfg.data.datasets = cfg.data.datasets.map(ds => ({ ...ds, tension: 0.35, lineTension: 0.35 }));
-    }
-
-    // scale window
-    let min = 0, max = Math.max(4, ...d);
-    const s = d.slice().sort((a,b)=>b-a).join(".");
-    if (s === "2.1.1.1") max = 3;
-    else if (s === "3.2") max = 4;
-    else if (s === "4.1" || s === "5.0" || s === "5") max = 5;
-
     cfg.options.scales = cfg.options.scales || {};
-    cfg.options.scales.r = { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
-    cfg.options.scale    = { ticks: { min, max, stepSize: 1, beginAtZero: true }, gridLines: { circular: true }, angleLines: { display: true } };
+    cfg.options.scales.r = cfg.options.scales.r || {};
+
+    cfg.options.elements.line = { ...(cfg.options.elements.line || {}), tension: 0.35, borderWidth: 4 };
+    cfg.options.scales.r.grid = { ...(cfg.options.scales.r.grid || {}), circular: true, lineWidth: 2 };
+    cfg.options.scales.r.angleLines = { ...(cfg.options.scales.r.angleLines || {}), display: true, lineWidth: 2 };
+    cfg.options.scales.r.pointLabels = {
+      ...(cfg.options.scales.r.pointLabels || {}),
+      font: { ...(cfg.options.scales.r.pointLabels?.font || {}), size: 16, weight: "700", style: "normal" }
+    };
+
+    const ds = (cfg.data && Array.isArray(cfg.data.datasets) && cfg.data.datasets[0]) ? cfg.data.datasets[0] : null;
+    const vals = Array.isArray(ds?.data) ? ds.data.map(n => Number(n) || 0) : [];
+    const max = Math.max(4, ...vals, 5);
+    cfg.options.scales.r.min = cfg.options.scales.r.min ?? 0;
+    cfg.options.scales.r.max = cfg.options.scales.r.max ?? max;
+    cfg.options.scales.r.ticks = { ...(cfg.options.scales.r.ticks || {}), stepSize: 1 };
 
     u.searchParams.set("c", JSON.stringify(cfg));
     return u.toString();
@@ -316,44 +367,6 @@ function tuneSpiderDesc(rawDesc, q, P) {
   if (q && typeof q.spiderdesc_append === "string") base = base + String(q.spiderdesc_append);
 
   return base;
-}
-
-/* NEW: build a QuickChart radar URL from counts (auto-fallback for p4 chart) */
-function buildSpiderQuickChartUrlFromCounts(counts) {
-  const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
-  const max = Math.max(3, ...data, 4); // at least 4, up to 5 if needed
-  const cfg = {
-    type: "radar",
-    data: {
-      labels: ["Concealed","Triggered","Regulated","Lead"],
-      datasets: [{
-        label: "CTRL",
-        data,
-        fill: true,
-        borderWidth: 2,
-        pointRadius: 3
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
-      scales: {
-        r: {
-          min: 0,
-          max,
-          ticks: { stepSize: 1 },
-          grid: { circular: true }
-        }
-      },
-      elements: { line: { tension: 0.35 } }
-    }
-  };
-  const u = new URL("https://quickchart.io/chart");
-  u.searchParams.set("c", JSON.stringify(cfg));
-  u.searchParams.set("backgroundColor", "transparent");
-  u.searchParams.set("width", "700");
-  u.searchParams.set("height", "700");
-  return u.toString();
 }
 
 /* normalize inbound payload to canonical */
@@ -449,7 +462,7 @@ export default async function handler(req, res) {
     }
 
     if (L.p4?.chart) {
-      // prefer explicit URL; else auto-build from counts
+      // prefer explicit URL; else auto-build from counts parsed from spiderfreq
       let chartUrl = String(P?.chartUrl || q.chart || "");
       if (!chartUrl) {
         const counts = parseCountsFromFreq(P.spiderfreq || "");
@@ -492,7 +505,7 @@ export default async function handler(req, res) {
       drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
     }
 
-    // p7–p10 WorkWith (unchanged)
+    // p7–p10 WorkWith (unchanged from your working version)
     const mapIdx = { C:0, T:1, R:2, L:3 };
     if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
