@@ -386,10 +386,11 @@ function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
 
+  // Tips / actions → accept arrays or a single string; clean and keep order; limit to two
   const tipsIn    = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
   const actsIn    = d.actions ?? d.actionsText ?? (d.clientTipsActions && d.clientTipsActions.actions);
-  const tipsList  = splitToList(tipsIn).map(cleanBullet).filter(Boolean);
-  const actsList  = splitToList(actsIn).map(cleanBullet).filter(Boolean);
+  const tipsList  = splitToList(tipsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
+  const actsList  = splitToList(actsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
 
   const nameCand =
     (d.person && d.person.fullName) ||
@@ -412,8 +413,8 @@ function normaliseInput(d = {}) {
     themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
     workwcol:  wcol,
     workwlead: wldr,
-    tips:      tipsList,
-    actions:   actsList,
+    tips:      tipsList,      // ← canonical tips array (max 2)
+    actions:   actsList,      // ← canonical actions array (max 2)
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
     counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
     chartTheme:(d.chartTheme && typeof d.chartTheme === "object") ? d.chartTheme : null,
@@ -549,7 +550,7 @@ export default async function handler(req, res) {
     if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
       for (const k of ["C","T","R","L"]) {
         const i  = mapIdx[k], bx = L.p9.ldrBoxes[i], it = P.workwlead[i] || {};
-        const txt = norm(it?.look || it?.work || ""); // ← fallback ensures not blank
+        const txt = norm(it?.look || it?.work || ""); // fallback ensures not blank
         if (!txt) continue;
         drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
       }
