@@ -161,7 +161,7 @@ const LOCKED = {
   },
   p4:  { 
     spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:15 },
-    chart:{  x:35, y:235, w:540, h:260 }   // final requested size
+    chart:{  x:35, y:235, w:540, h:260 }
   },
   p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
   p6:  { theme: null, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
@@ -216,11 +216,7 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* === Radar scale rules ===
-   - min = one below the lowest NON-ZERO (floor at 0)
-   - max = one above highest (cap at 5)
-   - special-case: if max=5 and it's the ONLY non-zero (5,0,0,0), force [0,5] & emphasize line
-*/
+/* === Radar scale rules === */
 function radarScaleFromCounts(counts) {
   const vals = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const maxVal = Math.max(...vals);
@@ -270,7 +266,7 @@ function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
         r: {
           min: rScale.min,
           max: rScale.max,
-          ticks: { ...rScale.ticks, color: C.labels, font: { size: 12 } },
+          ticks: { ...rScale.ticks, color: C.labels, font: { size: 12} },
           grid:  { ...rScale.grid, color: C.grid, lineWidth: 2, circular: true },
           angleLines: { display: true, color: C.grid, lineWidth: 2 },
           pointLabels: { font: { size: 18, weight: "700" }, color: C.labels }
@@ -381,16 +377,23 @@ function cleanBullet(s) {
     .trim();
 }
 
-/* normalize inbound payload to canonical */
+/* ========= CHANGED: normalize inbound payload (pattern-only edits) ========= */
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
 
   // Tips / actions → accept arrays or a single string; clean and keep order; limit to two
-  const tipsIn    = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
-  const actsIn    = d.actions ?? d.actionsText ?? (d.clientTipsActions && d.clientTipsActions.actions);
-  const tipsList  = splitToList(tipsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
-  const actsList  = splitToList(actsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
+  const tipsIn   = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
+
+  // CHANGED (actions): also accept patternAction and pattern.action (kept after explicit actions)
+  const actsIn   = d.actions
+                ?? d.actionsText
+                ?? d.patternAction
+                ?? (d.pattern && d.pattern.action)
+                ?? (d.clientTipsActions && d.clientTipsActions.actions);
+
+  const tipsList = splitToList(tipsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
+  const actsList = splitToList(actsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
 
   const nameCand =
     (d.person && d.person.fullName) ||
@@ -408,7 +411,18 @@ function normaliseInput(d = {}) {
     domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
     spiderdesc:norm(d.spiderdesc || d.spider || ""),
     spiderfreq:norm(d.spiderfreq || d["p3:freq"] || ""),
-    seqpat:    norm(d.seqpat || d.pattern || d.seqat || d["p4:seq"] || ""),
+
+    // CHANGED (pattern description): prefer pattern.txt/desc first; keep legacy fallbacks
+    seqpat:    norm(
+                  d.seqpat
+               ?? (d.pattern && (d.pattern.txt || d.pattern.desc))
+               ?? d.pattern
+               ?? d.seqat
+               ?? d["p5:patternExpl"]
+               ?? d["p4:seq"]
+               ?? ""
+               ),
+
     theme:     norm(d.theme || d["p6:theme"] || ""),
     themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
     workwcol:  wcol,
@@ -422,6 +436,7 @@ function normaliseInput(d = {}) {
     maskThemeLabel: d.maskThemeLabel !== false // default true
   };
 }
+/* ========= /CHANGED ========= */
 
 function layoutFromPayload(payloadLayout) {
   const L = JSON.parse(JSON.stringify(LOCKED));
