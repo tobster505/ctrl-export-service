@@ -1,6 +1,6 @@
 /**
- * CTRL Export Service · fill-template (Perspective flow, USER-ONLY)
- * Place at: /pages/api/fill-template.js
+ * CTRL Coach Export Service · fill-template (Coach flow)
+ * Place at: /pages/api/fill-template.js  (ctrl-coach-pdf-service)
  * TL-origin coordinates (pt), pages are 1-based.
  */
 export const config = { runtime: "nodejs" };
@@ -60,6 +60,7 @@ async function readPayload(req) {
 
 /* TL → draw helper (does internal TL->BL conv for baseline) */
 function drawTextBox(page, font, text, spec = {}, opts = {}) {
+  if (!page) return;
   const { x=40, y=40, w=540, size=12, lineGap=3, color=rgb(0,0,0), align="left" } = spec;
   const maxLines = (opts.maxLines ?? spec.maxLines ?? 6);
   const hard = norm(text || "");
@@ -105,8 +106,9 @@ const rectTLtoBL = (page, box, inset = 0) => {
 };
 
 function paintStateHighlight(page3, dom, cfg = {}) {
+  if (!page3) return null;
   const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
-  if (!b) return;
+  if (!b) return null;
   const radius  = Number.isFinite(+((cfg.styleByState||{})[dom]?.radius)) ? +((cfg.styleByState||{})[dom].radius) : (cfg.highlightRadius ?? 28);
   const inset   = Number.isFinite(+((cfg.styleByState||{})[dom]?.inset))  ? +((cfg.styleByState||{})[dom].inset)  : (cfg.highlightInset  ?? 6);
   const opacity = Number.isFinite(+cfg.fillOpacity) ? +cfg.fillOpacity : 0.45;
@@ -137,73 +139,14 @@ function resolveDomKey(...candidates) {
 
 /* ─────────── Radar colour theme (overrideable via payload.chartTheme) ─────────── */
 const RADAR_THEME = {
-  stroke: "#4B2E83",                 // polygon outline + points
-  fill:   "rgba(75,46,131,0.22)",    // polygon fill
-  point:  "#4B2E83",                 // point fill
-  grid:   "rgba(0,0,0,0.14)",        // rings & spokes
-  labels: "#555555"                  // axis labels & ticks
+  stroke: "#4B2E83",
+  fill:   "rgba(75,46,131,0.22)",
+  point:  "#4B2E83",
+  grid:   "rgba(0,0,0,0.14)",
+  labels: "#555555"
 };
 
-/* ───────── locked layout (TL, 1-based) ───────── */
-const LOCKED = {
-  meta: { units: "pt", origin: "TL", pages: "1-based" },
-  p1:  { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
-  p3:  {
-    domChar:{ x:272,y:640,w:630,size:23,align:"left", maxLines:6 },
-    domDesc:{ x: 25,y:685,w:550,size:18,align:"left", maxLines:12 },
-    state: {
-      useAbsolute:true, shape:"round", highlightInset:6, highlightRadius:28, fillOpacity:0.45,
-      styleByState:{ C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
-      labelByState:{ C:{x:60,y:245}, T:{x:290,y:244}, R:{x:60,y:605}, L:{x:290,y:605} },
-      labelText:"YOU ARE HERE", labelSize:10, labelColor:{r:0.20,g:0.20,b:0.20}, labelOffsetX:0, labelOffsetY:0, labelPadTop:12, labelPadBottom:12,
-      absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
-    }
-  },
-  p4:  { 
-    spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:15 },
-    chart:{  x:35, y:235, w:540, h:260 }
-  },
-  p5:  { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
-  p6:  { theme: null, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
-  p7:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p8:  { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p9:  { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p10: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
-  p11: {
-    lineGap:6, itemGap:6, bulletIndent:18, split:true,
-    tips1:{x:30,y:175,w:530,h:80,size:18,align:"left",maxLines:4},
-    tips2:{x:30,y:265,w:530,h:80,size:18,align:"left",maxLines:4},
-    acts1:{x:30,y:405,w:530,h:80,size:18,align:"left",maxLines:4},
-    acts2:{x:30,y:495,w:530,h:80,size:18,align:"left",maxLines:4}
-  },
-  footer:(()=>{ const f={x:380,y:51,w:400,size:13,align:"left"}; return {f2:{...f},f3:{...f},f4:{...f},f5:{...f},f6:{...f},f7:{...f},f8:{...f},f9:{...f},f10:{...f},f11:{...f},f12:{...f}} })()
-};
-
-/* ───────── robust /public template loader ───────── */
-async function loadTemplateBytesLocal(filename) {
-  const fname = String(filename || "").trim();
-  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
-
-  const __file = fileURLToPath(import.meta.url);
-  const __dir  = path.dirname(__file);
-
-  const candidates = [
-    path.join(__dir, "..", "..", "public", fname),
-    path.join(__dir, "..", "public", fname),
-    path.join(__dir, "public", fname),
-    path.join(process.cwd(), "public", fname),
-    path.join(__dir, fname),
-  ];
-
-  let lastErr;
-  for (const pth of candidates) {
-    try { return await fs.readFile(pth); }
-    catch (err) { lastErr = err; }
-  }
-  throw new Error(`Template not found in any known path for /public: ${fname} (${lastErr?.message||"no detail"})`);
-}
-
-/* ───────── image + QuickChart helpers ───────── */
+/* ───────── helpers for images ───────── */
 async function embedRemoteImage(pdfDoc, url) {
   try {
     if (!url || !/^https?:/i.test(url)) return null;
@@ -216,7 +159,7 @@ async function embedRemoteImage(pdfDoc, url) {
   } catch { return null; }
 }
 
-/* === Radar scale rules === */
+/* === Radar scale / counts === */
 function radarScaleFromCounts(counts) {
   const vals = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const maxVal = Math.max(...vals);
@@ -233,12 +176,10 @@ function radarScaleFromCounts(counts) {
   return { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
 }
 
-/* Build a QuickChart radar URL from counts with dynamic scale + brand colours */
 function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
   const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
   const rScale = radarScaleFromCounts(counts);
   const isFiveOnly = !!rScale._fiveOnly;
-
   const C = { ...RADAR_THEME, ...(themeOverride || {}) };
 
   const cfg = {
@@ -281,11 +222,11 @@ function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
   u.searchParams.set("backgroundColor", "transparent");
   u.searchParams.set("width", "700");
   u.searchParams.set("height", "700");
-  u.searchParams.set("v", Date.now().toString(36)); // cache-bust
+  u.searchParams.set("v", Date.now().toString(36));
   return u.toString();
 }
 
-/* ───────── spiderdesc + counts helpers ───────── */
+/* ───────── parse helpers (same as your current file) ───────── */
 function parseCountsFromFreq(freqStr = "", fb = {C:0,T:0,R:0,L:0}) {
   const out = { C:0, T:0, R:0, L:0 };
   const s = String(freqStr || "");
@@ -359,49 +300,35 @@ function tuneSpiderDesc(rawDesc, q, P) {
   return base;
 }
 
-/* ───────── Tips & Actions helpers ───────── */
+/* Normalise inbound coach payload (accepts your PoC keys) */
 function splitToList(v) {
   if (Array.isArray(v)) return v.map(s => String(s ?? "")).filter(Boolean);
   const s = String(v || "");
   if (!s) return [];
-  return s
-    .split(/\n+|\s*\|\|\s*|;\s*/g)
-    .map(x => x.trim())
-    .filter(Boolean);
+  return s.split(/\n+|\s*\|\|\s*|;\s*/g).map(x => x.trim()).filter(Boolean);
 }
 function cleanBullet(s) {
   return norm(String(s || ""))
-    .replace(/^(?:[-–—•·]\s*)/i, "")     // strip bullet glyph
-    .replace(/^tip\s*:?\s*/i, "")        // strip "Tip:"
-    .replace(/^action\s*:?\s*/i, "")     // strip "Action:"
+    .replace(/^(?:[-–—•·]\s*)/i, "")
+    .replace(/^tip\s*:?\s*/i, "")
+    .replace(/^action\s*:?\s*/i, "")
     .trim();
 }
-
-/* ========= CHANGED: normalize inbound payload (pattern-only edits) ========= */
 function normaliseInput(d = {}) {
   const wcol = Array.isArray(d.workwcol) ? d.workwcol.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
   const wldr = Array.isArray(d.workwlead)? d.workwlead.map(x => ({ look: norm(x?.look||""), work: norm(x?.work||"") })) : [];
 
-  // Tips / actions → accept arrays or a single string; clean and keep order; limit to two
-  const tipsIn   = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
-
-  // CHANGED (actions): also accept patternAction and pattern.action (kept after explicit actions)
-  const actsIn   = d.actions
-                ?? d.actionsText
-                ?? d.patternAction
-                ?? (d.pattern && d.pattern.action)
-                ?? (d.clientTipsActions && d.clientTipsActions.actions);
+  const tipsIn = d.tips ?? d.tipsText ?? (d.clientTipsActions && d.clientTipsActions.tips);
+  const actsIn = d.actions ?? d.actionsText ?? d.patternAction ?? (d.pattern && d.pattern.action) ?? (d.clientTipsActions && d.clientTipsActions.actions);
 
   const tipsList = splitToList(tipsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
   const actsList = splitToList(actsIn).map(cleanBullet).filter(Boolean).slice(0, 2);
 
   const nameCand =
     (d.person && d.person.fullName) ||
-    d["p1:n"] ||
-    d.fullName ||
+    d["p1:n"] || d.fullName ||
     (d.person && d.person.preferredName) ||
-    d.preferredName ||
-    d.name;
+    d.preferredName || d.name;
 
   return {
     name:      norm(nameCand || "Perspective"),
@@ -411,226 +338,247 @@ function normaliseInput(d = {}) {
     domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
     spiderdesc:norm(d.spiderdesc || d.spider || ""),
     spiderfreq:norm(d.spiderfreq || d["p3:freq"] || ""),
-
-    // CHANGED (pattern description): prefer pattern.txt/desc first; keep legacy fallbacks
-    seqpat:    norm(
-                  d.seqpat
-               ?? (d.pattern && (d.pattern.txt || d.pattern.desc))
-               ?? d.pattern
-               ?? d.seqat
-               ?? d["p5:patternExpl"]
-               ?? d["p4:seq"]
-               ?? ""
-               ),
-
+    seqpat:    norm(d.seqpat ?? (d.pattern && (d.pattern.txt || d.pattern.desc)) ?? d.pattern ?? d.seqat ?? d["p5:patternExpl"] ?? d["p4:seq"] ?? ""),
     theme:     norm(d.theme || d["p6:theme"] || ""),
     themeExpl: norm(d.themeExpl || d["p6:themeExpl"] || ""),
     workwcol:  wcol,
     workwlead: wldr,
-    tips:      tipsList,      // ← canonical tips array (max 2)
-    actions:   actsList,      // ← canonical actions array (max 2)
+    tips:      tipsList,
+    actions:   actsList,
     chartUrl:  String(d.chart || d["p4:chart"] || d.chartUrl || ""),
     counts:    (d.counts && typeof d.counts === "object") ? d.counts : null,
     chartTheme:(d.chartTheme && typeof d.chartTheme === "object") ? d.chartTheme : null,
     layoutV6:  d.layoutV6 && typeof d.layoutV6 === "object" ? d.layoutV6 : null,
-    maskThemeLabel: d.maskThemeLabel !== false // default true
+    maskThemeLabel: d.maskThemeLabel !== false
   };
 }
-/* ========= /CHANGED ========= */
 
-function layoutFromPayload(payloadLayout) {
-  const L = JSON.parse(JSON.stringify(LOCKED));
-  if (!payloadLayout) return L;
-  for (const k of Object.keys(payloadLayout)) {
-    if (!L[k]) { L[k] = payloadLayout[k]; continue; }
-    if (typeof payloadLayout[k] === "object" && !Array.isArray(payloadLayout[k])) L[k] = { ...L[k], ...payloadLayout[k] };
-    else L[k] = payloadLayout[k];
+/* robust /public template loader */
+async function loadTemplateBytesLocal(filename) {
+  const fname = String(filename || "").trim();
+  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
+
+  const __file = fileURLToPath(import.meta.url);
+  const __dir  = path.dirname(__file);
+
+  const candidates = [
+    path.join(__dir, "..", "..", "public", fname),
+    path.join(__dir, "..", "public", fname),
+    path.join(__dir, "public", fname),
+    path.join(process.cwd(), "public", fname),
+    path.join(__dir, fname),
+  ];
+
+  let lastErr;
+  for (const pth of candidates) {
+    try { return await fs.readFile(pth); }
+    catch (err) { lastErr = err; }
   }
-  return L;
+  throw new Error(`Template not found in any known path for /public: ${fname} (${lastErr?.message||"no detail"})`);
 }
+
+/* safe page accessors */
+const pageOrNull = (pages, idx0) => (pages[idx0] ?? null);
 
 /* ───────────── handler ───────────── */
 export default async function handler(req, res) {
   try {
-    const q    = req.method === "POST" ? (req.body || {}) : (req.query || {});
-    const tpl  = q.tpl || "CTRL_Perspective_Assessment_Profile_template_slim.pdf";
-    const src  = await readPayload(req);
-    const P    = normaliseInput(src);
+    const q       = req.method === "POST" ? (req.body || {}) : (req.query || {});
+    // Default to COACH template; still allow ?tpl= override from your URL
+    const defaultTpl = "CTRL_Perspective_Assessment_Profile_template_slim_coach.pdf";
+    const tpl     = S(q.tpl || defaultTpl).replace(/[^A-Za-z0-9._-]/g, "");
 
-    // IMPORTANT: ignore remote layout to stop Botpress overrides while stabilising
+    const src     = await readPayload(req);
+    const P       = normaliseInput(src);
+
+    // while stabilising, ignore remote layout (use locked coach layout in the template)
     const ALLOW_REMOTE_LAYOUT = false;
-    const L    = layoutFromPayload(ALLOW_REMOTE_LAYOUT ? src.layoutV6 : null);
 
-    // robust local /public loader
-    const pdfBytes = await loadTemplateBytesLocal(String(tpl).replace(/[^A-Za-z0-9._-]/g, ""));
+    const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc   = await PDFDocument.load(pdfBytes);
     const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    const pages = pdfDoc.getPages();
-    const p = (i) => pages[i];
+    const pages    = pdfDoc.getPages();
+    const p1  = pageOrNull(pages, 0);
+    const p2  = pageOrNull(pages, 1);
+    const p3  = pageOrNull(pages, 2);
+    const p4  = pageOrNull(pages, 3);
+    const p5  = pageOrNull(pages, 4);
+    const p6  = pageOrNull(pages, 5);
+    const p7  = pageOrNull(pages, 6);
+    const p8  = pageOrNull(pages, 7);
+    const p9  = pageOrNull(pages, 8);
+    const p10 = pageOrNull(pages, 9);
+    const p11 = pageOrNull(pages,10);
+    const p12 = pageOrNull(pages,11);
 
-    // p1
-    if (L.p1?.name && P.name)    drawTextBox(p(0), font, P.name,    L.p1.name);
-    if (L.p1?.date && P.dateLbl) drawTextBox(p(0), font, P.dateLbl, L.p1.date);
+    // Minimal layout anchors (coach template may differ; we keep generous guards)
+    const L = {
+      p1:  { name: { x:7, y:473, w:500, size:30, align:"center" }, date: { x:210, y:600, w:500, size:25, align:"left" } },
+      p3:  {
+        domChar:{ x:272,y:640,w:630,size:23,align:"left", maxLines:6 },
+        domDesc:{ x: 25,y:685,w:550,size:18,align:"left", maxLines:12 },
+        state: {
+          useAbsolute:true, shape:"round", highlightInset:6, highlightRadius:28, fillOpacity:0.45,
+          styleByState:{ C:{radius:28,inset:6}, T:{radius:28,inset:6}, R:{radius:1000,inset:1}, L:{radius:28,inset:6} },
+          labelByState:{ C:{x:60,y:245}, T:{x:290,y:244}, R:{x:60,y:605}, L:{x:290,y:605} },
+          labelText:"YOU ARE HERE", labelSize:10, labelColor:{r:0.20,g:0.20,b:0.20}, labelOffsetX:0, labelOffsetY:0, labelPadTop:12, labelPadBottom:12,
+          absBoxes:{ C:{x:58,y:258,w:188,h:156}, T:{x:299,y:258,w:188,h:156}, R:{x:60,y:433,w:188,h:158}, L:{x:298,y:430,w:195,h:173} }
+        }
+      },
+      p4: { spider:{ x:30,y:585,w:550,size:16,align:"left", maxLines:15 }, chart:{ x:35, y:235, w:540, h:260 } },
+      p5: { seqpat:{ x:25,y:250,w:550,size:18,align:"left", maxLines:12 } },
+      p6: { theme: null, themeExpl:{ x:25,y:560,w:550,size:18,align:"left", maxLines:12 } },
+      p7: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+      p8: { colBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+      p9: { ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+      p10:{ ldrBoxes:[ {x:25,y:330,w:260,h:120}, {x:320,y:330,w:260,h:120}, {x:25,y:595,w:260,h:120}, {x:320,y:595,w:260,h:120} ], bodySize:13, maxLines:15 },
+      p11:{ lineGap:6, itemGap:6, bulletIndent:18,
+            tips1:{x:30,y:175,w:530,h:80,size:18,align:"left",maxLines:4},
+            tips2:{x:30,y:265,w:530,h:80,size:18,align:"left",maxLines:4},
+            acts1:{x:30,y:405,w:530,h:80,size:18,align:"left",maxLines:4},
+            acts2:{x:30,y:495,w:530,h:80,size:18,align:"left",maxLines:4} }
+    };
 
-    // p3 (dominant highlight + label)
-    if (L.p3?.domChar && P.domChar) drawTextBox(p(2), font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
-    if (L.p3?.domDesc && P.domDesc) drawTextBox(p(2), font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
+    /* p1 */
+    if (p1 && P.name)    drawTextBox(p1, font, P.name,    L.p1.name);
+    if (p1 && P.dateLbl) drawTextBox(p1, font, P.dateLbl, L.p1.date);
 
+    /* p3 (dominant highlight + label) */
+    if (p3 && P.domChar) drawTextBox(p3, font, P.domChar, L.p3.domChar, { maxLines: L.p3.domChar.maxLines });
+    if (p3 && P.domDesc) drawTextBox(p3, font, P.domDesc, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
     const domKey = resolveDomKey(P.dom, P.domChar, P.domDesc);
-    if (domKey && L.p3?.state?.useAbsolute) {
-      const anchor = paintStateHighlight(p(2), domKey, L.p3.state);
+    if (p3 && domKey && L.p3?.state?.useAbsolute) {
+      const anchor = paintStateHighlight(p3, domKey, L.p3.state);
       if (anchor && L.p3.state.labelText) {
-        drawTextBox(p(2), font, String(L.p3.state.labelText),
+        drawTextBox(p3, font, String(L.p3.state.labelText),
           { x: anchor.labelX, y: anchor.labelY, w: 180, size: L.p3.state.labelSize || 10, align: "center" },
           { maxLines: 1 });
       }
     }
 
-    // p4 (spider explanation)
-    if (L.p4?.spider) {
+    /* p4 (spider + chart) */
+    if (p4 && L.p4?.spider) {
       const tuned = tuneSpiderDesc(P.spiderdesc, q, P).trim();
-      if (tuned) {
-        const maxLines = (L.p4.spider?.maxLines ?? L.p4.spiderMaxLines ?? 10);
-        drawTextBox(p(3), font, tuned, { ...L.p4.spider, maxLines }, { maxLines });
-      }
+      if (tuned) drawTextBox(p4, font, tuned, L.p4.spider, { maxLines: L.p4.spider.maxLines });
     }
-
-    // p4 chart — prefer explicit counts; dynamic scale; theme; cache-bust
-    if (L.p4?.chart) {
+    if (p4 && L.p4?.chart) {
       let chartUrl = String(P?.chartUrl || q.chart || "");
       let counts = P.counts ? { C:N(P.counts.C,0), T:N(P.counts.T,0), R:N(P.counts.R,0), L:N(P.counts.L,0) }
                             : parseCountsFromFreq(P.spiderfreq || "");
-
       if (!chartUrl) {
         const sum = N(counts.C,0)+N(counts.T,0)+N(counts.R,0)+N(counts.L,0);
         if (sum > 0) chartUrl = buildSpiderQuickChartUrlFromCounts(counts, P.chartTheme);
       } else {
         try { const u = new URL(chartUrl); u.searchParams.set("v", Date.now().toString(36)); chartUrl = u.toString(); } catch {}
       }
-
       if (chartUrl) {
         const img = await embedRemoteImage(pdfDoc, chartUrl);
         if (img) {
-          const H = p(3).getHeight();
+          const H = p4.getHeight();
           const { x, y, w, h } = L.p4.chart;
-          p(3).drawImage(img, { x, y: H - y - h, width: w, height: h });
+          p4.drawImage(img, { x, y: H - y - h, width: w, height: h });
         }
       }
     }
 
-    // p5
-    if (L.p5?.seqpat && P.seqpat) {
-      const maxLines = (L.p5.seqpat.maxLines ?? L.p5.seqpatMaxLines ?? 12);
-      drawTextBox(p(4), font, P.seqpat, { ...L.p5.seqpat, maxLines }, { maxLines });
+    /* p5 */
+    if (p5 && L.p5?.seqpat && P.seqpat) {
+      drawTextBox(p5, font, P.seqpat, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
     }
 
-    // p6 — THEME (mask baked label; render paragraph only)
-    if (P.maskThemeLabel !== false) {
-      try {
-        const white = rgb(1,1,1);
-        const w = p(5).getWidth() - 90, h = 18;
-        const xTL = 55, yTL = 500;
-        const yBL = p(5).getHeight() - yTL - h;
-        p(5).drawRectangle({ x: xTL, y: yBL, width: w, height: h, color: white, opacity: 1 });
-      } catch {}
-    }
-    if (L.p6?.theme && P.theme) {
-      const maxLines = (L.p6.theme.maxLines ?? L.p6.themeMaxLines ?? 2);
-      drawTextBox(p(5), font, P.theme, { ...L.p6.theme, maxLines }, { maxLines });
-    }
-    if (L.p6?.themeExpl && P.themeExpl) {
-      const maxLines = (L.p6.themeExpl.maxLines ?? L.p6.themeExplMaxLines ?? 12);
-      drawTextBox(p(5), font, P.themeExpl, { ...L.p6.themeExpl, maxLines }, { maxLines });
+    /* p6 theme paragraph only (masks baked label if page present) */
+    if (p6) {
+      if (P.maskThemeLabel !== false) {
+        try { const white = rgb(1,1,1); const w = p6.getWidth() - 90, h = 18; const xTL = 55, yTL = 500;
+          const yBL = p6.getHeight() - yTL - h;
+          p6.drawRectangle({ x: xTL, y: yBL, width: w, height: h, color: white, opacity: 1 });
+        } catch {}
+      }
+      if (L.p6?.theme && P.theme)     drawTextBox(p6, font, P.theme,     L.p6.theme,     { maxLines: L.p6.theme.maxLines });
+      if (L.p6?.themeExpl && P.themeExpl) drawTextBox(p6, font, P.themeExpl, L.p6.themeExpl, { maxLines: L.p6.themeExpl.maxLines });
     }
 
-    // p7–p8 — WorkWith collaborators (look/work)
+    /* p7–p8 — collaborators */
     const mapIdx = { C:0, T:1, R:2, L:3 };
-    if (L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
+    if (p7 && L.p7?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k], bx = L.p7.colBoxes[i], item = P.workwcol[i] || {};
         const txt = norm(item?.look || ""); if (!txt) continue;
-        drawTextBox(p(6), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
+        drawTextBox(p7, font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p7.bodySize||13, align:"left" }, { maxLines: L.p7.maxLines||15 });
       }
     }
-    if (L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
+    if (p8 && L.p8?.colBoxes?.length && Array.isArray(P.workwcol)) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k], bx = L.p8.colBoxes[i], item = P.workwcol[i] || {};
         const txt = norm(item?.work || ""); if (!txt) continue;
-        drawTextBox(p(7), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
+        drawTextBox(p8, font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p8.bodySize||13, align:"left" }, { maxLines: L.p8.maxLines||15 });
       }
     }
 
-    // p9 — Leaders (LOOK) with fallback to WORK if look is absent
-    if (L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+    /* p9–p10 — leaders */
+    if (p9 && L.p9?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
       for (const k of ["C","T","R","L"]) {
         const i  = mapIdx[k], bx = L.p9.ldrBoxes[i], it = P.workwlead[i] || {};
-        const txt = norm(it?.look || it?.work || ""); // fallback ensures not blank
-        if (!txt) continue;
-        drawTextBox(p(8), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
+        const txt = norm(it?.look || it?.work || ""); if (!txt) continue;
+        drawTextBox(p9, font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p9.bodySize||13, align:"left" }, { maxLines: L.p9.maxLines||15 });
       }
     }
-
-    // p10 — Leaders (WORK)
-    if (L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
+    if (p10 && L.p10?.ldrBoxes?.length && Array.isArray(P.workwlead)) {
       for (const k of ["C","T","R","L"]) {
         const i = mapIdx[k], bx = L.p10.ldrBoxes[i], item = P.workwlead[i] || {};
         const txt = norm(item?.work || ""); if (!txt) continue;
-        drawTextBox(p(9), font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
+        drawTextBox(p10, font, txt, { x:bx.x, y:bx.y, w:bx.w, size:L.p10.bodySize||13, align:"left" }, { maxLines: L.p10.maxLines||15 });
       }
     }
 
-    // p11 — Tips & Actions: draw up to two each, skip headings/empties
-    if (L.p11?.split) {
-      const tidy = (s) =>
-        norm(String(s || ""))
-          .replace(/^(?:[-–—•·]\s*)/i, "")
-          .replace(/^\s*(tips?|tip)\s*:?\s*/i, "")
-          .replace(/^\s*(actions?|next\s*action)\s*:?\s*/i, "")
-          .trim();
-
-      const good = (s) => s && s.length >= 3 && !/^tips?$|^actions?$/i.test(s);
+    /* p11 — Tips & Actions */
+    if (p11 && L.p11) {
+      const tidy = s => norm(String(s || ""))
+        .replace(/^(?:[-–—•·]\s*)/i, "")
+        .replace(/^\s*(tips?|tip)\s*:?\s*/i, "")
+        .replace(/^\s*(actions?|next\s*action)\s*:?\s*/i, "")
+        .trim();
+      const good = s => s && s.length >= 3 && !/^tips?$|^actions?$/i.test(s);
 
       const tipsPacked    = (Array.isArray(P.tips)    ? P.tips    : []).map(tidy).filter(good).slice(0,2);
       const actionsPacked = (Array.isArray(P.actions) ? P.actions : []).map(tidy).filter(good).slice(0,2);
 
-      const drawBullet = (pageIdx, box, text) => {
-        if (!box || !good(text)) return;
+      const drawBullet = (page, box, text) => {
+        if (!page || !box || !good(text)) return;
         const indent = N(L.p11.bulletIndent, 18);
         const size   = box.size || 18;
         const maxL   = box.maxLines || 4;
 
         const dashX = box.x + Math.max(2, indent - 10);
-        drawTextBox(p(pageIdx), font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
+        drawTextBox(page, font, "-", { x: dashX, y: box.y, w: 8, size, align: "left" }, { maxLines: 1 });
 
-        drawTextBox(
-          p(pageIdx), font, text,
+        drawTextBox(page, font, text,
           { x: box.x + indent, y: box.y, w: Math.max(0, box.w - indent), size, align: box.align || "left" },
           { maxLines: maxL }
         );
       };
 
-      // Tips → top half
-      drawBullet(10, L.p11.tips1, tipsPacked[0] || "");
-      drawBullet(10, L.p11.tips2, tipsPacked[1] || "");
-
-      // Actions → bottom half
-      drawBullet(10, L.p11.acts1, actionsPacked[0] || "");
-      drawBullet(10, L.p11.acts2, actionsPacked[1] || "");
+      drawBullet(p11, L.p11.tips1, tipsPacked[0] || "");
+      drawBullet(p11, L.p11.tips2, tipsPacked[1] || "");
+      drawBullet(p11, L.p11.acts1, actionsPacked[0] || "");
+      drawBullet(p11, L.p11.acts2, actionsPacked[1] || "");
     }
 
-    // footers
+    /* Optional: simple footer label on p2..p12 (if they exist) */
     const footerLabel = norm(P.name);
-    const putFooter = (pageIdx, key) => { const spec = L.footer?.[key]; if (!spec) return; drawTextBox(p(pageIdx), font, footerLabel, spec, { maxLines: 1 }); };
-    putFooter(1,"f2"); putFooter(2,"f3"); putFooter(3,"f4"); putFooter(4,"f5"); putFooter(5,"f6");
-    putFooter(6,"f7"); putFooter(7,"f8"); putFooter(8,"f9"); putFooter(9,"f10"); putFooter(10,"f11"); putFooter(11,"f12");
+    const putFooter = (page) => { if (!page || !footerLabel) return;
+      drawTextBox(page, font, footerLabel, { x:380,y:51,w:400,size:13,align:"left" }, { maxLines: 1 });
+    };
+    [p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12].forEach(putFooter);
 
+    // output
     const bytes = await pdfDoc.save();
-    const nameOut = S(q.out || `CTRL_${P.name || "Perspective"}_${P.dateLbl || ""}.pdf`).replace(/[^\w.-]+/g, "_");
+    const nameOut = S(q.out || `CTRL_${P.name || "Coach"}_${P.dateLbl || ""}.pdf`).replace(/[^\w.-]+/g, "_");
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${nameOut}"`);
     res.end(Buffer.from(bytes));
   } catch (err) {
-    res.status(400).json({ ok:false, error:`fill-template error: ${err.message || String(err)}` });
+    res.status(400).json({ ok:false, error:`fill-template error: ${err?.message || String(err)}` });
   }
 }
