@@ -373,7 +373,14 @@ function normaliseInput(d = {}) {
 
   return {
     name:      norm(nameCand || "Perspective"),
-    dateLbl:   norm(d.dateLbl || d["p1:d"] || d.d || ""),
+dateLbl: norm(
+  d.dateLbl ||
+  (d.identity && (d.identity.dateLabel || d.identity.dateLbl)) ||
+  d["p1:d"] ||
+  d.d ||
+  ""
+),
+
     dom:       String(d.dom || d.domLabel || ""),
     domChar:   norm(d.domchar || d.domChar || d.character || ""),
     domDesc:   norm(d.domdesc || d.domDesc || d.dominantDesc || ""),
